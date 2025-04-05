@@ -1,0 +1,49 @@
+# Ignore virtual environment directory
+.venv
+venv/
+*/venv/
+*/.venv/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore IDE/editor directories
+.vscode/
+.idea/
+
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db
+
+# Ignore local environment files
+.env
+*.env.local
+
+# Ignore git directory
+.git/
+
+# Ignore test files if not needed in production image
+# tests/
+# *_test.py
+# test_*.py
+
+# Ignore build artifacts
+dist/
+build/
+*.egg-info/
+
+# Ignore database files (especially if using persistent client locally)
+chromadb_data/
+*.db
+*.sqlite3
+
+# Ignore logs if generated locally
+*.log
+logs/
+
+# Ignore Docker related files (shouldn't be copied into the image)
+Dockerfile
+.dockerignore 
