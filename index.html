@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Sales Agent - Test UI</title>
+    <!-- Include Tailwind CSS via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Add some basic custom styles if needed */
+        #chat-output {
+            height: 400px; /* Example height */
+            overflow-y: auto;
+            border: 1px solid #e2e8f0;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        .chat-message {
+            margin-bottom: 8px;
+            padding: 5px 8px;
+            border-radius: 5px;
+        }
+        .user-message {
+            background-color: #e2e8f0; /* Light gray for user */
+            text-align: right;
+            margin-left: auto; /* Push to right */
+            max-width: 75%;
+        }
+        .agent-message {
+            background-color: #dbeafe; /* Light blue for agent */
+            text-align: left;
+            margin-right: auto; /* Push to left */
+            max-width: 75%;
+        }
+         .handoff-message {
+            background-color: #fef9c3; /* Light yellow for handoff */
+            text-align: center;
+            font-style: italic;
+         }
+        .error-message {
+            background-color: #fee2e2; /* Light red for errors */
+            color: #b91c1c;
+            text-align: center;
+            font-weight: bold;
+        }
+        .info-message { background-color: #e0e7ff; text-align: center; font-style: italic; font-size: 0.9em; }
+        .status-message { background-color: #f3f4f6; text-align: center; font-style: italic; font-size: 0.9em; color: #6b7280; }
+    </style>
+</head>
+<body class="bg-gray-100 p-8 font-sans">
+
+    <div class="container mx-auto max-w-4xl bg-white p-6 rounded-lg shadow-md">
+        <h1 class="text-2xl font-bold mb-6 text-center">AI Sales Agent - Test Interface</h1>
+
+        <!-- Section 1: KB Creation -->
+        <section id="kb-creation" class="mb-8 p-4 border rounded bg-gray-50">
+            <h2 class="text-xl font-semibold mb-4">1. Create Knowledge Base</h2>
+            <div class="mb-4">
+                <label for="json-data" class="block text-sm font-medium text-gray-700 mb-1">Paste JSON Data:</label>
+                <textarea id="json-data" rows="8" class="w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500" placeholder='{"company": "...", "product": ...}'></textarea>
+            </div>
+            <button id="create-kb-btn" type="button" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">
+                Create KB
+            </button>
+            <div id="kb-status" class="mt-3 text-sm text-gray-600">Status: Waiting for KB creation...</div>
+        </section>
+
+        <!-- Section 2: Chat Interface -->
+        <section id="chat-interface" class="mb-8 p-4 border rounded bg-gray-50">
+            <h2 class="text-xl font-semibold mb-4">2. Chat with Agent</h2>
+            <div class="mb-4">
+                <label for="kb-id-input" class="block text-sm font-medium text-gray-700 mb-1">Enter KB ID:</label>
+                <input type="text" id="kb-id-input" class="w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500" placeholder="kb_...">
+            </div>
+            <div class="flex space-x-2 mb-4">
+                <button id="connect-btn" type="button" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded flex-1">Connect</button>
+                <button id="disconnect-btn" type="button" class="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded flex-1" disabled>Disconnect</button>
+            </div>
+            <div id="connection-status" class="mb-3 text-sm text-gray-600">Status: Disconnected</div>
+
+            <div id="chat-output" class="bg-white rounded">
+                <!-- Chat messages will appear here -->
+            </div>
+
+            <div class="flex mt-4">
+                <input type="text" id="chat-input" class="flex-grow p-2 border rounded-l focus:ring-blue-500 focus:border-blue-500" placeholder="Type your message..." disabled>
+                <button id="send-btn" type="button" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-r" disabled>Send</button>
+            </div>
+        </section>
+
+        <!-- Section 3: Handoff Response -->
+        <section id="handoff-section" class="p-4 border rounded bg-gray-50 hidden"> <!-- Initially hidden -->
+             <h2 class="text-xl font-semibold mb-4">3. Human Handoff Response</h2>
+             <div class="mb-3 text-sm text-gray-800 bg-yellow-100 p-2 rounded">
+                 Agent requires assistance. Original query was: <strong id="handoff-query">(Query will appear here)</strong>
+             </div>
+            <div class="mb-4">
+                <label for="human-response" class="block text-sm font-medium text-gray-700 mb-1">Enter Human Response:</label>
+                <textarea id="human-response" rows="4" class="w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500" placeholder="Type the response the human operator should provide..."></textarea>
+            </div>
+            <div class="flex items-center mb-4">
+                 <input id="update-kb-checkbox" type="checkbox" class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded">
+                 <label for="update-kb-checkbox" class="ml-2 block text-sm text-gray-900">Update Knowledge Base with this response?</label>
+             </div>
+            <button id="submit-human-response-btn" type="button" class="bg-purple-500 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded">
+                Submit Human Response
+            </button>
+             <div id="handoff-status" class="mt-3 text-sm text-gray-600">Status: Waiting for human response submission...</div>
+        </section>
+
+    </div>
+
+    <!-- JavaScript -->
+    <script>
+        // --- Configuration ---
+        const API_BASE_URL = "http://127.0.0.1:8000"; // Assuming server runs locally on port 8000
+
+        // --- DOM Elements ---
+        const jsonDataInput = document.getElementById('json-data');
+        const createKbBtn = document.getElementById('create-kb-btn');
+        const kbStatusDiv = document.getElementById('kb-status');
+        const kbIdInput = document.getElementById('kb-id-input');
+        const connectBtn = document.getElementById('connect-btn');
+        const disconnectBtn = document.getElementById('disconnect-btn');
+        const connectionStatusDiv = document.getElementById('connection-status');
+        const chatOutputDiv = document.getElementById('chat-output');
+        const chatInput = document.getElementById('chat-input');
+        const sendBtn = document.getElementById('send-btn');
+        const handoffSection = document.getElementById('handoff-section');
+        const handoffQueryStrong = document.getElementById('handoff-query');
+        const humanResponseInput = document.getElementById('human-response');
+        const updateKbCheckbox = document.getElementById('update-kb-checkbox');
+        const submitHumanResponseBtn = document.getElementById('submit-human-response-btn');
+        const handoffStatusDiv = document.getElementById('handoff-status');
+
+        // --- State Variables ---
+        let currentKbId = null;
+        let lastUserQueryForHandoff = ""; // Store the query that triggered handoff
+        let isConnected = false; // Track if we are "connected" to an agent
+
+        // --- Helper Functions ---
+        function addChatMessage(message, type) {
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('chat-message', `${type}-message`);
+            messageDiv.textContent = message;
+            chatOutputDiv.appendChild(messageDiv);
+            // Scroll to bottom
+            chatOutputDiv.scrollTop = chatOutputDiv.scrollHeight;
+        }
+
+        function updateConnectionState(connected) {
+            isConnected = connected;
+            connectBtn.disabled = connected;
+            disconnectBtn.disabled = !connected;
+            chatInput.disabled = !connected;
+            sendBtn.disabled = !connected;
+            kbIdInput.disabled = connected; // Disable changing KB ID while connected
+            connectionStatusDiv.textContent = `Status: ${connected ? 'Connected' : 'Disconnected'}`;
+            if (!connected) {
+                hideHandoffSection(); // Hide handoff if disconnected
+                currentKbId = null;
+            }
+        }
+
+        function showHandoffSection(originalQuery) {
+            lastUserQueryForHandoff = originalQuery;
+            handoffQueryStrong.textContent = originalQuery;
+            handoffSection.classList.remove('hidden');
+            handoffStatusDiv.textContent = 'Status: Waiting for human response submission...';
+            humanResponseInput.value = ''; // Clear previous response
+        }
+
+        function hideHandoffSection() {
+            handoffSection.classList.add('hidden');
+            lastUserQueryForHandoff = "";
+        }
+
+
+        // --- Event Listener Logic ---
+
+        // 1. KB Creation
+        createKbBtn.addEventListener('click', async function(event) {
+            event.preventDefault();
+            
+            const rawJsonData = jsonDataInput.value;
+            if (!rawJsonData) {
+                kbStatusDiv.textContent = 'Status: Error - JSON data cannot be empty.';
+                return;
+            }
+
+            let parsedJsonData;
+            try {
+                parsedJsonData = JSON.parse(rawJsonData);
+            } catch (error) {
+                kbStatusDiv.textContent = `Status: Error parsing JSON - ${error.message}`;
+                return;
+            }
+
+            kbStatusDiv.textContent = 'Status: Creating KB...';
+            createKbBtn.disabled = true;
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/agents`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ json_data: parsedJsonData }), // Wrap the data
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    kbStatusDiv.textContent = `Status: ${result.message} (ID: ${result.kb_id})`;
+                    kbIdInput.value = result.kb_id; // Pre-fill the KB ID input
+                } else {
+                    kbStatusDiv.textContent = `Status: Error - ${result.detail || 'Unknown error'}`;
+                }
+            } catch (error) {
+                kbStatusDiv.textContent = `Status: Network Error - ${error.message}`;
+            } finally {
+                createKbBtn.disabled = false;
+            }
+        });
+
+        // 2. Connect to agent (no actual connection, just validation and UI update)
+        connectBtn.addEventListener('click', function(event) {
+            event.preventDefault();
+            
+            const kbId = kbIdInput.value.trim();
+            if (!kbId) {
+                connectionStatusDiv.textContent = 'Status: Error - KB ID cannot be empty.';
+                return;
+            }
+
+            // Store the KB ID for future requests
+            currentKbId = kbId;
+            connectionStatusDiv.textContent = 'Status: Connected';
+            updateConnectionState(true);
+            addChatMessage(`Connected to agent ${currentKbId}.`, 'info');
+        });
+
+        disconnectBtn.addEventListener('click', function(event) {
+            event.preventDefault();
+            
+            if (isConnected) {
+                addChatMessage(`Disconnected from agent ${currentKbId || ''}.`, 'info');
+                updateConnectionState(false);
+            }
+        });
+
+        // 3. Sending Chat Messages via HTTP
+        async function sendMessage(event) {
+            // Prevent default form submission behavior if this was triggered by an event
+            if (event) event.preventDefault();
+            
+            const message = chatInput.value.trim();
+            if (!message) return;
+            if (!isConnected || !currentKbId) {
+                addChatMessage('Error: Not connected to an agent.', 'error');
+                return;
+            }
+
+            lastUserQueryForHandoff = message;
+            addChatMessage(message, 'user');
+            chatInput.value = ''; // Clear input
+            
+            // Show a "processing" message
+            addChatMessage('Processing...', 'status');
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/agents/${currentKbId}/chat`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        kb_id: currentKbId
+                    }),
+                });
+
+                const result = await response.json();
+
+                // Remove the temporary "processing" message
+                chatOutputDiv.removeChild(chatOutputDiv.lastChild);
+
+                if (response.ok) {
+                    if (result.type === 'handoff') {
+                        addChatMessage(result.content, 'handoff');
+                        showHandoffSection(lastUserQueryForHandoff);
+                    } else {
+                        addChatMessage(result.content, 'agent');
+                    }
+                } else {
+                    addChatMessage(`Error: ${result.detail || 'Unknown error'}`, 'error');
+                }
+            } catch (error) {
+                // Remove the temporary "processing" message
+                chatOutputDiv.removeChild(chatOutputDiv.lastChild);
+                addChatMessage(`Network Error: ${error.message}`, 'error');
+            }
+        }
+
+        sendBtn.addEventListener('click', function(event) {
+            event.preventDefault();
+            sendMessage();
+        });
+        
+        chatInput.addEventListener('keypress', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Prevent form submission for the entire document
+        document.addEventListener('submit', function(event) {
+            event.preventDefault();
+            console.log('Form submission prevented');
+            return false;
+        });
+
+        // 4. Handoff Response Submission
+        submitHumanResponseBtn.addEventListener('click', async function(event) {
+            event.preventDefault();
+            
+            const humanResponse = humanResponseInput.value.trim();
+            const updateKb = updateKbCheckbox.checked;
+
+            if (!humanResponse) {
+                handoffStatusDiv.textContent = 'Status: Error - Human response cannot be empty.';
+                return;
+            }
+            if (!currentKbId) {
+                 handoffStatusDiv.textContent = 'Status: Error - No KB ID associated with the handoff (connection lost?).';
+                 return;
+            }
+
+            handoffStatusDiv.textContent = 'Status: Submitting response...';
+            submitHumanResponseBtn.disabled = true;
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/agents/${currentKbId}/human_response`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        human_response: humanResponse,
+                        update_kb: updateKb,
+                    }),
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    handoffStatusDiv.textContent = `Status: ${result.message}`;
+                    // Optionally add human response to chat - as if human typed it
+                    addChatMessage(`(Human Response): ${humanResponse}`, 'user');
+                    hideHandoffSection(); // Hide section after successful submission
+                } else {
+                    handoffStatusDiv.textContent = `Status: Error - ${result.detail || 'Unknown error'}`;
+                }
+            } catch (error) {
+                handoffStatusDiv.textContent = `Status: Network Error - ${error.message}`;
+            } finally {
+                 submitHumanResponseBtn.disabled = false;
+            }
+        });
+
+        // --- Initial State ---
+        updateConnectionState(false); // Ensure UI is in disconnected state initially
+        hideHandoffSection(); // Ensure handoff is hidden initially
+
+        console.log("UI Initialized. Waiting for user actions.");
+    </script>
+
+</body>
+</html> 
