@@ -4,7 +4,7 @@ import uuid
 import time
 import asyncio # <--- Import asyncio
 import re  # For splitting sentences
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File # Add UploadFile, File
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 from langchain_core.messages import HumanMessage, AIMessage # Import message types
@@ -15,6 +15,7 @@ import data_processor
 from kb_manager import kb_manager # Singleton instance
 from agent_manager import create_agent_executor
 from config import llm # Import the initialized LLM
+from file_parser import parse_file, SUPPORTED_EXTENSIONS # Import the file parser
 
 # --- Pydantic Models ---
 
@@ -393,6 +394,64 @@ async def human_response_endpoint(kb_id: str, request: HumanResponseRequest):
         # If update_kb is false or response is empty
         print(f"Human response received for kb_id: {kb_id}. KB not updated (update_kb={request.update_kb}).")
         return StatusResponse(status="success", message="Human response received, knowledge base not updated.")
+
+
+# --- File Upload Endpoint ---
+@app.post("/agents/{kb_id}/upload", response_model=StatusResponse)
+async def upload_to_kb(kb_id: str, file: UploadFile = File(...)):
+    """
+    Accepts a file upload, parses its content based on extension,
+    and adds the extracted text to the specified knowledge base.
+    """
+    print(f"Received file upload request for kb_id: {kb_id}. Filename: {file.filename}")
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided with the upload.")
+
+    # Parse the file content using the file_parser module
+    try:
+        extracted_text = await parse_file(file)
+    except Exception as e:
+        # Catch unexpected errors during parsing itself
+        print(f"Internal server error during file parsing for {file.filename}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Server error processing file: {str(e)}")
+
+    # Check if parsing was successful and returned text
+    if extracted_text is None:
+        # parse_file returns None for unsupported types or major parsing errors
+        # It logs the specific reason internally
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Unsupported file type or failed to parse file: {file.filename}. Supported types: {', '.join(SUPPORTED_EXTENSIONS)}"
+        )
+    
+    if not extracted_text.strip():
+        # Handle cases where the file is valid but contains no text
+        print(f"File {file.filename} parsed successfully but contained no text content.")
+        return StatusResponse(status="success", message="File processed, but no text content found to add.")
+
+    # Add the extracted text to the knowledge base
+    # kb_manager.add_to_kb handles chunking internally
+    print(f"Adding extracted text from {file.filename} to KB {kb_id}...")
+    try:
+        success = kb_manager.add_to_kb(kb_id, extracted_text)
+        if success:
+            print(f"Successfully added content from {file.filename} to KB {kb_id}.")
+            return StatusResponse(status="success", message=f"File '{file.filename}' processed and added to knowledge base {kb_id}.")
+        else:
+            # This might happen if add_to_kb fails for some reason (e.g., post-processing resulted in empty content)
+            print(f"Failed to add content from {file.filename} to KB {kb_id} (add_to_kb returned False).")
+            # We might return a 500 or a more specific error depending on why add_to_kb might fail
+            raise HTTPException(status_code=500, detail="Failed to add extracted content to the knowledge base after parsing.")
+            
+    except Exception as e:
+        print(f"Error adding parsed content from {file.filename} to KB {kb_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        # This indicates an error interacting with the KB store (ChromaDB)
+        raise HTTPException(status_code=500, detail=f"Failed to update knowledge base: {str(e)}")
 
 
 # --- HTTP Chat Endpoint ---
