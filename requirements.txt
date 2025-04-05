@@ -11,5 +11,6 @@ langchain-huggingface>=0.0.1
 langchain-openai>=0.0.5 # Add the OpenAI integration (used for DeepSeek via compatibility)
 # Add any other specific dependencies your project uses
 # e.g., specific LLM client libraries if not included above
+accelerate>=0.20.0 # Required by transformers/sentence-transformers
 # Add the specific DeepSeek library/SDK name here when known
 # Example: deepseek-sdk 
