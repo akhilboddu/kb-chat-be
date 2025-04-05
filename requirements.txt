@@ -14,3 +14,11 @@ langchain-openai>=0.0.5 # Add the OpenAI integration (used for DeepSeek via comp
 accelerate>=0.20.0 # Required by transformers/sentence-transformers
 # Add the specific DeepSeek library/SDK name here when known
 # Example: deepseek-sdk 
+
+# File parsing libraries
+pypdf>=4.0.0 # For PDF files
+python-docx>=1.1.0 # For DOCX files
+openpyxl>=3.1.0 # For XLSX files
+
+# FastAPI file upload support
+python-multipart>=0.0.5 # For handling form data and file uploads
