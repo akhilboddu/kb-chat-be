@@ -6,6 +6,8 @@ sentence-transformers>=2.2.0
 chromadb>=0.4.0
 python-dotenv>=1.0.0
 pydantic>=2.0.0
+# Add the HuggingFace integration for embeddings
+langchain-huggingface>=0.0.1
 # Add any other specific dependencies your project uses
 # e.g., specific LLM client libraries if not included above
 # Add the specific DeepSeek library/SDK name here when known
