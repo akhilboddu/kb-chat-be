@@ -21,10 +21,16 @@ import db_manager # Import the new DB manager
 from agent_manager import create_agent_executor
 from config import llm # Import the initialized LLM
 from file_parser import parse_file, SUPPORTED_EXTENSIONS # Import the file parser
+from langchain.memory import ConversationBufferMemory # Keep this one
+from langchain_core.memory import BaseMemory # Correct import path for BaseMemory
 
 # --- Initialize SQLite DB --- 
 # Ensure the DB and tables are created when the app starts
 db_manager.init_db()
+
+# --- Conversation Memory Store (In-Memory - Not Persistent) ---
+# Store memory objects keyed by kb_id
+# conversation_memory_store: Dict[str, BaseMemory] = {} # REMOVED - Using DB now
 
 # --- Pydantic Models ---
 
@@ -115,6 +121,18 @@ class ListFilesResponse(BaseModel):
     """Response containing a list of uploaded file information."""
     kb_id: str
     files: List[UploadedFileInfo]
+
+# --- NEW: Models for Conversation History Endpoint ---
+class HistoryMessage(BaseModel):
+    """Represents a single message in the conversation history."""
+    type: str # 'human' or 'ai'
+    content: str
+    timestamp: Optional[datetime.datetime] = None # Include timestamp from DB
+
+class ChatHistoryResponse(BaseModel):
+    """Response model for retrieving conversation history."""
+    kb_id: str
+    history: List[HistoryMessage]
 
 # --- Models for HTTP Chat Endpoint ---
 class ChatRequest(BaseModel):
@@ -417,10 +435,20 @@ async def human_response_endpoint(kb_id: str, request: HumanResponseRequest):
     if request.update_kb and request.human_response:
         print(f"Attempting to update KB {kb_id} with human response...")
         try:
-            # Use the existing KBManager function to add the response
-            success = kb_manager.add_to_kb(kb_id, request.human_response)
+            # Use the existing KBManager function to add the response, passing metadata
+            success = kb_manager.add_to_kb(
+                kb_id=kb_id, 
+                text_to_add=request.human_response, 
+                metadata={"source": "human_verified"}
+            )
             if success:
-                print(f"Successfully updated KB {kb_id}.")
+                print(f"Successfully updated KB {kb_id} with human response.")
+                # --- Log the update --- 
+                log_success = db_manager.log_kb_update(kb_id, request.human_response)
+                if not log_success:
+                    # Log a warning if logging fails, but don't fail the main operation
+                    print(f"Warning: Failed to log KB update for {kb_id} after successful addition.")
+                # --- End Log --- 
                 return StatusResponse(status="success", message="Human response received and knowledge base updated.")
             else:
                 # add_to_kb might return False if text is empty after stripping
@@ -468,7 +496,10 @@ async def upload_to_kb(kb_id: str, file: UploadFile = File(...)):
     if not record_success:
         # Log the error but proceed with parsing and adding to KB? 
         # Or raise an error here? Let's log and proceed for now.
-        print(f"Warning: Failed to store file metadata record for '{file.filename}' in KB {kb_id}. Continuing with KB update.")
+        # print(f"Warning: Failed to store file metadata record for '{file.filename}' in KB {kb_id}. Continuing with KB update.")
+        # --- MODIFIED: Raise error on failure --- 
+        print(f"Error: Failed to store file metadata record for '{file.filename}' in KB {kb_id}. Aborting upload.")
+        raise HTTPException(status_code=500, detail=f"Failed to store file metadata before processing knowledge base.")
 
     # --- Parse File Content ---
     try:
@@ -530,31 +561,129 @@ async def list_uploaded_files_endpoint(kb_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to list uploaded files: {str(e)}")
 
 
-# --- HTTP Chat Endpoint (Non-Streaming - Kept for compatibility/testing) ---
+# --- NEW: Endpoint to retrieve conversation history ---
+@app.get("/agents/{kb_id}/history", response_model=ChatHistoryResponse)
+async def get_chat_history_endpoint(kb_id: str):
+    """
+    Retrieves the conversation history for a specific agent/KB.
+    History is returned ordered by timestamp (oldest first).
+    """
+    print(f"Received request to get conversation history for KB: {kb_id}")
+    try:
+        # Retrieve history from the database manager
+        db_history_raw = db_manager.get_conversation_history(kb_id)
+        
+        # Convert raw DB results (list of dicts) into HistoryMessage objects
+        history_messages = [
+            HistoryMessage(
+                type=msg.get('message_type', 'unknown'), 
+                content=msg.get('content', ''),
+                timestamp=msg.get('timestamp') # Pass timestamp along
+            ) 
+            for msg in db_history_raw
+        ]
+        
+        print(f"Retrieved {len(history_messages)} messages for KB {kb_id} history.")
+        
+        return ChatHistoryResponse(kb_id=kb_id, history=history_messages)
+        
+    except Exception as e:
+        print(f"Error retrieving conversation history for KB {kb_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        # Consider if a 404 is more appropriate if kb_id potentially doesn't exist
+        # For now, assuming any error is a 500
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve conversation history: {str(e)}")
+
+
+# --- NEW: Endpoint to DELETE conversation history ---
+@app.delete("/agents/{kb_id}/history", response_model=StatusResponse, status_code=status.HTTP_200_OK)
+async def delete_chat_history_endpoint(kb_id: str):
+    """
+    Deletes all stored conversation history for a specific agent/KB.
+    """
+    print(f"Received request to DELETE conversation history for KB: {kb_id}")
+    try:
+        # Call the database manager function to delete history
+        success = db_manager.delete_conversation_history(kb_id)
+        
+        if success:
+            # Return a success status
+            return StatusResponse(status="success", message=f"Conversation history for KB {kb_id} deleted successfully.")
+        else:
+            # If the DB function returns False, it indicates an internal error
+            raise HTTPException(status_code=500, detail=f"Failed to delete conversation history for KB {kb_id} due to an internal error.")
+            
+    except Exception as e:
+        # Catch any other unexpected errors
+        print(f"Unexpected error during history deletion for KB {kb_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to delete conversation history: {str(e)}")
+
+
+# --- HTTP Chat Endpoint (Now with Memory) ---
 @app.post("/agents/{kb_id}/chat", response_model=ChatResponse)
 async def chat_endpoint(kb_id: str, request: ChatRequest):
     """
-    HTTP endpoint for non-streaming chat interactions with an agent.
+    HTTP endpoint for stateful, non-streaming chat interactions with an agent,
+    maintaining conversation history using in-memory storage.
     """
     print(f"Received HTTP chat request for kb_id: {kb_id}")
     
     try:
-        # Instantiate the agent executor for this KB
-        print(f"Creating agent executor for kb_id: {kb_id}")
-        agent_executor = create_agent_executor(kb_id=kb_id)
+        # --- Memory Management (Load from DB) ---
+        print(f"Loading conversation history for kb_id: {kb_id} from DB...")
+        db_history = db_manager.get_conversation_history(kb_id)
+        
+        # Create a new memory instance for this request
+        memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+        
+        # Populate memory from DB history
+        for msg in db_history:
+            if msg.get('message_type') == 'human':
+                memory.chat_memory.add_user_message(msg.get('content', ''))
+            elif msg.get('message_type') == 'ai':
+                 memory.chat_memory.add_ai_message(msg.get('content', ''))
+        
+        print(f"Populated memory for kb_id: {kb_id} with {len(db_history)} messages from DB.")
+        # --- End Memory Management ---
+
+        # Instantiate the agent executor for this KB, passing the populated memory
+        print(f"Creating agent executor with memory for kb_id: {kb_id}")
+        # Pass the specific memory object for this conversation
+        # AgentExecutor doesn't take memory directly with from_template prompt
+        agent_executor = create_agent_executor(kb_id=kb_id) # REMOVED memory argument
         print(f"Agent executor created successfully for kb_id: {kb_id}")
         
-        # Use an empty chat history for now (stateless)
-        chat_history = []
-        
-        # Prepare the user message
+        # Prepare the user message (Memory interaction is handled by AgentExecutor)
         user_message = request.message
-        
-        # Add the message to history (for this request only)
-        chat_history.append(HumanMessage(content=user_message))
-        
-        # Prepare input for the agent
-        input_data = {"input": user_message, "chat_history": chat_history[:-1]}
+
+        # --- Format history string from memory for the prompt --- 
+        # Load history variables from the memory object
+        memory_variables = memory.load_memory_variables({})
+        # Extract the history string (default key is usually 'history', but ours is 'chat_history')
+        history_string = memory_variables.get('chat_history', '') 
+        # Ensure it's a string, ConversationBufferMemory with return_messages=True
+        # might return a list of BaseMessage objects. Format if needed.
+        if not isinstance(history_string, str):
+            # Simple formatting for list of messages
+            formatted_history = []
+            for msg in history_string:
+                if isinstance(msg, HumanMessage):
+                    formatted_history.append(f"Human: {msg.content}")
+                elif isinstance(msg, AIMessage):
+                    formatted_history.append(f"AI: {msg.content}")
+            history_string = "\n".join(formatted_history)
+        # --- End History Formatting --- 
+                
+        # Prepare input for the agent (AgentExecutor handles loading memory now)
+        # The memory object automatically provides the "chat_history" variable
+        # We now need to pass the formatted history string manually
+        input_data = {
+            "input": user_message,
+            "chat_history": history_string # Pass the formatted string history
+        }
         
         # Invoke the agent in a separate thread to prevent blocking
         print(f"Invoking agent ({kb_id}) for message: {user_message}")
@@ -565,6 +694,19 @@ async def chat_endpoint(kb_id: str, request: ChatRequest):
         # Clean the output before returning
         cleaned_output = clean_agent_output(agent_output)
         print(f"Agent ({kb_id}) cleaned output: {cleaned_output}")
+
+        # --- Save Interaction to DB ---
+        # Only save if the agent generated some output
+        if cleaned_output is not None:
+            print(f"Saving interaction to conversation history for kb_id: {kb_id}...")
+            # Save user message (which was in input_data['input'])
+            save_user_success = db_manager.add_conversation_message(kb_id, 'human', user_message)
+            # Save AI response (the final cleaned output)
+            save_ai_success = db_manager.add_conversation_message(kb_id, 'ai', cleaned_output)
+            if not save_user_success or not save_ai_success:
+                # Log an error if saving failed, but don't fail the request
+                print(f"Warning: Failed to save full interaction to DB for kb_id: {kb_id}")
+        # --- End Save Interaction ---
         
         # Extract confidence score (min distance) if available from intermediate steps
         min_distance = None
@@ -587,17 +729,28 @@ async def chat_endpoint(kb_id: str, request: ChatRequest):
                         break 
         
         # Check for handoff using the cleaned output
-        if cleaned_output == "HANDOFF_REQUIRED":
-            return ChatResponse(
-                content="This question requires human assistance.",
-                type="handoff",
-                confidence_score=confidence_decimal # Pass decimal score
-            )
+        # Instead of exact match, check if the polite handoff marker is present
+        handoff_marker = "(needs help)"
+        final_content = cleaned_output
+        response_type = "answer" # Default to answer
+
+        if cleaned_output.endswith(handoff_marker):
+            print(f"Handoff marker found in agent output for {kb_id}.")
+            # Remove the marker from the content sent to the user
+            final_content = cleaned_output[:-len(handoff_marker)].strip()
+            response_type = "handoff" # Set type to handoff
+            # Optionally, you could trigger other backend actions here (e.g., notify human agent)
+        # if cleaned_output == "HANDOFF_REQUIRED": # OLD check
+        #     return ChatResponse(
+        #         content="This question requires human assistance.",
+        #         type="handoff",
+        #         confidence_score=confidence_decimal # Pass decimal score
+        #     )
         
         # Return the agent's cleaned response
         return ChatResponse(
-            content=cleaned_output, # Return cleaned output
-            type="answer",
+            content=final_content, # Return potentially stripped content
+            type=response_type, # Return correct type ('answer' or 'handoff')
             confidence_score=confidence_decimal # Pass decimal score
         )
         

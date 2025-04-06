@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 # from langchain_community.embeddings import HuggingFaceEmbeddings # Deprecated
 from langchain_huggingface import HuggingFaceEmbeddings # New import path
 from langchain_openai import ChatOpenAI # Using OpenAI wrapper for DeepSeek
+from langchain_google_genai import ChatGoogleGenerativeAI # Add Gemini import
 import chromadb
 from chromadb.api.types import EmbeddingFunction, Documents, Embeddings # ChromaDB types
 
@@ -12,7 +13,8 @@ load_dotenv()
 CHROMADB_PATH = os.getenv("CHROMADB_PATH", "./chromadb_data")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE") # Should be set in .env, e.g., "https://api.deepseek.com/v1"
-DEEPSEEK_MODEL_NAME = "deepseek-chat" # Hardcoded model name as requested
+# DEEPSEEK_MODEL_NAME = "deepseek-chat" # Hardcoded model name as requested - Moved to LLM init block
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") # Read Google API Key
 
 # --- SQLite Metadata DB --- 
 # For local development, use a local path
@@ -41,18 +43,34 @@ chroma_embedding_function = LangchainEmbeddingFunctionWrapper(lc_embedding_funct
 
 # --- LLM Initialization ---
 llm = None
-if DEEPSEEK_API_KEY and DEEPSEEK_API_BASE:
-    llm = ChatOpenAI(
-        model=DEEPSEEK_MODEL_NAME,
-        api_key=DEEPSEEK_API_KEY,
-        base_url=DEEPSEEK_API_BASE, # Point to DeepSeek endpoint
-        # temperature=0.7 # Example: You can uncomment and set temperature if needed
-    )
-    print(f"LLM: Initialized {DEEPSEEK_MODEL_NAME} via OpenAI wrapper pointing to {DEEPSEEK_API_BASE}")
-elif not DEEPSEEK_API_KEY:
-    print("Warning: DEEPSEEK_API_KEY not found in .env. LLM not initialized.")
-elif not DEEPSEEK_API_BASE:
-     print("Warning: DEEPSEEK_API_BASE not found in .env. LLM not initialized.")
+# Prioritize Google Gemini if API key is available
+if GOOGLE_API_KEY:
+    try:
+        # Explicitly pass the key, though it often reads from env var too
+        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GOOGLE_API_KEY)
+        print(f"LLM: Initialized Google Gemini Flash (gemini-1.5-flash)")
+    except Exception as e:
+        print(f"Warning: Failed to initialize Google Gemini even though key was found: {e}")
+        llm = None # Ensure llm is None if initialization fails
+
+# Fallback to DeepSeek if Gemini is not initialized and DeepSeek keys are available
+if llm is None and DEEPSEEK_API_KEY and DEEPSEEK_API_BASE:
+    try:
+        DEEPSEEK_MODEL_NAME = "deepseek-chat" # Define model name here
+        llm = ChatOpenAI(
+            model=DEEPSEEK_MODEL_NAME,
+            api_key=DEEPSEEK_API_KEY,
+            base_url=DEEPSEEK_API_BASE, # Point to DeepSeek endpoint
+            # temperature=0.7 # Example: You can uncomment and set temperature if needed
+        )
+        print(f"LLM: Initialized {DEEPSEEK_MODEL_NAME} via OpenAI wrapper pointing to {DEEPSEEK_API_BASE}")
+    except Exception as e:
+        print(f"Warning: Failed to initialize DeepSeek: {e}")
+        llm = None # Ensure llm is None if initialization fails
+
+# Final check if any LLM was initialized
+if llm is None:
+     print("Warning: No LLM could be initialized. Check API keys and base URLs in .env.")
 
 
 print("Configuration loaded.")
