@@ -2,7 +2,7 @@ import os
 import chromadb
 from chromadb.errors import NotFoundError
 from chromadb.config import Settings
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from chromadb.api.models.Collection import Collection
 from config import CHROMADB_PATH, chroma_embedding_function
 import data_processor
@@ -242,6 +242,66 @@ class KBManager:
         except Exception as e:
             print(f"Error deleting collection {kb_id}: {e}")
             return False
+
+    def get_kb_content(self, kb_id: str, limit: Optional[int] = None, offset: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Retrieves documents, IDs, and total count from a knowledge base collection,
+        with optional pagination.
+
+        Args:
+            kb_id: ID of the knowledge base to query.
+            limit: Optional maximum number of documents to return.
+            offset: Optional starting offset for retrieving documents.
+
+        Returns:
+            A dictionary containing:
+                - 'documents': List of document strings.
+                - 'ids': List of corresponding document IDs.
+                - 'total_count': Total number of documents in the collection.
+                - 'limit': The limit used.
+                - 'offset': The offset used.
+            Returns an empty dictionary structure with total_count 0 if KB not found.
+        
+        Raises:
+            Exception: If there is an unexpected error retrieving the collection content.
+        """
+        try:
+            collection = self.client.get_collection(name=kb_id) # Get collection first
+            total_count = collection.count()
+            
+            # Prepare arguments for get(), filtering out None values
+            get_args = {
+                'include': ['documents'] # Only fetch docs. IDs are returned by default.
+            }
+            if limit is not None:
+                get_args['limit'] = limit
+            if offset is not None:
+                get_args['offset'] = offset
+
+            results = collection.get(**get_args)
+            
+            return {
+                "documents": results.get('documents', []),
+                "ids": results.get('ids', []),
+                "total_count": total_count,
+                "limit": limit,
+                "offset": offset
+            }
+
+        except NotFoundError:
+            print(f"Collection {kb_id} not found when trying to get content.")
+            # Return structure indicating not found but not an error state
+            return {
+                "documents": [],
+                "ids": [],
+                "total_count": 0,
+                "limit": limit,
+                "offset": offset
+            }
+        except Exception as e:
+            print(f"Error retrieving content from KB {kb_id}: {e}")
+            # Raise the exception to be handled by the API layer
+            raise e 
 
 # Singleton instance
 kb_manager = KBManager()
