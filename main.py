@@ -4,11 +4,15 @@ import uuid
 import time
 import asyncio # <--- Import asyncio
 import re  # For splitting sentences
-from fastapi import FastAPI, HTTPException, UploadFile, File, Body, status, Query # Removed WebSocket, WebSocketDisconnect
+import json # For formatting SSE data
+from fastapi import FastAPI, HTTPException, UploadFile, File, Body, status, Query, Request # Added Request
+from fastapi.responses import StreamingResponse # Added StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 from langchain_core.messages import HumanMessage, AIMessage # Import message types
 from fastapi.middleware.cors import CORSMiddleware # Import CORS middleware
+import datetime
+import os
 
 # Import core components
 import data_processor
@@ -19,6 +23,7 @@ from config import llm # Import the initialized LLM
 from file_parser import parse_file, SUPPORTED_EXTENSIONS # Import the file parser
 
 # --- Initialize SQLite DB --- 
+# Ensure the DB and tables are created when the app starts
 db_manager.init_db()
 
 # --- Pydantic Models ---
@@ -98,11 +103,23 @@ class KBContentResponse(BaseModel):
     offset: Optional[int] = None
     content: List[KBContentItem]
 
+# --- NEW: Models for listing uploaded files ---
+class UploadedFileInfo(BaseModel):
+    """Information about a single uploaded file."""
+    filename: str
+    file_size: Optional[int] = None
+    content_type: Optional[str] = None
+    upload_timestamp: datetime.datetime # Changed from str to datetime for better typing
+    
+class ListFilesResponse(BaseModel):
+    """Response containing a list of uploaded file information."""
+    kb_id: str
+    files: List[UploadedFileInfo]
+
 # --- Models for HTTP Chat Endpoint ---
 class ChatRequest(BaseModel):
     """Request body for chat interactions via HTTP."""
     message: str = Field(..., description="User message to the agent")
-    # kb_id: str = Field(..., description="Knowledge base ID") # Removed: Redundant as kb_id is in the path
     
 class ChatResponse(BaseModel):
     """Response from the agent via HTTP."""
@@ -120,7 +137,7 @@ app = FastAPI(
 # --- CORS Middleware Configuration ---
 # Allow requests from all origins during development
 # In production, replace "*" with the specific origin(s) of your frontend
-origins = ["*"] 
+origins = ["http://localhost:3002", "http://127.0.0.1:3002"] 
 
 app.add_middleware(
     CORSMiddleware,
@@ -128,6 +145,7 @@ app.add_middleware(
     allow_credentials=True, # Allows cookies if needed (not used here, but often useful)
     allow_methods=["*"],    # Allows all methods (GET, POST, etc.)
     allow_headers=["*"],    # Allows all headers
+    expose_headers=["content-type", "content-length"]
 )
 # --- End CORS Configuration ---
 
@@ -139,68 +157,28 @@ if not llm:
 # --- Utility Functions ---
 def clean_agent_output(text: str) -> str:
     """Removes surrounding markdown code blocks (```) and single backticks."""
-    text = text.strip()
-    # Remove triple backticks block with optional language hint
-    if text.startswith("```") and text.endswith("```"):
-        lines = text.split('\n', 1)
-        if len(lines) > 1:
-            # Check if the first line looks like a language hint (e.g., ```python)
-            if not lines[0].strip().startswith("```") or len(lines[0].strip()) > 6: # Simple check
-                 text = lines[1] # Assume first line is lang hint, take the rest
-            else:
-                 text = text[3:-3].strip() # Just remove backticks
-        else:
-            text = text[3:-3].strip() # Just remove backticks if no newline
-    # Remove single backticks
-    elif text.startswith("`") and text.endswith("`"):
-        text = text[1:-1].strip()
-    return text
+    original_text = text
+    cleaned_text = text.strip()
+    # print(f"clean_agent_output: Original='{original_text}' Stripped='{cleaned_text}'") # Optional: less verbose logging
 
-def chunk_response(text, max_chunk_size=1000):
-    """
-    Splits a long text response into smaller chunks, trying to break at sentence boundaries.
-    Returns a list of chunks.
-    """
-    # Clean the text *before* chunking
-    text = clean_agent_output(text)
-    
-    if len(text) <= max_chunk_size:
-        return [text]  # Return as single chunk if already small enough
-    
-    # Split by sentences and build chunks that don't exceed max_chunk_size
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    chunks = []
-    current_chunk = ""
-    
-    for sentence in sentences:
-        # If single sentence is longer than max size, force-split it
-        if len(sentence) > max_chunk_size:
-            # Add any existing content to chunks
-            if current_chunk:
-                chunks.append(current_chunk)
-                current_chunk = ""
-            
-            # Split long sentence by size
-            for i in range(0, len(sentence), max_chunk_size):
-                chunks.append(sentence[i:i+max_chunk_size])
-            continue
-            
-        # If adding this sentence would exceed max size, start a new chunk
-        if len(current_chunk) + len(sentence) + 1 > max_chunk_size:
-            chunks.append(current_chunk)
-            current_chunk = sentence
-        else:
-            # Add to current chunk with space if not empty
-            if current_chunk:
-                current_chunk += " " + sentence
-            else:
-                current_chunk = sentence
-    
-    # Add the last chunk if it has content
-    if current_chunk:
-        chunks.append(current_chunk)
-        
-    return chunks
+    # Remove leading/trailing code blocks (``` optional_lang newline ... newline ```)
+    cleaned_text = re.sub(r'^```(?:[a-zA-Z0-9_]+)?\s*?\n(.*?)\n```$\s*', r'\1', cleaned_text, flags=re.DOTALL | re.MULTILINE)
+    # Remove leading/trailing code blocks (```...```) on a single line
+    cleaned_text = re.sub(r'^```(.*?)```$\s*', r'\1', cleaned_text)
+    # Remove leading/trailing single backticks
+    cleaned_text = re.sub(r'^`(.*?)`$\s*', r'\1', cleaned_text)
+    # Remove just trailing ``` that might be left over
+    cleaned_text = re.sub(r'\n```$\s*', '', cleaned_text) 
+    cleaned_text = re.sub(r'```$\s*', '', cleaned_text) 
+
+    final_cleaned = cleaned_text.strip()
+    if final_cleaned != original_text.strip():
+        print(f"clean_agent_output: Cleaned from '{original_text.strip()}' to '{final_cleaned}'")
+    # else:
+        # print("clean_agent_output: No changes made.") # Optional: less verbose logging
+    return final_cleaned
+
+# Removed chunk_response function - no longer needed with SSE generator
 
 # --- HTTP Endpoints ---
 
@@ -296,29 +274,23 @@ async def populate_agent_from_json(kb_id: str, request: PopulateAgentJSONRequest
 async def delete_agent(kb_id: str):
     """
     Deletes an agent instance, its associated knowledge base (ChromaDB),
-    and any stored original JSON payloads (SQLite).
+    stored original JSON payloads (SQLite), and uploaded file records (SQLite).
     """
     print(f"Received request to delete agent KB and associated data: {kb_id}")
     
-    # Attempt to delete from ChromaDB first
-    kb_delete_success = False
+    # --- Delete File Records (SQLite) ---
+    file_records_deleted = False
     try:
-        kb_delete_success = kb_manager.delete_kb(kb_id)
-        if kb_delete_success:
-            print(f"ChromaDB deletion process completed for KB {kb_id}.")
+        file_records_deleted = db_manager.delete_uploaded_files(kb_id)
+        if file_records_deleted:
+            print(f"SQLite file record deletion process completed for KB {kb_id}.")
         else:
-            # This indicates an internal error during ChromaDB deletion attempt
-            print(f"ChromaDB deletion process failed internally for KB {kb_id}.")
-            # We might still proceed to delete metadata, or halt here.
-            # Let's proceed for now to ensure cleanup attempt.
-            
+            print(f"SQLite file record deletion failed internally for KB {kb_id}.")
     except Exception as e:
-        print(f"Unexpected error during ChromaDB deletion of KB {kb_id}: {e}")
-        import traceback
-        traceback.print_exc()
-        # Decide if we should proceed with metadata deletion. Let's proceed.
+        print(f"Unexpected error during SQLite file record deletion for KB {kb_id}: {e}")
+        # Log traceback
 
-    # Attempt to delete associated JSON payloads from SQLite
+    # --- Delete JSON Payloads (SQLite) ---
     payload_delete_success = False
     try:
         payload_delete_success = db_manager.delete_json_payloads(kb_id)
@@ -326,23 +298,43 @@ async def delete_agent(kb_id: str):
              print(f"SQLite JSON payload deletion process completed for KB {kb_id}.")
         else:
             print(f"SQLite JSON payload deletion failed internally for KB {kb_id}.")
-            
     except Exception as e:
-        print(f"Unexpected error during SQLite deletion for KB {kb_id}: {e}")
-        import traceback
-        traceback.print_exc()
-        # The overall operation might be considered partially failed here.
+        print(f"Unexpected error during SQLite JSON payload deletion for KB {kb_id}: {e}")
+        # Log traceback
+
+    # --- Delete Knowledge Base (ChromaDB) ---
+    kb_delete_success = False
+    try:
+        kb_delete_success = kb_manager.delete_kb(kb_id)
+        if kb_delete_success:
+            print(f"ChromaDB deletion process completed for KB {kb_id}.")
+        else:
+            print(f"ChromaDB deletion process failed internally for KB {kb_id}.")
+    except Exception as e:
+        print(f"Unexpected error during ChromaDB deletion of KB {kb_id}: {e}")
+        # Log traceback
 
     # Determine overall status
-    if kb_delete_success and payload_delete_success:
-         return StatusResponse(status="success", message=f"Agent {kb_id} and associated data deleted successfully (or did not exist).")
-    elif kb_delete_success:
-         return StatusResponse(status="warning", message=f"Agent KB {kb_id} deleted, but failed to delete associated JSON metadata.")
-    elif payload_delete_success:
-         return StatusResponse(status="warning", message=f"Associated JSON metadata for {kb_id} deleted, but failed to delete the main Agent KB.")
-    else:
-         # Both failed or Chroma failed and metadata wasn't attempted/failed
-         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to delete knowledge base {kb_id} and/or its associated metadata due to internal errors.")
+    all_deleted = kb_delete_success and payload_delete_success and file_records_deleted
+    any_deleted = kb_delete_success or payload_delete_success or file_records_deleted
+
+    if all_deleted:
+         return StatusResponse(status="success", message=f"Agent {kb_id} and all associated data deleted successfully (or did not exist).")
+    elif any_deleted:
+        # Construct a more informative warning message
+        deleted_parts = []
+        failed_parts = []
+        if kb_delete_success: deleted_parts.append("KB")
+        else: failed_parts.append("KB")
+        if payload_delete_success: deleted_parts.append("JSON metadata")
+        else: failed_parts.append("JSON metadata")
+        if file_records_deleted: deleted_parts.append("File records")
+        else: failed_parts.append("File records")
+        
+        message = f"Partial deletion for Agent {kb_id}. Successfully deleted: {', '.join(deleted_parts)}. Failed to delete: {', '.join(failed_parts)}."
+        return StatusResponse(status="warning", message=message)
+    else: # Nothing was deleted successfully
+         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to delete knowledge base {kb_id} and all associated metadata due to internal errors.")
 
 @app.get("/agents/{kb_id}/json", response_model=List[Dict[str, Any]])
 async def get_agent_json_payloads(kb_id: str):
@@ -453,66 +445,96 @@ async def human_response_endpoint(kb_id: str, request: HumanResponseRequest):
 @app.post("/agents/{kb_id}/upload", response_model=StatusResponse)
 async def upload_to_kb(kb_id: str, file: UploadFile = File(...)):
     """
-    Accepts a file upload, parses its content based on extension,
+    Accepts a file upload, parses its content, stores file metadata,
     and adds the extracted text to the specified knowledge base.
     """
-    print(f"Received file upload request for kb_id: {kb_id}. Filename: {file.filename}")
+    print(f"Received file upload request for kb_id: {kb_id}. Filename: {file.filename}, Content-Type: {file.content_type}")
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided with the upload.")
 
-    # Parse the file content using the file_parser module
+    # --- Store File Metadata ---
+    # Get file size (requires reading the file or seeking)
+    file.file.seek(0, os.SEEK_END)
+    file_size = file.file.tell()
+    file.file.seek(0) # Reset file pointer for parsing
+    print(f"Storing file record for '{file.filename}' ({file_size} bytes)... ")
+    record_success = db_manager.add_uploaded_file_record(
+        kb_id=kb_id,
+        filename=file.filename,
+        file_size=file_size,
+        content_type=file.content_type
+    )
+    if not record_success:
+        # Log the error but proceed with parsing and adding to KB? 
+        # Or raise an error here? Let's log and proceed for now.
+        print(f"Warning: Failed to store file metadata record for '{file.filename}' in KB {kb_id}. Continuing with KB update.")
+
+    # --- Parse File Content ---
     try:
         extracted_text = await parse_file(file)
     except Exception as e:
-        # Catch unexpected errors during parsing itself
         print(f"Internal server error during file parsing for {file.filename}: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Server error processing file: {str(e)}")
-
-    # Check if parsing was successful and returned text
+    
     if extracted_text is None:
-        # parse_file returns None for unsupported types or major parsing errors
-        # It logs the specific reason internally
         raise HTTPException(
             status_code=400, 
             detail=f"Unsupported file type or failed to parse file: {file.filename}. Supported types: {', '.join(SUPPORTED_EXTENSIONS)}"
         )
-    
     if not extracted_text.strip():
-        # Handle cases where the file is valid but contains no text
         print(f"File {file.filename} parsed successfully but contained no text content.")
         return StatusResponse(status="success", message="File processed, but no text content found to add.")
-
-    # Add the extracted text to the knowledge base
-    # kb_manager.add_to_kb handles chunking internally
+    
     print(f"Adding extracted text from {file.filename} to KB {kb_id}...")
     try:
         success = kb_manager.add_to_kb(kb_id, extracted_text)
         if success:
             print(f"Successfully added content from {file.filename} to KB {kb_id}.")
-            return StatusResponse(status="success", message=f"File '{file.filename}' processed and added to knowledge base {kb_id}.")
+            return StatusResponse(status="success", message=f"File '{file.filename}' processed, metadata stored, and content added to knowledge base {kb_id}.")
         else:
-            # This might happen if add_to_kb fails for some reason (e.g., post-processing resulted in empty content)
             print(f"Failed to add content from {file.filename} to KB {kb_id} (add_to_kb returned False).")
-            # We might return a 500 or a more specific error depending on why add_to_kb might fail
             raise HTTPException(status_code=500, detail="Failed to add extracted content to the knowledge base after parsing.")
-            
     except Exception as e:
         print(f"Error adding parsed content from {file.filename} to KB {kb_id}: {e}")
         import traceback
         traceback.print_exc()
-        # This indicates an error interacting with the KB store (ChromaDB)
         raise HTTPException(status_code=500, detail=f"Failed to update knowledge base: {str(e)}")
 
 
-# --- HTTP Chat Endpoint ---
+# --- NEW: Endpoint to list uploaded files ---
+@app.get("/agents/{kb_id}/files", response_model=ListFilesResponse)
+async def list_uploaded_files_endpoint(kb_id: str):
+    """
+    Lists metadata for all files uploaded to a specific knowledge base.
+    """
+    print(f"Received request to list uploaded files for KB: {kb_id}")
+    try:
+        # Verify KB exists (optional but good practice)
+        # _ = kb_manager.create_or_get_kb(kb_id) # This might raise NotFoundError if KB doesn't exist
+        
+        file_info_list = db_manager.get_uploaded_files(kb_id)
+        
+        # Map the list of dicts to a list of UploadedFileInfo models
+        files_response = [UploadedFileInfo(**info) for info in file_info_list]
+        
+        return ListFilesResponse(kb_id=kb_id, files=files_response)
+    # except NotFoundError:
+    #     raise HTTPException(status_code=404, detail=f"Knowledge base {kb_id} not found.")
+    except Exception as e:
+        print(f"Error listing uploaded files for KB {kb_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to list uploaded files: {str(e)}")
+
+
+# --- HTTP Chat Endpoint (Non-Streaming - Kept for compatibility/testing) ---
 @app.post("/agents/{kb_id}/chat", response_model=ChatResponse)
 async def chat_endpoint(kb_id: str, request: ChatRequest):
     """
-    HTTP endpoint for chat interactions with an agent.
-    Provides a direct way to interact with the agent without WebSockets.
+    HTTP endpoint for non-streaming chat interactions with an agent.
     """
     print(f"Received HTTP chat request for kb_id: {kb_id}")
     
@@ -523,7 +545,6 @@ async def chat_endpoint(kb_id: str, request: ChatRequest):
         print(f"Agent executor created successfully for kb_id: {kb_id}")
         
         # Use an empty chat history for now (stateless)
-        # In a production app, you might want to implement session-based history
         chat_history = []
         
         # Prepare the user message
@@ -582,7 +603,7 @@ async def chat_endpoint(kb_id: str, request: ChatRequest):
         
     except Exception as e:
         import traceback
-        print(f"Error in HTTP chat endpoint for {kb_id}: {e}\n{traceback.format_exc()}")
+        print(f"Error in HTTP chat endpoint for {kb_id}: {e}\\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error processing chat request: {str(e)}")
 
 
