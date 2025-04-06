@@ -79,6 +79,7 @@ class HumanResponseRequest(BaseModel):
     """Request body for submitting human response and potentially updating KB."""
     human_response: str
     update_kb: bool = False # Flag to indicate if KB should be updated
+    kb_update_text: Optional[str] = None # Optional text specifically for KB update
 
 class StatusResponse(BaseModel):
     """Generic status response."""
@@ -144,6 +145,34 @@ class ChatResponse(BaseModel):
     content: str
     type: str = "answer"  # Default is regular answer
     confidence_score: Optional[float] = None # Lower is better (e.g., distance)
+
+# --- NEW: Models for Conversations Listing ---
+class ConversationPreview(BaseModel):
+    """Preview information for a single conversation."""
+    last_message_timestamp: datetime.datetime
+    last_message_preview: str
+    message_count: int
+    needs_human_attention: bool  # Flag indicating if conversation requires handoff
+    
+class KBConversationGroup(BaseModel):
+    """Conversations for a single knowledge base."""
+    kb_id: str
+    name: Optional[str] = None
+    conversation: ConversationPreview
+    
+class ListConversationsResponse(BaseModel):
+    """Response model listing all conversations grouped by KB."""
+    conversations: List[KBConversationGroup]
+
+# --- NEW: Models for Human Chat and Knowledge Base Updates ---
+class HumanChatRequest(BaseModel):
+    """Request body for human agent chat response."""
+    message: str = Field(..., description="The human agent's response message")
+
+class HumanKnowledgeRequest(BaseModel):
+    """Request body for adding human-verified knowledge to the KB."""
+    knowledge_text: str = Field(..., description="The text to be added to the knowledge base")
+    source_conversation_id: Optional[str] = Field(None, description="Optional: ID of the conversation this knowledge came from")
 
 # --- FastAPI App Initialization ---
 app = FastAPI(
@@ -428,45 +457,76 @@ async def get_kb_content_endpoint(
 @app.post("/agents/{kb_id}/human_response", response_model=StatusResponse)
 async def human_response_endpoint(kb_id: str, request: HumanResponseRequest):
     """
-    Receives a human response after a handoff and optionally updates the KB.
+    Receives a human response after a handoff, adds it to the conversation history,
+    and optionally updates the KB.
     """
     print(f"Received human response for kb_id: {kb_id}. Update KB: {request.update_kb}")
     
-    if request.update_kb and request.human_response:
-        print(f"Attempting to update KB {kb_id} with human response...")
+    # --- Add Human Agent response to conversation history FIRST --- 
+    # We do this regardless of whether KB is updated, to keep the chat flow intact.
+    if request.human_response and request.human_response.strip():
+        print(f"Adding human agent response to history for KB {kb_id}...")
+        history_save_success = db_manager.add_conversation_message(
+            kb_id=kb_id, 
+            message_type='human_agent', # Differentiate from end-user ('human')
+            content=request.human_response
+        )
+        if not history_save_success:
+            # Log a warning but don't necessarily fail the whole request
+            print(f"Warning: Failed to save human agent response to conversation history for KB {kb_id}. Continuing...")
+    else:
+        print(f"No human agent response content provided to add to history for KB {kb_id}.")
+        # Decide if this should be an error or just proceed.
+        # For now, proceed, but the frontend should ideally validate this.
+    
+    # --- Handle KB Update (Optional) --- 
+    kb_update_message = "Knowledge base not updated."
+    if request.update_kb:
+        print(f"Attempting to update KB {kb_id} with human-provided text...")
         try:
-            # Use the existing KBManager function to add the response, passing metadata
-            success = kb_manager.add_to_kb(
-                kb_id=kb_id, 
-                text_to_add=request.human_response, 
-                metadata={"source": "human_verified"}
-            )
-            if success:
-                print(f"Successfully updated KB {kb_id} with human response.")
-                # --- Log the update --- 
-                log_success = db_manager.log_kb_update(kb_id, request.human_response)
-                if not log_success:
-                    # Log a warning if logging fails, but don't fail the main operation
-                    print(f"Warning: Failed to log KB update for {kb_id} after successful addition.")
-                # --- End Log --- 
-                return StatusResponse(status="success", message="Human response received and knowledge base updated.")
+            # Determine which text to use for KB update
+            text_for_kb = request.kb_update_text if request.kb_update_text else request.human_response
+            
+            if not text_for_kb or not text_for_kb.strip():
+                print(f"No valid text provided for KB update. KB {kb_id} was not updated.")
+                kb_update_message = "Knowledge base was not updated (no valid text provided)."
+                # Note: We still return success below because the response *was* received and added to history.
             else:
-                # add_to_kb might return False if text is empty after stripping
-                print(f"Failed to update KB {kb_id} (possibly empty response provided). Response was not added.")
-                # Still return success for receiving the response, but message indicates KB not updated
-                return StatusResponse(status="success", message="Human response received, but knowledge base was not updated (response might be empty)." )
+                # Use the existing KBManager function to add the response, passing metadata
+                success = kb_manager.add_to_kb(
+                    kb_id=kb_id, 
+                    text_to_add=text_for_kb, 
+                    metadata={"source": "human_verified"}
+                )
+                if success:
+                    print(f"Successfully updated KB {kb_id} with human response.")
+                    kb_update_message = "Knowledge base updated."
+                    # --- Log the update --- 
+                    log_success = db_manager.log_kb_update(kb_id, text_for_kb)
+                    if not log_success:
+                        print(f"Warning: Failed to log KB update for {kb_id} after successful addition.")
+                    # --- End Log ---
+                else:
+                    # add_to_kb might return False if text is empty after stripping
+                    print(f"Failed to update KB {kb_id} (add_to_kb returned False). Response was not added.")
+                    kb_update_message = "Knowledge base was not updated (failed to add)."
+
         except Exception as e:
             print(f"Error updating KB {kb_id} with human response: {e}")
-            # Log the full traceback in a real application
-            # Return an error status specific to the KB update failure
-            # We might still consider the reception of the response a success at the endpoint level
-            # depending on requirements, but indicate the KB update failed.
-            # For simplicity, we'll raise an HTTP exception here.
-            raise HTTPException(status_code=500, detail=f"Human response received, but failed to update knowledge base: {str(e)}")
+            # Log traceback
+            import traceback
+            traceback.print_exc()
+            # We don't raise HTTPException here anymore, as the primary goal (receiving response)
+            # might have succeeded. We'll return a success status but report the KB issue in the message.
+            kb_update_message = f"Failed to update knowledge base due to error: {str(e)}"
     else:
-        # If update_kb is false or response is empty
+        # If update_kb is false
         print(f"Human response received for kb_id: {kb_id}. KB not updated (update_kb={request.update_kb}).")
-        return StatusResponse(status="success", message="Human response received, knowledge base not updated.")
+        # kb_update_message remains "Knowledge base not updated."
+
+    # Return overall success status for receiving the response
+    final_message = f"Human response received and added to history. {kb_update_message}"
+    return StatusResponse(status="success", message=final_message)
 
 
 # --- File Upload Endpoint ---
@@ -621,6 +681,179 @@ async def delete_chat_history_endpoint(kb_id: str):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to delete conversation history: {str(e)}")
 
+
+# --- NEW: Endpoint to list all conversations grouped by KB ---
+@app.get("/conversations", response_model=ListConversationsResponse)
+async def list_conversations_endpoint():
+    """
+    Lists all conversations grouped by knowledge base,
+    with preview information and handoff status.
+    Used by the human desk interface to show conversations requiring attention.
+    """
+    print("Received request to list all conversations with handoff status")
+    try:
+        # Get all available KBs
+        kb_info_list = kb_manager.list_kbs()
+        
+        # Initialize response list
+        conversations_list = []
+        
+        # For each KB, fetch the conversation history and determine handoff status
+        for kb_info in kb_info_list:
+            kb_id = kb_info.get('kb_id')
+            kb_name = kb_info.get('name')
+            
+            # Get conversation history for this KB
+            history = db_manager.get_conversation_history(kb_id)
+            
+            # Skip if no history exists
+            if not history or len(history) == 0:
+                continue
+                
+            # Count total messages
+            message_count = len(history)
+            
+            # Get the last message for preview
+            last_message = history[-1]
+            last_message_timestamp = last_message.get('timestamp', datetime.datetime.now())
+            last_message_content = last_message.get('content', '')
+            
+            # Create a short preview (first 50 chars)
+            preview = last_message_content[:50] + "..." if len(last_message_content) > 50 else last_message_content
+            
+            # Determine if handoff is needed
+            # Logic: If the last message is from the AI and contains handoff marker
+            needs_attention = False
+            if last_message.get('message_type') == 'ai':
+                content = last_message.get('content', '')
+                if "(needs help)" in content:
+                    needs_attention = True
+            
+            # Create the conversation preview
+            conversation_preview = ConversationPreview(
+                last_message_timestamp=last_message_timestamp,
+                last_message_preview=preview,
+                message_count=message_count,
+                needs_human_attention=needs_attention
+            )
+            
+            # Add to the response list
+            conversations_list.append(
+                KBConversationGroup(
+                    kb_id=kb_id,
+                    name=kb_name,
+                    conversation=conversation_preview
+                )
+            )
+        
+        return ListConversationsResponse(conversations=conversations_list)
+        
+    except Exception as e:
+        print(f"Error listing conversations: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to list conversations: {str(e)}")
+
+
+# --- NEW: Human Chat Endpoint ---
+@app.post("/agents/{kb_id}/human-chat", response_model=StatusResponse)
+async def human_chat_endpoint(kb_id: str, request: HumanChatRequest):
+    """
+    Endpoint for human agents to respond to conversations.
+    This only adds the response to the chat history.
+    """
+    print(f"Received human chat response for kb_id: {kb_id}")
+    
+    if not request.message or not request.message.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Message cannot be empty"
+        )
+    
+    # Add message to conversation history
+    history_save_success = db_manager.add_conversation_message(
+        kb_id=kb_id,
+        message_type='human_agent',
+        content=request.message
+    )
+    
+    if not history_save_success:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save message to conversation history"
+        )
+    
+    return StatusResponse(
+        status="success",
+        message="Human agent response added to conversation history"
+    )
+
+# --- NEW: Human Knowledge Addition Endpoint ---
+@app.post("/agents/{kb_id}/human-knowledge", response_model=StatusResponse)
+async def human_knowledge_endpoint(kb_id: str, request: HumanKnowledgeRequest):
+    """
+    Endpoint for human agents to add verified knowledge to the KB.
+    This only updates the knowledge base, not the chat history.
+    """
+    print(f"Received human knowledge addition for kb_id: {kb_id}")
+    
+    if not request.knowledge_text or not request.knowledge_text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Knowledge text cannot be empty"
+        )
+    
+    try:
+        # Prepare metadata, only including conversation_id if it's not None
+        metadata_dict = {"source": "human_verified"}
+        if request.source_conversation_id:
+            metadata_dict["conversation_id"] = request.source_conversation_id
+            
+        # Add to knowledge base with potentially filtered metadata
+        success = kb_manager.add_to_kb(
+            kb_id=kb_id,
+            text_to_add=request.knowledge_text,
+            metadata=metadata_dict # Pass the constructed dictionary
+        )
+        
+        if not success:
+            # Check kb_manager logs for specific reasons why add_to_kb might fail
+            print(f"kb_manager.add_to_kb returned False for KB {kb_id}") 
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to add knowledge to the knowledge base (internal KB error)"
+            )
+        
+        # Log the KB update
+        log_success = db_manager.log_kb_update(kb_id, request.knowledge_text)
+        if not log_success:
+            # Log warning but don't fail the request
+            print(f"Warning: Failed to log KB update for {kb_id}")
+        
+        return StatusResponse(
+            status="success",
+            message="Knowledge successfully added to the knowledge base"
+        )
+        
+    except HTTPException as http_exc:
+        # Re-raise known HTTP exceptions (like the 400 for empty text)
+        raise http_exc
+    except Exception as e:
+        # Catch potential errors during metadata creation or kb_manager call
+        print(f"Error adding knowledge to KB {kb_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        # Check if the error message indicates a metadata issue specifically
+        if "Expected metadata value to be a str, int, float or bool" in str(e):
+             raise HTTPException(
+                status_code=500,
+                detail=f"Failed to add knowledge to knowledge base: Metadata type error - {str(e)}"
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to add knowledge to knowledge base: {str(e)}"
+            )
 
 # --- HTTP Chat Endpoint (Now with Memory) ---
 @app.post("/agents/{kb_id}/chat", response_model=ChatResponse)
