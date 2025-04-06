@@ -4,7 +4,7 @@ import uuid
 import time
 import asyncio # <--- Import asyncio
 import re  # For splitting sentences
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File # Add UploadFile, File
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Body, status # Add Body, status
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 from langchain_core.messages import HumanMessage, AIMessage # Import message types
@@ -19,11 +19,18 @@ from file_parser import parse_file, SUPPORTED_EXTENSIONS # Import the file parse
 
 # --- Pydantic Models ---
 
+class CreateNamedAgentRequest(BaseModel):
+    """Request body for creating a new agent, optionally with a name."""
+    name: Optional[str] = Field(None, description="Optional human-readable name for the agent/KB", example="Sales Bot North America")
+
 class CreateAgentRequest(BaseModel):
-    """Request body for creating a new agent/KB."""
-    # Allows any valid JSON structure as input data
+    """(Deprecated by CreateNamedAgentRequest)"""
+    pass
+
+class PopulateAgentJSONRequest(BaseModel):
+    """Request body for populating an existing agent/KB with JSON data."""
     json_data: Dict[str, Any] = Field(
-        ..., 
+        ...,
         description="Arbitrary JSON data to populate the knowledge base.",
         example={
             "company_name": "Example Solutions Inc.",
@@ -48,8 +55,9 @@ class CreateAgentRequest(BaseModel):
     )
 
 class CreateAgentResponse(BaseModel):
-    """Response body after successfully creating an agent/KB."""
+    """Response body after successfully creating an agent/KB ID."""
     kb_id: str
+    name: Optional[str] = None # Add optional name
     message: str
 
 class HumanResponseRequest(BaseModel):
@@ -66,6 +74,7 @@ class StatusResponse(BaseModel):
 class KBInfo(BaseModel):
     """Information about a single Knowledge Base."""
     kb_id: str
+    name: Optional[str] = None # Add optional name
     summary: str # Replaced document_count with summary
     
 class ListKBsResponse(BaseModel):
@@ -156,51 +165,107 @@ def chunk_response(text, max_chunk_size=1000):
 
 # --- HTTP Endpoints ---
 
-@app.post("/agents", response_model=CreateAgentResponse, status_code=201)
-async def create_agent(request: CreateAgentRequest):
+@app.post("/agents", response_model=CreateAgentResponse, status_code=status.HTTP_201_CREATED)
+async def create_agent(request: CreateNamedAgentRequest = Body(None)): # Accept new request model, make body optional for backward compatibility maybe?
     """
-    Creates a new agent instance by processing input JSON data and
-    populating a dedicated knowledge base.
+    Creates a new empty agent instance (knowledge base collection),
+    optionally assigning it a name, and returns its unique ID.
+    If no request body is provided or name is null, creates an unnamed agent.
     """
-    print("Received request to create agent...")
+    agent_name = request.name if request else None
+    if agent_name:
+        print(f"Received request to create a new empty agent with name: '{agent_name}'...")
+    else:
+        print("Received request to create a new unnamed empty agent...")
+
     try:
         # 1. Generate a unique KB ID
-        # Using timestamp and a short UUID part for uniqueness and readability
         timestamp = int(time.time())
         short_uuid = str(uuid.uuid4())[:8]
         kb_id = f"kb_{timestamp}_{short_uuid}"
         print(f"Generated KB ID: {kb_id}")
 
+        # 2. Create the empty KB collection using kb_manager, passing the name
+        print(f"Creating empty KB collection: {kb_id}...")
+        _ = kb_manager.create_or_get_kb(kb_id, name=agent_name)
+        print(f"Empty KB collection {kb_id} created successfully.")
+
+        return CreateAgentResponse(
+            kb_id=kb_id, 
+            name=agent_name, 
+            message="Agent created successfully with an empty knowledge base."
+        )
+
+    except Exception as e:
+        print(f"Error creating agent KB: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to create agent knowledge base: {str(e)}")
+
+@app.post("/agents/{kb_id}/json", response_model=StatusResponse, status_code=status.HTTP_200_OK)
+async def populate_agent_from_json(kb_id: str, request: PopulateAgentJSONRequest):
+    """
+    Populates an existing agent's knowledge base using provided JSON data.
+    """
+    print(f"Received request to populate KB {kb_id} from JSON...")
+    try:
+        # 1. Verify KB exists (create_or_get_kb will retrieve it)
+        try:
+            kb_collection = kb_manager.create_or_get_kb(kb_id)
+            print(f"Verified KB collection exists: {kb_id}")
+        except Exception as get_err: # More specific error handling might be needed
+             print(f"Error accessing KB {kb_id} before population: {get_err}")
+             # If create_or_get_kb fails unexpectedly, it might indicate a deeper issue
+             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Knowledge base {kb_id} not found or inaccessible.")
+
         # 2. Process JSON data
         print("Extracting text from JSON data...")
         extracted_text = data_processor.extract_text_from_json(request.json_data)
-        if not extracted_text.strip():
-            print("Warning: No text extracted from JSON data.")
-            # Decide if this is an error or just an empty KB
-            # For now, let's allow empty KBs but maybe log a warning
-            # raise HTTPException(status_code=400, detail="No text content found in the provided JSON data.")
+        if not extracted_text or not extracted_text.strip():
+            print(f"Warning: No text extracted from JSON data for KB {kb_id}.")
+            return StatusResponse(status="success", message="KB exists, but no text content found in JSON to add.")
 
-        print("Chunking extracted text...")
-        text_chunks = data_processor.chunk_text(extracted_text)
-        print(f"Generated {len(text_chunks)} chunks.")
+        # 3. Add extracted text to the KB
+        print(f"Adding extracted text to KB {kb_id}...")
+        success = kb_manager.add_to_kb(kb_id, extracted_text)
 
-        # 3. Create and populate KB
-        print(f"Creating/getting KB collection: {kb_id}")
-        kb_collection = kb_manager.create_or_get_kb(kb_id)
-
-        if text_chunks:
-            print(f"Populating KB: {kb_id}")
-            kb_manager.populate_kb(kb_collection, text_chunks)
+        if success:
+            print(f"Successfully populated KB {kb_id} from JSON.")
+            return StatusResponse(status="success", message=f"Knowledge base {kb_id} populated successfully from JSON data.")
         else:
-            print(f"KB {kb_id} created but is empty as no text chunks were generated.")
+            print(f"Failed to add content from JSON to KB {kb_id} (add_to_kb returned False).")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to add extracted JSON content to the knowledge base.")
 
-        print(f"Agent/KB {kb_id} created successfully.")
-        return CreateAgentResponse(kb_id=kb_id, message="Agent knowledge base created successfully.")
-
+    except HTTPException as http_exc:
+        # Re-raise known HTTP exceptions
+        raise http_exc
     except Exception as e:
-        print(f"Error creating agent: {e}")
-        # Log the full error traceback here in a real application
-        raise HTTPException(status_code=500, detail=f"Failed to create agent knowledge base: {str(e)}")
+        print(f"Error populating KB {kb_id} from JSON: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to populate knowledge base from JSON: {str(e)}")
+
+
+@app.delete("/agents/{kb_id}", response_model=StatusResponse, status_code=status.HTTP_200_OK)
+async def delete_agent(kb_id: str):
+    """
+    Deletes an agent instance and its associated knowledge base.
+    """
+    print(f"Received request to delete agent KB: {kb_id}")
+    try:
+        success = kb_manager.delete_kb(kb_id)
+        if success:
+            print(f"Deletion process completed for KB {kb_id}.")
+            # delete_kb returns True if deleted or not found
+            return StatusResponse(status="success", message=f"Agent knowledge base {kb_id} deleted successfully (or did not exist).")
+        else:
+            # This indicates an internal error during deletion attempt
+            print(f"Deletion process failed internally for KB {kb_id}.")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to delete knowledge base {kb_id} due to an internal error.")
+    except Exception as e:
+        print(f"Unexpected error during deletion of KB {kb_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred while trying to delete knowledge base {kb_id}: {str(e)}")
+
 
 @app.get("/agents", response_model=ListKBsResponse)
 async def list_kbs_endpoint():
