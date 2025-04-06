@@ -14,6 +14,12 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE") # Should be set in .env, e.g., "https://api.deepseek.com/v1"
 DEEPSEEK_MODEL_NAME = "deepseek-chat" # Hardcoded model name as requested
 
+# --- SQLite Metadata DB --- 
+# For local development, use a local path
+# For Render deployment, we'd use /app/db via environment variable
+SQLITE_DB_DIR = os.getenv("SQLITE_DB_DIR", "./db") # Default to local ./db directory
+SQLITE_DB_PATH = os.path.join(SQLITE_DB_DIR, os.getenv("SQLITE_DB_FILENAME", "kb_metadata.sqlite"))
+
 # --- ChromaDB ---
 # Client is initialized in kb_manager.py
 
@@ -51,4 +57,5 @@ elif not DEEPSEEK_API_BASE:
 
 print("Configuration loaded.")
 print(f"ChromaDB Path: {CHROMADB_PATH}")
+print(f"SQLite DB Path: {SQLITE_DB_PATH}") # Add log for SQLite path
 

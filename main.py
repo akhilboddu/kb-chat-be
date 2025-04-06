@@ -4,7 +4,7 @@ import uuid
 import time
 import asyncio # <--- Import asyncio
 import re  # For splitting sentences
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Body, status # Add Body, status
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Body, status, Query # Add Body, status, Query
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 from langchain_core.messages import HumanMessage, AIMessage # Import message types
@@ -13,9 +13,13 @@ from fastapi.middleware.cors import CORSMiddleware # Import CORS middleware
 # Import core components
 import data_processor
 from kb_manager import kb_manager # Singleton instance
+import db_manager # Import the new DB manager
 from agent_manager import create_agent_executor
 from config import llm # Import the initialized LLM
 from file_parser import parse_file, SUPPORTED_EXTENSIONS # Import the file parser
+
+# --- Initialize SQLite DB --- 
+db_manager.init_db()
 
 # --- Pydantic Models ---
 
@@ -81,11 +85,24 @@ class ListKBsResponse(BaseModel):
     """Response containing a list of available KB information."""
     kbs: List[KBInfo]
 
+class KBContentItem(BaseModel):
+    """Represents a single item within the knowledge base content."""
+    id: str
+    document: str
+
+class KBContentResponse(BaseModel):
+    """Response model for listing the content of a Knowledge Base."""
+    kb_id: str
+    total_count: int
+    limit: Optional[int] = None
+    offset: Optional[int] = None
+    content: List[KBContentItem]
+
 # --- Models for HTTP Chat Endpoint ---
 class ChatRequest(BaseModel):
     """Request body for chat interactions via HTTP."""
     message: str = Field(..., description="User message to the agent")
-    kb_id: str = Field(..., description="Knowledge base ID")
+    # kb_id: str = Field(..., description="Knowledge base ID") # Removed: Redundant as kb_id is in the path
     
 class ChatResponse(BaseModel):
     """Response from the agent via HTTP."""
@@ -216,14 +233,23 @@ async def populate_agent_from_json(kb_id: str, request: PopulateAgentJSONRequest
              # If create_or_get_kb fails unexpectedly, it might indicate a deeper issue
              raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Knowledge base {kb_id} not found or inaccessible.")
 
-        # 2. Process JSON data
+        # 2. Store the original JSON payload in SQLite
+        print(f"Storing original JSON payload for KB {kb_id} in metadata DB...")
+        store_success = db_manager.add_json_payload(kb_id, request.json_data)
+        if not store_success:
+            # Log the error, but maybe don't fail the whole operation?
+            # Decide if this is critical. For now, we'll log and continue.
+            print(f"Warning: Failed to store original JSON payload for KB {kb_id} in metadata DB. Proceeding with KB population.")
+            # Alternatively, raise HTTPException(500, "Failed to store JSON metadata")
+
+        # 3. Process JSON data for ChromaDB
         print("Extracting text from JSON data...")
         extracted_text = data_processor.extract_text_from_json(request.json_data)
         if not extracted_text or not extracted_text.strip():
             print(f"Warning: No text extracted from JSON data for KB {kb_id}.")
             return StatusResponse(status="success", message="KB exists, but no text content found in JSON to add.")
 
-        # 3. Add extracted text to the KB
+        # 4. Add extracted text to the KB (ChromaDB)
         print(f"Adding extracted text to KB {kb_id}...")
         success = kb_manager.add_to_kb(kb_id, extracted_text)
 
@@ -247,25 +273,73 @@ async def populate_agent_from_json(kb_id: str, request: PopulateAgentJSONRequest
 @app.delete("/agents/{kb_id}", response_model=StatusResponse, status_code=status.HTTP_200_OK)
 async def delete_agent(kb_id: str):
     """
-    Deletes an agent instance and its associated knowledge base.
+    Deletes an agent instance, its associated knowledge base (ChromaDB),
+    and any stored original JSON payloads (SQLite).
     """
-    print(f"Received request to delete agent KB: {kb_id}")
+    print(f"Received request to delete agent KB and associated data: {kb_id}")
+    
+    # Attempt to delete from ChromaDB first
+    kb_delete_success = False
     try:
-        success = kb_manager.delete_kb(kb_id)
-        if success:
-            print(f"Deletion process completed for KB {kb_id}.")
-            # delete_kb returns True if deleted or not found
-            return StatusResponse(status="success", message=f"Agent knowledge base {kb_id} deleted successfully (or did not exist).")
+        kb_delete_success = kb_manager.delete_kb(kb_id)
+        if kb_delete_success:
+            print(f"ChromaDB deletion process completed for KB {kb_id}.")
         else:
-            # This indicates an internal error during deletion attempt
-            print(f"Deletion process failed internally for KB {kb_id}.")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to delete knowledge base {kb_id} due to an internal error.")
+            # This indicates an internal error during ChromaDB deletion attempt
+            print(f"ChromaDB deletion process failed internally for KB {kb_id}.")
+            # We might still proceed to delete metadata, or halt here.
+            # Let's proceed for now to ensure cleanup attempt.
+            
     except Exception as e:
-        print(f"Unexpected error during deletion of KB {kb_id}: {e}")
+        print(f"Unexpected error during ChromaDB deletion of KB {kb_id}: {e}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred while trying to delete knowledge base {kb_id}: {str(e)}")
+        # Decide if we should proceed with metadata deletion. Let's proceed.
 
+    # Attempt to delete associated JSON payloads from SQLite
+    payload_delete_success = False
+    try:
+        payload_delete_success = db_manager.delete_json_payloads(kb_id)
+        if payload_delete_success:
+             print(f"SQLite JSON payload deletion process completed for KB {kb_id}.")
+        else:
+            print(f"SQLite JSON payload deletion failed internally for KB {kb_id}.")
+            
+    except Exception as e:
+        print(f"Unexpected error during SQLite deletion for KB {kb_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        # The overall operation might be considered partially failed here.
+
+    # Determine overall status
+    if kb_delete_success and payload_delete_success:
+         return StatusResponse(status="success", message=f"Agent {kb_id} and associated data deleted successfully (or did not exist).")
+    elif kb_delete_success:
+         return StatusResponse(status="warning", message=f"Agent KB {kb_id} deleted, but failed to delete associated JSON metadata.")
+    elif payload_delete_success:
+         return StatusResponse(status="warning", message=f"Associated JSON metadata for {kb_id} deleted, but failed to delete the main Agent KB.")
+    else:
+         # Both failed or Chroma failed and metadata wasn't attempted/failed
+         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to delete knowledge base {kb_id} and/or its associated metadata due to internal errors.")
+
+@app.get("/agents/{kb_id}/json", response_model=List[Dict[str, Any]])
+async def get_agent_json_payloads(kb_id: str):
+    """
+    Retrieves all original JSON payloads that were uploaded
+    to populate this agent's knowledge base.
+    Returns an empty list if no JSON payloads are found or if the KB ID doesn't exist.
+    """
+    print(f"Received request to get stored JSON payloads for KB: {kb_id}")
+    try:
+        payloads = db_manager.get_json_payloads(kb_id)
+        # The function returns an empty list if not found or on DB error, which is acceptable here.
+        return payloads
+    except Exception as e:
+        # Catch unexpected errors during retrieval
+        print(f"Unexpected error retrieving JSON payloads for KB {kb_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to retrieve JSON payloads for knowledge base {kb_id}: {str(e)}")
 
 @app.get("/agents", response_model=ListKBsResponse)
 async def list_kbs_endpoint():
@@ -281,6 +355,42 @@ async def list_kbs_endpoint():
     except Exception as e:
         print(f"Error listing KBs: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to list knowledge bases: {str(e)}")
+
+@app.get("/agents/{kb_id}/content", response_model=KBContentResponse)
+async def get_kb_content_endpoint(
+    kb_id: str, 
+    limit: Optional[int] = Query(None, ge=1, description="Maximum number of documents to return"), 
+    offset: Optional[int] = Query(None, ge=0, description="Number of documents to skip")
+):
+    """
+    Retrieves the documents stored within a specific knowledge base, with pagination.
+    """
+    print(f"Received request to get content for KB: {kb_id}, Limit: {limit}, Offset: {offset}")
+    try:
+        result = kb_manager.get_kb_content(kb_id, limit=limit, offset=offset)
+        
+        # Combine IDs and documents into KBContentItem objects
+        content_items = [
+            KBContentItem(id=doc_id, document=doc) 
+            for doc_id, doc in zip(result.get('ids', []), result.get('documents', []))
+        ]
+        
+        return KBContentResponse(
+            kb_id=kb_id,
+            total_count=result['total_count'],
+            limit=result['limit'],
+            offset=result['offset'],
+            content=content_items
+        )
+        
+    except Exception as e:
+        # Handle errors raised from kb_manager (e.g., unexpected errors)
+        print(f"Error getting content for KB {kb_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        # Distinguish between 'not found' (handled by kb_manager returning count 0) and other errors
+        # If get_kb_content raised something other than NotFoundError, it's likely a 500
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve content for knowledge base {kb_id}: {str(e)}")
 
 # --- WebSocket Endpoint ---
 @app.websocket("/ws/agents/{kb_id}/chat")
