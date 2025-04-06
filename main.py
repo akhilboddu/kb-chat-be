@@ -4,7 +4,7 @@ import uuid
 import time
 import asyncio # <--- Import asyncio
 import re  # For splitting sentences
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Body, status, Query # Add Body, status, Query
+from fastapi import FastAPI, HTTPException, UploadFile, File, Body, status, Query # Removed WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 from langchain_core.messages import HumanMessage, AIMessage # Import message types
@@ -137,11 +137,33 @@ if not llm:
 
 
 # --- Utility Functions ---
+def clean_agent_output(text: str) -> str:
+    """Removes surrounding markdown code blocks (```) and single backticks."""
+    text = text.strip()
+    # Remove triple backticks block with optional language hint
+    if text.startswith("```") and text.endswith("```"):
+        lines = text.split('\n', 1)
+        if len(lines) > 1:
+            # Check if the first line looks like a language hint (e.g., ```python)
+            if not lines[0].strip().startswith("```") or len(lines[0].strip()) > 6: # Simple check
+                 text = lines[1] # Assume first line is lang hint, take the rest
+            else:
+                 text = text[3:-3].strip() # Just remove backticks
+        else:
+            text = text[3:-3].strip() # Just remove backticks if no newline
+    # Remove single backticks
+    elif text.startswith("`") and text.endswith("`"):
+        text = text[1:-1].strip()
+    return text
+
 def chunk_response(text, max_chunk_size=1000):
     """
     Splits a long text response into smaller chunks, trying to break at sentence boundaries.
     Returns a list of chunks.
     """
+    # Clean the text *before* chunking
+    text = clean_agent_output(text)
+    
     if len(text) <= max_chunk_size:
         return [text]  # Return as single chunk if already small enough
     
@@ -392,150 +414,6 @@ async def get_kb_content_endpoint(
         # If get_kb_content raised something other than NotFoundError, it's likely a 500
         raise HTTPException(status_code=500, detail=f"Failed to retrieve content for knowledge base {kb_id}: {str(e)}")
 
-# --- WebSocket Endpoint ---
-@app.websocket("/ws/agents/{kb_id}/chat")
-async def websocket_endpoint(websocket: WebSocket, kb_id: str):
-    """Handles WebSocket connections for agent chat with history."""
-    connection_active = False
-    
-    try:
-        await websocket.accept()
-        connection_active = True
-        print(f"WebSocket connection accepted for kb_id: {kb_id}")
-        
-        # Initialize chat history for this connection
-        chat_history = []
-        agent_executor = None
-        
-        # Instantiate the agent executor for this specific KB
-        print(f"Creating agent executor for kb_id: {kb_id}")
-        agent_executor = create_agent_executor(kb_id=kb_id)
-        print(f"Agent executor created successfully for kb_id: {kb_id}")
-
-        # Main WebSocket loop
-        while connection_active:
-            try:
-                # Receive message from client
-                data = await websocket.receive_text()
-                print(f"Received message from client ({kb_id}): {data}")
-                
-                if not agent_executor:
-                    await websocket.send_json({"type": "error", "content": "Agent is not available."})
-                    continue
-
-                # Append user message to history before invoking
-                chat_history.append(HumanMessage(content=data))
-
-                # Invoke the agent with the current history
-                input_data = {"input": data, "chat_history": chat_history[:-1]}
-
-                # Send immediate "Processing" status
-                try:
-                    await websocket.send_json({"type": "status", "content": "Processing..."})
-                    print(f"Server: Status update sent.")
-                except Exception as status_send_error:
-                    print(f"Warning: Failed to send status update ({kb_id}): {status_send_error}")
-                    # Connection might be lost
-                    connection_active = False
-                    break
-
-                # Invoke the agent and get response
-                print(f"Invoking agent ({kb_id}) in thread with input: {data}")
-                response = await asyncio.to_thread(agent_executor.invoke, input_data)
-                agent_output = response.get("output", "")
-                print(f"Agent ({kb_id}) raw output: {agent_output}")
-                
-                # Check for handoff signal
-                if agent_output == "HANDOFF_REQUIRED":
-                    print(f"Agent ({kb_id}) triggered handoff.")
-                    try:
-                        await websocket.send_json({"type": "handoff", "message": "Agent requires assistance."})
-                        print(f"Server: Handoff message sent.")
-                    except Exception as e:
-                        print(f"Failed to send handoff message: {e}")
-                        connection_active = False
-                        break
-                else:
-                    # If not handoff, chunk the response and send in smaller pieces
-                    print(f"Sending chunked answer from agent ({kb_id}). Total length: {len(agent_output)}")
-                    
-                    # Split into smaller chunks to avoid WebSocket frame size issues
-                    response_chunks = chunk_response(agent_output)
-                    print(f"Split into {len(response_chunks)} chunks")
-                    
-                    # Track if all chunks were successfully sent
-                    all_chunks_sent = True
-                    
-                    # Send each chunk separately
-                    for i, chunk in enumerate(response_chunks):
-                        is_first = (i == 0)
-                        is_last = (i == len(response_chunks) - 1)
-                        
-                        chunk_type = "answer_part"
-                        if is_first and is_last:
-                            chunk_type = "answer"  # Single chunk only
-                        elif is_first:
-                            chunk_type = "answer_start"  # First of multiple chunks
-                        elif is_last:
-                            chunk_type = "answer_end"  # Last of multiple chunks
-                        
-                        print(f"Server: Sending chunk {i+1}/{len(response_chunks)}. Type: {chunk_type}")
-                        try:
-                            await websocket.send_json({
-                                "type": chunk_type,
-                                "content": chunk,
-                                "chunk_info": {
-                                    "index": i,
-                                    "total": len(response_chunks)
-                                }
-                            })
-                            # Small delay between chunks to prevent overwhelming
-                            if len(response_chunks) > 1 and not is_last:
-                                await asyncio.sleep(0.1)
-                                
-                        except Exception as chunk_error:
-                            print(f"Failed to send chunk {i+1}: {chunk_error}")
-                            all_chunks_sent = False
-                            connection_active = False
-                            break
-                    
-                    if all_chunks_sent:
-                        print(f"Server: All chunks sent successfully.")
-                        # Append agent's response to history only if all chunks were sent
-                        chat_history.append(AIMessage(content=agent_output))
-                    else:
-                        print(f"Server: Failed to send all chunks. Connection might be closed.")
-            
-            except WebSocketDisconnect:
-                print(f"WebSocket connection closed by client for kb_id: {kb_id}")
-                connection_active = False
-                break
-            except Exception as e:
-                import traceback
-                print(f"Error processing message: {e}\n{traceback.format_exc()}")
-                try:
-                    await websocket.send_json({"type": "error", "content": f"An error occurred processing your request."})
-                except Exception:
-                    # If we can't send the error, the connection is likely dead
-                    connection_active = False
-                    break
-                
-    except WebSocketDisconnect:
-        print(f"WebSocket connection closed during handshake for kb_id: {kb_id}")
-    except Exception as e:
-        import traceback
-        print(f"Unexpected error in WebSocket handler for {kb_id}: {e}\n{traceback.format_exc()}")
-    finally:
-        # Cleanup code
-        print(f"Cleaning up WebSocket resources for kb_id: {kb_id} (History length: {len(chat_history) if 'chat_history' in locals() else 0})")
-        try:
-            # Only try to close if we think the connection might still be active
-            if connection_active:
-                await websocket.close(code=1011)
-        except Exception:
-            pass  # Connection might already be closed
-
-
 # --- Human Response Endpoint ---
 @app.post("/agents/{kb_id}/human_response", response_model=StatusResponse)
 async def human_response_endpoint(kb_id: str, request: HumanResponseRequest):
@@ -634,7 +512,7 @@ async def upload_to_kb(kb_id: str, file: UploadFile = File(...)):
 async def chat_endpoint(kb_id: str, request: ChatRequest):
     """
     HTTP endpoint for chat interactions with an agent.
-    Provides a simpler alternative to WebSockets for basic chat functionality.
+    Provides a direct way to interact with the agent without WebSockets.
     """
     print(f"Received HTTP chat request for kb_id: {kb_id}")
     
@@ -663,6 +541,10 @@ async def chat_endpoint(kb_id: str, request: ChatRequest):
         agent_output = response.get("output", "")
         print(f"Agent ({kb_id}) raw output: {agent_output}")
         
+        # Clean the output before returning
+        cleaned_output = clean_agent_output(agent_output)
+        print(f"Agent ({kb_id}) cleaned output: {cleaned_output}")
+        
         # Extract confidence score (min distance) if available from intermediate steps
         min_distance = None
         confidence_decimal = None # Initialize decimal score
@@ -683,17 +565,17 @@ async def chat_endpoint(kb_id: str, request: ChatRequest):
                         print(f"Calculated confidence score (decimal): {confidence_decimal:.4f}") # Format for readability
                         break 
         
-        # Check for handoff
-        if agent_output == "HANDOFF_REQUIRED":
+        # Check for handoff using the cleaned output
+        if cleaned_output == "HANDOFF_REQUIRED":
             return ChatResponse(
                 content="This question requires human assistance.",
                 type="handoff",
                 confidence_score=confidence_decimal # Pass decimal score
             )
         
-        # Return the agent's response
+        # Return the agent's cleaned response
         return ChatResponse(
-            content=agent_output,
+            content=cleaned_output, # Return cleaned output
             type="answer",
             confidence_score=confidence_decimal # Pass decimal score
         )
