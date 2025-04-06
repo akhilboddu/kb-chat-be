@@ -54,12 +54,13 @@ def init_db():
         ''')
         print("- Table 'uploaded_files' checked/created.")
 
-        # --- NEW: Table for conversation history ---
+        # --- Table for conversation history (with check constraint) ---
+        # Use IF NOT EXISTS to avoid errors/data loss on subsequent runs
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS conversation_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                kb_id TEXT NOT NULL, -- Using kb_id as conversation identifier for now
-                message_type TEXT NOT NULL CHECK(message_type IN ('human', 'ai')), -- 'human' or 'ai'
+                kb_id TEXT NOT NULL,
+                message_type TEXT NOT NULL CHECK(message_type IN ('human', 'ai', 'human_agent')),
                 content TEXT NOT NULL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
@@ -72,7 +73,7 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 kb_id TEXT NOT NULL,
                 added_content TEXT NOT NULL,
-                source TEXT DEFAULT 'human_verified', -- Track source if needed later
+                source TEXT DEFAULT 'human_verified',
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -81,7 +82,7 @@ def init_db():
         # Optional: Add indexes for faster lookups
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_json_kb_id ON json_payloads (kb_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_files_kb_id ON uploaded_files (kb_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_conv_history_kb_id ON conversation_history (kb_id)") # Index for history
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_conv_history_kb_id ON conversation_history (kb_id)")
         print("- Indexes checked/created.")
         
         conn.commit()
@@ -204,8 +205,8 @@ def delete_uploaded_files(kb_id: str) -> bool:
 
 def add_conversation_message(kb_id: str, message_type: str, content: str) -> bool:
     """Adds a message to the conversation history for a given kb_id."""
-    if message_type not in ('human', 'ai'):
-        print(f"Error: Invalid message_type '{message_type}'. Must be 'human' or 'ai'.")
+    if message_type not in ('human', 'ai', 'human_agent'):
+        print(f"Error: Invalid message_type '{message_type}'. Must be 'human', 'ai', or 'human_agent'.")
         return False
     if not content or not content.strip():
         print(f"Error: Cannot add empty content to conversation history for {kb_id}.")
