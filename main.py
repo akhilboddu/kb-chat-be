@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage, AIMessage # Import message typ
 from fastapi.middleware.cors import CORSMiddleware # Import CORS middleware
 import datetime
 import os
+from chromadb.errors import NotFoundError # <--- Import NotFoundError
 
 # Import core components
 import data_processor
@@ -20,9 +21,11 @@ from kb_manager import kb_manager # Singleton instance
 import db_manager # Import the new DB manager
 from agent_manager import create_agent_executor
 from config import llm # Import the initialized LLM
-from file_parser import parse_file, SUPPORTED_EXTENSIONS # Import the file parser
+from file_parser import parse_file, SUPPORTED_EXTENSIONS, get_file_extension # Import the file parser + get_file_extension
 from langchain.memory import ConversationBufferMemory # Keep this one
 from langchain_core.memory import BaseMemory # Correct import path for BaseMemory
+from langchain_core.prompts import PromptTemplate # Add PromptTemplate import
+from langchain_core.output_parsers import StrOutputParser # Add StrOutputParser import
 
 # --- Initialize SQLite DB --- 
 # Ensure the DB and tables are created when the app starts
@@ -110,6 +113,13 @@ class KBContentResponse(BaseModel):
     offset: Optional[int] = None
     content: List[KBContentItem]
 
+# --- NEW: Model for Cleanup Response ---
+class CleanupResponse(BaseModel):
+    """Response model for the KB cleanup operation."""
+    kb_id: str
+    deleted_count: int
+    message: str
+
 # --- NEW: Models for listing uploaded files ---
 class UploadedFileInfo(BaseModel):
     """Information about a single uploaded file."""
@@ -126,7 +136,7 @@ class ListFilesResponse(BaseModel):
 # --- NEW: Models for Conversation History Endpoint ---
 class HistoryMessage(BaseModel):
     """Represents a single message in the conversation history."""
-    type: str # 'human' or 'ai'
+    type: str # 'human' or 'ai' or 'human_agent'
     content: str
     timestamp: Optional[datetime.datetime] = None # Include timestamp from DB
 
@@ -143,8 +153,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     """Response from the agent via HTTP."""
     content: str
-    type: str = "answer"  # Default is regular answer
-    confidence_score: Optional[float] = None # Lower is better (e.g., distance)
+    type: str = "answer"  # 'answer' or 'handoff'
 
 # --- NEW: Models for Conversations Listing ---
 class ConversationPreview(BaseModel):
@@ -173,6 +182,19 @@ class HumanKnowledgeRequest(BaseModel):
     """Request body for adding human-verified knowledge to the KB."""
     knowledge_text: str = Field(..., description="The text to be added to the knowledge base")
     source_conversation_id: Optional[str] = Field(None, description="Optional: ID of the conversation this knowledge came from")
+
+# --- NEW: Models for Agent Configuration ---
+class AgentConfigResponse(BaseModel):
+    """Response model for agent configuration."""
+    system_prompt: str = Field(default=db_manager.DEFAULT_SYSTEM_PROMPT, description="The system prompt used by the agent.")
+    max_iterations: int = Field(default=db_manager.DEFAULT_MAX_ITERATIONS, ge=1, description="Maximum iterations for the agent loop.")
+    # Add other configurable fields here with defaults
+
+class UpdateAgentConfigRequest(BaseModel):
+    """Request model for updating agent configuration. All fields optional."""
+    system_prompt: Optional[str] = Field(None, description="New system prompt for the agent.")
+    max_iterations: Optional[int] = Field(None, ge=1, description="New maximum iterations for the agent loop.")
+    # Add other configurable fields here as Optional
 
 # --- FastAPI App Initialization ---
 app = FastAPI(
@@ -453,6 +475,38 @@ async def get_kb_content_endpoint(
         # If get_kb_content raised something other than NotFoundError, it's likely a 500
         raise HTTPException(status_code=500, detail=f"Failed to retrieve content for knowledge base {kb_id}: {str(e)}")
 
+# --- NEW: Cleanup Endpoint ---
+@app.post("/agents/{kb_id}/cleanup", response_model=CleanupResponse, status_code=status.HTTP_200_OK)
+async def cleanup_kb_duplicates_endpoint(kb_id: str):
+    """
+    Removes duplicate documents (based on exact text content) from the specified knowledge base.
+    """
+    print(f"Received request to cleanup duplicates in KB: {kb_id}")
+    try:
+        # Run the potentially long-running cleanup task in a separate thread
+        deleted_count = await asyncio.to_thread(kb_manager.cleanup_duplicates, kb_id)
+
+        message = f"Successfully removed {deleted_count} duplicate documents from KB {kb_id}."
+        if deleted_count == 0:
+            message = f"No duplicate documents found in KB {kb_id}."
+
+        return CleanupResponse(
+            kb_id=kb_id,
+            deleted_count=deleted_count,
+            message=message
+        )
+
+    except NotFoundError:
+        # Catch the specific error raised by kb_manager if collection not found
+        print(f"Cleanup failed: Knowledge base {kb_id} not found.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Knowledge base {kb_id} not found.")
+    except Exception as e:
+        # Catch any other exceptions raised during the cleanup process
+        print(f"Error during duplicate cleanup for KB {kb_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to cleanup duplicates in knowledge base {kb_id}: {str(e)}")
+
 # --- Human Response Endpoint ---
 @app.post("/agents/{kb_id}/human_response", response_model=StatusResponse)
 async def human_response_endpoint(kb_id: str, request: HumanResponseRequest):
@@ -534,7 +588,8 @@ async def human_response_endpoint(kb_id: str, request: HumanResponseRequest):
 async def upload_to_kb(kb_id: str, file: UploadFile = File(...)):
     """
     Accepts a file upload, parses its content, stores file metadata,
-    and adds the extracted text to the specified knowledge base.
+    and adds the extracted text (potentially structured by AI for PDFs) 
+    to the specified knowledge base.
     """
     print(f"Received file upload request for kb_id: {kb_id}. Filename: {file.filename}, Content-Type: {file.content_type}")
 
@@ -554,45 +609,48 @@ async def upload_to_kb(kb_id: str, file: UploadFile = File(...)):
         content_type=file.content_type
     )
     if not record_success:
-        # Log the error but proceed with parsing and adding to KB? 
-        # Or raise an error here? Let's log and proceed for now.
-        # print(f"Warning: Failed to store file metadata record for '{file.filename}' in KB {kb_id}. Continuing with KB update.")
-        # --- MODIFIED: Raise error on failure --- 
         print(f"Error: Failed to store file metadata record for '{file.filename}' in KB {kb_id}. Aborting upload.")
         raise HTTPException(status_code=500, detail=f"Failed to store file metadata before processing knowledge base.")
 
     # --- Parse File Content ---
+    raw_extracted_text: Optional[str] = None
     try:
-        extracted_text = await parse_file(file)
+        raw_extracted_text = await parse_file(file)
     except Exception as e:
         print(f"Internal server error during file parsing for {file.filename}: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Server error processing file: {str(e)}")
     
-    if extracted_text is None:
+    if raw_extracted_text is None:
         raise HTTPException(
             status_code=400, 
             detail=f"Unsupported file type or failed to parse file: {file.filename}. Supported types: {', '.join(SUPPORTED_EXTENSIONS)}"
         )
-    if not extracted_text.strip():
+    if not raw_extracted_text.strip():
         print(f"File {file.filename} parsed successfully but contained no text content.")
         return StatusResponse(status="success", message="File processed, but no text content found to add.")
     
-    print(f"Adding extracted text from {file.filename} to KB {kb_id}...")
+    # --- REMOVED AI Structuring Step --- 
+    # PDF parsing now happens directly into Markdown via pymupdf4llm in file_parser.py
+    text_to_add = raw_extracted_text 
+    file_extension = get_file_extension(file.filename)
+    # The structuring logic previously here is now removed.
+    
+    # --- Add to Knowledge Base --- 
+    print(f"Adding parsed text from {file.filename} to KB {kb_id}...") # Simplified log
     try:
-        success = kb_manager.add_to_kb(kb_id, extracted_text)
+        success = kb_manager.add_to_kb(kb_id, text_to_add)
         if success:
-            print(f"Successfully added content from {file.filename} to KB {kb_id}.")
-            return StatusResponse(status="success", message=f"File '{file.filename}' processed, metadata stored, and content added to knowledge base {kb_id}.")
+            # Simplified message, as structuring is now part of parsing for PDFs
+            parsed_as = "Markdown" if file_extension == '.pdf' else "text"
+            print(f"Successfully added content (parsed as {parsed_as}) from {file.filename} to KB {kb_id}.")
+            return StatusResponse(status="success", message=f"File '{file.filename}' processed, metadata stored, and content (parsed as {parsed_as}) added to knowledge base {kb_id}.")
         else:
             print(f"Failed to add content from {file.filename} to KB {kb_id} (add_to_kb returned False).")
             raise HTTPException(status_code=500, detail="Failed to add extracted content to the knowledge base after parsing.")
     except Exception as e:
         print(f"Error adding parsed content from {file.filename} to KB {kb_id}: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to update knowledge base: {str(e)}")
 
 
 # --- NEW: Endpoint to list uploaded files ---
@@ -855,14 +913,62 @@ async def human_knowledge_endpoint(kb_id: str, request: HumanKnowledgeRequest):
                 detail=f"Failed to add knowledge to knowledge base: {str(e)}"
             )
 
+# --- NEW: Agent Configuration Endpoints ---
+@app.get("/agents/{kb_id}/config", response_model=AgentConfigResponse)
+async def get_agent_config_endpoint(kb_id: str):
+    """Retrieves the current configuration for a specific agent."""
+    print(f"Received request to get agent config for KB: {kb_id}")
+    try:
+        config_data = db_manager.get_agent_config(kb_id)
+        # Pydantic will use defaults if a key is missing from config_data
+        return AgentConfigResponse(**config_data)
+    except Exception as e:
+        print(f"Error getting agent config for {kb_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve agent configuration: {str(e)}")
+
+@app.put("/agents/{kb_id}/config", response_model=StatusResponse)
+async def update_agent_config_endpoint(kb_id: str, request: UpdateAgentConfigRequest):
+    """Updates the configuration for a specific agent."""
+    print(f"Received request to update agent config for KB: {kb_id}")
+    # Convert Pydantic model to dict, excluding unset fields
+    update_data = request.model_dump(exclude_unset=True)
+    
+    if not update_data:
+        # No fields were provided in the request body
+        raise HTTPException(status_code=400, detail="No configuration parameters provided for update.")
+        
+    try:
+        success = db_manager.upsert_agent_config(kb_id, update_data)
+        if success:
+            return StatusResponse(status="success", message="Agent configuration updated successfully.")
+        else:
+            # Check logs for specific upsert error
+            raise HTTPException(status_code=500, detail="Failed to update agent configuration due to an internal database error.")
+    except HTTPException as http_exc:
+        raise http_exc # Re-raise specific HTTP exceptions
+    except Exception as e:
+        print(f"Error updating agent config for {kb_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to update agent configuration: {str(e)}")
+
 # --- HTTP Chat Endpoint (Now with Memory) ---
 @app.post("/agents/{kb_id}/chat", response_model=ChatResponse)
 async def chat_endpoint(kb_id: str, request: ChatRequest):
     """
     HTTP endpoint for stateful, non-streaming chat interactions with an agent,
-    maintaining conversation history using in-memory storage.
+    maintaining conversation history using the database.
     """
     print(f"Received HTTP chat request for kb_id: {kb_id}")
+    
+    user_message = request.message
+    handoff_marker = "(needs help)"
+    
+    # Define default error/handoff messages outside the try block
+    generic_error_msg = "Sorry, I encountered an issue processing your request."
+    iteration_limit_msg = f"Hmm, I seem to be having trouble finding that specific information right now. I'll ask a human colleague to take a look for you. {handoff_marker}"
     
     try:
         # --- Memory Management (Load from DB) ---
@@ -884,23 +990,13 @@ async def chat_endpoint(kb_id: str, request: ChatRequest):
 
         # Instantiate the agent executor for this KB, passing the populated memory
         print(f"Creating agent executor with memory for kb_id: {kb_id}")
-        # Pass the specific memory object for this conversation
-        # AgentExecutor doesn't take memory directly with from_template prompt
-        agent_executor = create_agent_executor(kb_id=kb_id) # REMOVED memory argument
+        agent_executor = create_agent_executor(kb_id=kb_id, memory=memory) 
         print(f"Agent executor created successfully for kb_id: {kb_id}")
         
-        # Prepare the user message (Memory interaction is handled by AgentExecutor)
-        user_message = request.message
-
-        # --- Format history string from memory for the prompt --- 
-        # Load history variables from the memory object
+        # --- Format History for Prompt --- 
         memory_variables = memory.load_memory_variables({})
-        # Extract the history string (default key is usually 'history', but ours is 'chat_history')
         history_string = memory_variables.get('chat_history', '') 
-        # Ensure it's a string, ConversationBufferMemory with return_messages=True
-        # might return a list of BaseMessage objects. Format if needed.
         if not isinstance(history_string, str):
-            # Simple formatting for list of messages
             formatted_history = []
             for msg in history_string:
                 if isinstance(msg, HumanMessage):
@@ -908,88 +1004,102 @@ async def chat_endpoint(kb_id: str, request: ChatRequest):
                 elif isinstance(msg, AIMessage):
                     formatted_history.append(f"AI: {msg.content}")
             history_string = "\n".join(formatted_history)
-        # --- End History Formatting --- 
                 
-        # Prepare input for the agent (AgentExecutor handles loading memory now)
-        # The memory object automatically provides the "chat_history" variable
-        # We now need to pass the formatted history string manually
+        # --- Prepare Agent Input --- 
         input_data = {
             "input": user_message,
-            "chat_history": history_string # Pass the formatted string history
+            "chat_history": history_string
         }
         
-        # Invoke the agent in a separate thread to prevent blocking
+        # --- Invoke Agent --- 
         print(f"Invoking agent ({kb_id}) for message: {user_message}")
-        response = await asyncio.to_thread(agent_executor.invoke, input_data)
-        agent_output = response.get("output", "")
-        print(f"Agent ({kb_id}) raw output: {agent_output}")
-        
-        # Clean the output before returning
-        cleaned_output = clean_agent_output(agent_output)
-        print(f"Agent ({kb_id}) cleaned output: {cleaned_output}")
+        try:
+            response = await asyncio.to_thread(agent_executor.invoke, input_data)
+            # Agent executed successfully, proceed to process output
+            agent_output = None
+            cleaned_output = None
+            try:
+                agent_output = response.get("output")
+                if agent_output:
+                    cleaned_output = clean_agent_output(agent_output)
+                    print(f"Agent ({kb_id}) raw output: {agent_output}")
+                    print(f"Agent ({kb_id}) cleaned output: {cleaned_output}")
+                else:
+                    print(f"Agent ({kb_id}) returned no 'output'.")
+                    # Treat as invalid output, fall through to error handling below
+            except Exception as clean_err:
+                 print(f"Error cleaning agent output for {kb_id}: {clean_err}")
+                 # Keep cleaned_output as None, fall through to error handling below
 
-        # --- Save Interaction to DB ---
-        # Only save if the agent generated some output
-        if cleaned_output is not None:
-            print(f"Saving interaction to conversation history for kb_id: {kb_id}...")
-            # Save user message (which was in input_data['input'])
-            save_user_success = db_manager.add_conversation_message(kb_id, 'human', user_message)
-            # Save AI response (the final cleaned output)
-            save_ai_success = db_manager.add_conversation_message(kb_id, 'ai', cleaned_output)
-            if not save_user_success or not save_ai_success:
-                # Log an error if saving failed, but don't fail the request
-                print(f"Warning: Failed to save full interaction to DB for kb_id: {kb_id}")
-        # --- End Save Interaction ---
-        
-        # Extract confidence score (min distance) if available from intermediate steps
-        min_distance = None
-        confidence_decimal = None # Initialize decimal score
-        
-        if response.get("intermediate_steps"):
-            for step in response["intermediate_steps"]:
-                action, observation = step
-                # Check if the observation came from our knowledge_base_retriever tool
-                if action.tool == "knowledge_base_retriever" and isinstance(observation, dict):
-                    min_distance = observation.get("min_distance")
-                    # Use the first one found (should correspond to the most relevant retrieval)
-                    if min_distance is not None:
-                        print(f"Extracted min_distance (cosine): {min_distance}")
-                        # Convert cosine distance (0=best, ~1=worst) to decimal score (0.0=worst, 1.0=best)
-                        # Clamp distance between 0 and 1 just in case
-                        clamped_distance = max(0.0, min(1.0, min_distance))
-                        confidence_decimal = 1.0 - clamped_distance
-                        print(f"Calculated confidence score (decimal): {confidence_decimal:.4f}") # Format for readability
-                        break 
-        
-        # Check for handoff using the cleaned output
-        # Instead of exact match, check if the polite handoff marker is present
-        handoff_marker = "(needs help)"
-        final_content = cleaned_output
-        response_type = "answer" # Default to answer
+            # --- Determine Final Response Content & Type (Success Path) ---
+            if cleaned_output is not None and cleaned_output.strip():
+                final_content = cleaned_output # Start with the agent's cleaned output
+                response_type = "answer"
+                
+                if cleaned_output.endswith(handoff_marker):
+                    print(f"Handoff triggered by agent marker for {kb_id}.")
+                    final_content = cleaned_output[:-len(handoff_marker)].strip()
+                    response_type = "handoff"
+            else:
+                # Agent finished but output was invalid/empty
+                print(f"Agent output was invalid or empty for {kb_id}. Using generic error.")
+                response_type = "error" 
+                final_content = generic_error_msg # Use the generic error message
+                # Setting cleaned_output to None ensures DB saving logic treats it as error
+                cleaned_output = None 
 
-        if cleaned_output.endswith(handoff_marker):
-            print(f"Handoff marker found in agent output for {kb_id}.")
-            # Remove the marker from the content sent to the user
-            final_content = cleaned_output[:-len(handoff_marker)].strip()
-            response_type = "handoff" # Set type to handoff
-            # Optionally, you could trigger other backend actions here (e.g., notify human agent)
-        # if cleaned_output == "HANDOFF_REQUIRED": # OLD check
-        #     return ChatResponse(
-        #         content="This question requires human assistance.",
-        #         type="handoff",
-        #         confidence_score=confidence_decimal # Pass decimal score
-        #     )
-        
-        # Return the agent's cleaned response
+        # --- Handle Specific Agent Execution Errors ---            
+        except MaxIterationsError as e:
+            print(f"Agent ({kb_id}) hit max iterations: {e}")
+            response_type = "handoff" # Treat as handoff
+            cleaned_output = iteration_limit_msg # Use the specific message WITH marker
+            final_content = cleaned_output[:-len(handoff_marker)].strip() # Remove marker for response
+        except Exception as agent_exec_err:
+            # Catch other potential errors during agent execution itself
+            print(f"Error during agent execution for {kb_id}: {agent_exec_err}")
+            import traceback
+            traceback.print_exc()
+            response_type = "error" # Treat as general error
+            final_content = generic_error_msg
+            cleaned_output = None # Ensure it's treated as error for DB saving
+            
+        # --- Save Interaction to DB --- 
+        print(f"DEBUG: Attempting to save interaction for {kb_id}...")
+        # Always save user message
+        save_user_success = db_manager.add_conversation_message(kb_id, 'human', user_message)
+        if not save_user_success:
+             print(f"Warning: Failed to save user message to DB for kb_id: {kb_id}")
+
+        # Save AI message based on response_type and content
+        if response_type != "error":
+            # Determine content to save: use cleaned_output if it exists (it will contain the marker on handoff)
+            # Otherwise, use final_content (which might be the generic error if cleaning failed)
+            content_to_save = cleaned_output if cleaned_output is not None else final_content
+            print(f"DEBUG: Saving AI message. Type='{response_type}', Saved Content='{content_to_save}'")
+            save_ai_success = db_manager.add_conversation_message(
+                kb_id,
+                'ai',
+                content_to_save 
+            )
+            if not save_ai_success:
+                print(f"Warning: Failed to save AI message to DB for kb_id: {kb_id}")
+        else: # If response_type IS error
+            print(f"DEBUG: Skipping save for AI message due to response_type='{response_type}'.")
+            # Optionally save an error placeholder? For now, just skipping.
+
+        # --- Return Response --- 
+        # Return the final_content (which has marker removed for handoffs)
+        print(f"DEBUG: Returning ChatResponse. final_content='{final_content}', response_type='{response_type}'")
         return ChatResponse(
-            content=final_content, # Return potentially stripped content
-            type=response_type, # Return correct type ('answer' or 'handoff')
-            confidence_score=confidence_decimal # Pass decimal score
+            content=final_content,
+            type=response_type
         )
         
+    # --- Catch Errors Outside Agent Execution (e.g., memory loading, setup) ---
     except Exception as e:
         import traceback
-        print(f"Error in HTTP chat endpoint for {kb_id}: {e}\\n{traceback.format_exc()}")
+        print(f"Critical error in HTTP chat endpoint setup/outside agent execution for {kb_id}: {e}\n{traceback.format_exc()}")
+        # Return a generic error via HTTPException, don't save anything
         raise HTTPException(status_code=500, detail=f"Error processing chat request: {str(e)}")
 
 

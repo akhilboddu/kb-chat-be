@@ -10,54 +10,12 @@ from langchain_core.memory import BaseMemory
 # Import LLM from config and tool functions
 from config import llm
 from tools import get_retriever_tool, get_knowledge_update_tool, get_answering_tool
+import db_manager # Import db_manager
 
 # Define the core ReAct prompt template
 # Updated for Persona, Tone, Proactivity, and Markdown
-REACT_PROMPT_TEMPLATE = """You are Alex, a dedicated employee at the company who is enthusiastic and knowledgeable about our products and services! 🤖 Your goal is to help users understand our business/services by providing clear, accurate information based *only* on the knowledge base content provided. Make the conversation engaging and fun!
-
-**Your Personality & Style:**
-*   **Tone:** Friendly, helpful, slightly informal, and proactive. You speak as a real employee, not as a third-party AI.
-*   **Emojis:** Use relevant emojis sparingly to add personality (e.g., ✨, 🤔, 👍, 🎉). Don't overdo it!
-*   **Formatting:** Use Markdown (like *bold* or bullet points) to make your answers easy to read and understand.
-*   **Grounding:** ALWAYS base your answers on the information retrieved. **IMPORTANT:** In your `Final Answer` to the user, **NEVER mention your tools, your knowledge base, or the search process itself.** Speak naturally as if you *know* the information (or know that you *don't* know it). Instead of "Based on my knowledge base...", say "I see here that..." or just state the fact directly.
-*   **Greetings:** Start the *very first* response in a conversation with a greeting (like "Hi there!"). For subsequent responses, **do not repeat greetings**; just answer the user's query directly.
-*   **Proactivity:** When you don't know an answer, don't ask if the user wants you to check - instead, state confidently that you'll find out for them. For example: "You know what, I don't know about that. Let me check with my team and get back to you! I will get back to you, or my manager will help. In the meantime, do you have any other questions?"
-
-**TOOLS:**
-------
-You have access to the following tools:
-{tools}
-
-**How to Use Tools:**
-To use a tool, ALWAYS use the following format exactly:
-```
-Thought: Do I need to use a tool? Yes. I need to check the knowledge base for information about [topic].
-Action: The action to take. Should be one of [{tool_names}]
-Action Input: The specific question or topic to search for in the knowledge base.
-Observation: [The tool will populate this with the retrieved information]
-```
-
-**How to Respond to the User:**
-When you have the final answer based on the Observation, or if you don't need a tool, ALWAYS use the format:
-```
-Thought: Do I need to use a tool? No. I have the information from the Observation (or don't need a tool) and can now formulate the final answer.
-Final Answer: [Your friendly, Markdown-formatted, emoji-enhanced answer based *only* on the Observation goes here. Be conversational and speak as an employee of the company!]
-```
-
-**IMPORTANT - When Information is Missing:**
-*   If the `knowledge_base_retriever` Observation explicitly states 'No relevant information found', OR
-*   If the retrieved information (Observation) does not actually answer the user's specific question,
-*   Then, formulate a proactive `Final Answer`. **Do NOT mention searching or your knowledge base.** Explain naturally what you *do* know (if anything relevant was found), but don't ask permission to help - just confidently state that you'll check with your team.
-*   Example proactive response: "You know what, I don't know about that. Let me check with my team and get back to you! I will get back to you, or my manager will help. In the meantime, do you have any other questions?"
-*   Crucially, end your proactive handoff message with the exact marker `(needs help)` so the system knows assistance is required.
-
-Okay, let's get started! 🎉
-
-Previous conversation history:
-{chat_history}
-
-New input: {input}
-{agent_scratchpad}"""
+# REMOVED HARDCODED PROMPT - Now fetched from DB
+# REACT_PROMPT_TEMPLATE = """..."""
 
 def create_agent_executor(kb_id: str, memory: Optional[BaseMemory] = None) -> AgentExecutor:
     """
@@ -73,6 +31,14 @@ def create_agent_executor(kb_id: str, memory: Optional[BaseMemory] = None) -> Ag
     if not llm:
         raise ValueError("LLM not initialized. Check .env configuration.")
 
+    # --- Fetch Agent Configuration --- 
+    print(f"Fetching agent config for kb_id: {kb_id}")
+    agent_config = db_manager.get_agent_config(kb_id)
+    system_prompt_template = agent_config['system_prompt']
+    max_iterations_config = agent_config['max_iterations']
+    # Fetch other config values as needed
+    # --- End Fetch --- 
+
     # 1. Get tools specific to this kb_id
     retriever_tool = get_retriever_tool(kb_id)
     # update_tool = get_knowledge_update_tool(kb_id) # We might not give the agent direct update ability initially
@@ -82,18 +48,11 @@ def create_agent_executor(kb_id: str, memory: Optional[BaseMemory] = None) -> Ag
     # tools_list = [retriever_tool, update_tool, answering_tool]
     tools_list = [retriever_tool] # Start simple: only retrieval allowed
 
-    # 2. Create the prompt
+    # 2. Create the prompt using the fetched template
     # Ensure the prompt includes the memory placeholder
-    # Revert to from_template
-    prompt = ChatPromptTemplate.from_template(REACT_PROMPT_TEMPLATE)
-    # prompt = ChatPromptTemplate.from_messages([
-    #     ("system", REACT_PROMPT_TEMPLATE), # System prompt defines the agent's core instructions
-    #     MessagesPlaceholder(variable_name="chat_history"), # Where memory messages will be injected
-    #     ("human", "{input}"), # The user's current input
-    #     MessagesPlaceholder(variable_name="agent_scratchpad") # For ReAct intermediate steps
-    # ])
+    prompt = ChatPromptTemplate.from_template(system_prompt_template) # Use fetched template
 
-    # If no memory is provided, create a default (but stateless for this call) one
+    # Ensure memory is initialized if not provided (remains necessary for prompt population)
     if memory is None:
         memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
@@ -109,14 +68,14 @@ def create_agent_executor(kb_id: str, memory: Optional[BaseMemory] = None) -> Ag
     agent_executor = AgentExecutor(
         agent=agent,
         tools=tools_list,
-        # memory=memory, # REMOVE: Not directly used by AgentExecutor with from_template
+        # memory=memory, # Still not directly used here with from_template
         verbose=True,  # Set to True for debugging agent steps
         handle_parsing_errors=True, # Helps with occasional LLM format mistakes
-        max_iterations=5, # Add a safety limit
-        return_intermediate_steps=True # <<< Add this line
+        max_iterations=max_iterations_config, # Use fetched config
+        return_intermediate_steps=True # Keep this
     )
 
-    print(f"Created AgentExecutor for kb_id: {kb_id}")
+    print(f"Created AgentExecutor for kb_id: {kb_id} using dynamic config")
     return agent_executor
 
 # Example Usage (Optional - for basic testing if needed)

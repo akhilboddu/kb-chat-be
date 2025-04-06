@@ -2,7 +2,8 @@ import io
 import csv
 from typing import Optional
 from fastapi import UploadFile
-import pypdf  # Changed from PyPDF2 to pypdf
+# import pypdf # REMOVED pypdf import
+import pymupdf # ADDED base pymupdf import
 import docx # python-docx
 import openpyxl
 
@@ -37,18 +38,21 @@ async def _parse_csv(file: UploadFile) -> str:
         return content_bytes.decode('utf-8', errors='ignore')
 
 async def _parse_pdf(file: UploadFile) -> str:
-    """Parses text from PDF files."""
+    """(Temporary Diagnostic) Parses plain text from PDF files using base pymupdf."""
     content_bytes = await file.read()
     text_content = []
     try:
-        pdf_reader = pypdf.PdfReader(io.BytesIO(content_bytes))  # Changed from PyPDF2.PdfReader to pypdf.PdfReader
-        for page in pdf_reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text_content.append(page_text)
-        return "\n".join(text_content)
+        # Open the PDF from bytes using the base library
+        with pymupdf.open(stream=content_bytes, filetype="pdf") as doc:
+            # Iterate through pages and extract plain text
+            for page in doc:
+                page_text = page.get_text()
+                if page_text:
+                    text_content.append(page_text)
+        return "\n".join(text_content) # Join text from all pages
     except Exception as e:
-        print(f"Error parsing PDF: {e}")
+        # Use a distinct error message for diagnosis
+        print(f"Error parsing PDF with base pymupdf page.get_text(): {e}")
         return "" # Return empty string on error
 
 async def _parse_docx(file: UploadFile) -> str:

@@ -8,7 +8,7 @@ from kb_manager import kb_manager
 def get_retriever_tool(kb_id: str) -> Tool:
     """
     Creates a tool for retrieving relevant information from the knowledge base.
-    Returns documents and potentially relevance scores (distances).
+    Returns only the formatted document text.
     
     Args:
         kb_id: ID of the knowledge base to retrieve from
@@ -16,25 +16,22 @@ def get_retriever_tool(kb_id: str) -> Tool:
     Returns:
         LangChain Tool for retrieval
     """
-    def retrieve_from_kb(query: str) -> Dict[str, Any]:
-        """Get relevant information and distances from the knowledge base."""
+    def retrieve_from_kb(query: str) -> str:
+        """Get relevant information from the knowledge base."""
         results = kb_manager.get_similar_docs(kb_id, query, n_results=2) # Get top 2 results
         
         if not results:
-            return {"documents": "No relevant information found in the knowledge base.", "min_distance": None}
+            return "No relevant information found in the knowledge base."
         
         # Format the results
         formatted_docs = "\n\n".join([f"DOCUMENT: {res['document']}" for res in results])
         
-        # Extract the minimum distance (most relevant) - lower is better
-        min_distance = min(res['distance'] for res in results) if results else None
-        
-        return {"documents": formatted_docs, "min_distance": min_distance}
+        return formatted_docs
     
     return Tool(
         name="knowledge_base_retriever",
-        description="Retrieves relevant information from the knowledge base to answer user questions. Includes document text and relevance score.",
-        func=retrieve_from_kb # Note: This function now returns a dict
+        description="Retrieves relevant information from the knowledge base to answer user questions. Provides only the text of relevant documents.",
+        func=retrieve_from_kb # Function now returns string
     )
 
 def get_answering_tool(llm) -> Tool:
