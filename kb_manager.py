@@ -2,7 +2,7 @@ import os
 import chromadb
 from chromadb.errors import NotFoundError
 from chromadb.config import Settings
-from typing import List, Optional
+from typing import List, Optional, Dict
 from chromadb.api.models.Collection import Collection
 from config import CHROMADB_PATH, chroma_embedding_function
 import data_processor
@@ -20,12 +20,14 @@ class KBManager:
         self.client = chromadb.PersistentClient(path=CHROMADB_PATH)
         print(f"Initialized ChromaDB client with path: {CHROMADB_PATH}")
     
-    def create_or_get_kb(self, kb_id: str) -> Collection:
+    def create_or_get_kb(self, kb_id: str, name: Optional[str] = None) -> Collection:
         """
         Creates a new knowledge base collection or gets an existing one.
+        If creating, optionally stores the provided name in the collection metadata.
         
         Args:
             kb_id: Unique identifier for the knowledge base
+            name: Optional human-readable name for the agent/KB.
             
         Returns:
             ChromaDB collection
@@ -37,15 +39,24 @@ class KBManager:
                 embedding_function=chroma_embedding_function
             )
             print(f"Retrieved existing collection: {kb_id}")
+            # Note: We don't update the name if the collection already exists via this method.
+            # A separate update method would be needed if name changes are required.
             return collection
         except NotFoundError:  # Catch the specific ChromaDB error
-            # Create new collection
+            # Prepare metadata
+            collection_metadata = {"hnsw:space": "cosine"}
+            if name:
+                collection_metadata["agent_name"] = name
+                print(f"Creating new collection: {kb_id} with name: '{name}' using cosine distance.")
+            else:
+                 print(f"Creating new collection: {kb_id} (no name provided) using cosine distance.")
+
+            # Create new collection with metadata
             collection = self.client.create_collection(
                 name=kb_id,
                 embedding_function=chroma_embedding_function,
-                metadata={"hnsw:space": "cosine"} # Specify cosine distance
+                metadata=collection_metadata
             )
-            print(f"Created new collection: {kb_id} using cosine distance.")
             return collection
     
     def populate_kb(self, kb_collection: Collection, text_chunks: List[str]) -> None:
@@ -165,14 +176,14 @@ class KBManager:
             print(f"Error querying KB {kb_id}: {e}")
             return []
 
-    def list_kbs(self) -> List[dict]:
+    def list_kbs(self) -> List[Dict[str, Optional[str]]]:
         """
-        Lists all existing knowledge base collections along with a 
-        preview/summary derived from the first document.
+        Lists all existing knowledge base collections along with their name (if set)
+        and a preview/summary derived from the first document.
 
         Returns:
             A list of dictionaries, where each dictionary contains 
-            'kb_id' (str) and 'summary' (str).
+            'kb_id' (str), 'name' (Optional[str]), and 'summary' (str).
         """
         kb_info_list = []
         max_summary_length = 150 # Limit the summary length
@@ -180,6 +191,8 @@ class KBManager:
             collections = self.client.list_collections()
             for collection in collections:
                 summary = "(KB is empty or inaccessible)" # Default summary
+                agent_name = collection.metadata.get("agent_name") if collection.metadata else None
+                
                 try:
                     # Get the first document to use as a summary
                     results = collection.get(limit=1, include=['documents'])
@@ -199,6 +212,7 @@ class KBManager:
 
                 kb_info_list.append({
                     "kb_id": collection.name,
+                    "name": agent_name,
                     "summary": summary
                 })
                 
@@ -207,6 +221,27 @@ class KBManager:
         except Exception as e:
             print(f"Error listing collections: {e}")
             return [] # Return empty list on error
+
+    def delete_kb(self, kb_id: str) -> bool:
+        """
+        Deletes a knowledge base collection.
+
+        Args:
+            kb_id: Unique identifier for the knowledge base to delete.
+
+        Returns:
+            True if deletion was successful or collection didn't exist, False otherwise.
+        """
+        try:
+            self.client.delete_collection(name=kb_id)
+            print(f"Successfully deleted collection: {kb_id}")
+            return True
+        except NotFoundError:
+            print(f"Collection {kb_id} not found, nothing to delete.")
+            return True # Considered success as the end state is achieved
+        except Exception as e:
+            print(f"Error deleting collection {kb_id}: {e}")
+            return False
 
 # Singleton instance
 kb_manager = KBManager()
