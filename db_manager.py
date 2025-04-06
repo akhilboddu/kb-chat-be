@@ -53,10 +53,35 @@ def init_db():
             )
         ''')
         print("- Table 'uploaded_files' checked/created.")
+
+        # --- NEW: Table for conversation history ---
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS conversation_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kb_id TEXT NOT NULL, -- Using kb_id as conversation identifier for now
+                message_type TEXT NOT NULL CHECK(message_type IN ('human', 'ai')), -- 'human' or 'ai'
+                content TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        print("- Table 'conversation_history' checked/created.")
+        
+        # --- NEW: Table for KB Update Log ---
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS kb_update_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kb_id TEXT NOT NULL,
+                added_content TEXT NOT NULL,
+                source TEXT DEFAULT 'human_verified', -- Track source if needed later
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        print("- Table 'kb_update_log' checked/created.")
         
         # Optional: Add indexes for faster lookups
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_json_kb_id ON json_payloads (kb_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_files_kb_id ON uploaded_files (kb_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_conv_history_kb_id ON conversation_history (kb_id)") # Index for history
         print("- Indexes checked/created.")
         
         conn.commit()
@@ -173,6 +198,95 @@ def delete_uploaded_files(kb_id: str) -> bool:
             return True
     except sqlite3.Error as e:
         print(f"SQLite error deleting file records for {kb_id}: {e}")
+        return False
+
+# --- Conversation History Functions ---
+
+def add_conversation_message(kb_id: str, message_type: str, content: str) -> bool:
+    """Adds a message to the conversation history for a given kb_id."""
+    if message_type not in ('human', 'ai'):
+        print(f"Error: Invalid message_type '{message_type}'. Must be 'human' or 'ai'.")
+        return False
+    if not content or not content.strip():
+        print(f"Error: Cannot add empty content to conversation history for {kb_id}.")
+        return False
+        
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT INTO conversation_history 
+                   (kb_id, message_type, content) 
+                   VALUES (?, ?, ?)""",
+                (kb_id, message_type, content)
+            )
+            conn.commit()
+            # print(f"Added {message_type} message to history for KB: {kb_id}") # Less verbose logging
+            return True
+    except sqlite3.Error as e:
+        print(f"SQLite error adding conversation message for {kb_id}: {e}")
+        return False
+
+def get_conversation_history(kb_id: str) -> List[Dict[str, Any]]:
+    """Retrieves conversation history for a given kb_id, ordered by timestamp."""
+    history = []
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT message_type, content, timestamp 
+                   FROM conversation_history 
+                   WHERE kb_id = ? 
+                   ORDER BY timestamp ASC""", # ASC to get chronological order
+                 (kb_id,)
+            )
+            rows = cursor.fetchall()
+            for row in rows:
+                # Convert row object to dictionary
+                history.append(dict(row)) 
+            return history
+    except sqlite3.Error as e:
+        print(f"SQLite error retrieving conversation history for {kb_id}: {e}")
+        return [] # Return empty list on error
+
+def delete_conversation_history(kb_id: str) -> bool:
+    """Deletes all conversation history messages associated with a specific kb_id."""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            # Execute the delete operation
+            cursor.execute("DELETE FROM conversation_history WHERE kb_id = ?", (kb_id,))
+            # Get the number of rows affected before committing
+            rows_deleted = cursor.rowcount
+            conn.commit()
+            print(f"Deleted {rows_deleted} conversation history records for KB: {kb_id}")
+            return True
+    except sqlite3.Error as e:
+        print(f"SQLite error deleting conversation history for {kb_id}: {e}")
+        return False
+
+# --- KB Update Log Functions ---
+
+def log_kb_update(kb_id: str, added_content: str) -> bool:
+    """Logs when content is added to the KB via human verification."""
+    if not added_content or not added_content.strip():
+        print(f"Error: Cannot log empty content addition for KB {kb_id}.")
+        return False
+        
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT INTO kb_update_log 
+                   (kb_id, added_content) 
+                   VALUES (?, ?)""",
+                (kb_id, added_content)
+            )
+            conn.commit()
+            print(f"Logged KB update for KB: {kb_id}")
+            return True
+    except sqlite3.Error as e:
+        print(f"SQLite error logging KB update for {kb_id}: {e}")
         return False
 
 # Initialize the DB schema when the module is loaded (idempotent)

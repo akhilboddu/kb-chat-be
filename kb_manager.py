@@ -84,13 +84,14 @@ class KBManager:
             )
             print(f"Added {len(documents)} chunks to collection {kb_collection.name} (Initial population)")
     
-    def add_to_kb(self, kb_id: str, text_to_add: str) -> bool:
+    def add_to_kb(self, kb_id: str, text_to_add: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
         """
-        Adds text update(s) to a knowledge base collection with unique IDs.
+        Adds text update(s) to a knowledge base collection with unique IDs and optional metadata.
         
         Args:
             kb_id: ID of the knowledge base to update
             text_to_add: Text content to add
+            metadata: Optional dictionary of metadata to associate with the added documents.
             
         Returns:
             Success status
@@ -111,17 +112,21 @@ class KBManager:
         # Generate unique IDs for these new chunks
         documents_to_add = []
         ids_to_add = []
+        metadatas_to_add = [] # List to hold metadata for each chunk
         timestamp = int(time.time() * 1000) # Milliseconds for better uniqueness
         for i, chunk in enumerate(chunks):
              if not chunk.strip():
                  continue
              documents_to_add.append(chunk)
              ids_to_add.append(f"add_{timestamp}_{i}") # Unique ID based on time
+             # Add the provided metadata (or None) for each chunk
+             metadatas_to_add.append(metadata)
 
         if documents_to_add:
             collection.add(
                 documents=documents_to_add,
-                ids=ids_to_add
+                ids=ids_to_add,
+                metadatas=metadatas_to_add # Pass the list of metadata dictionaries
             )
             print(f"Added {len(documents_to_add)} new unique chunks to collection {collection.name}")
             return True

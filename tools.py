@@ -18,7 +18,7 @@ def get_retriever_tool(kb_id: str) -> Tool:
     """
     def retrieve_from_kb(query: str) -> Dict[str, Any]:
         """Get relevant information and distances from the knowledge base."""
-        results = kb_manager.get_similar_docs(kb_id, query, n_results=3) # Get top 3 results
+        results = kb_manager.get_similar_docs(kb_id, query, n_results=2) # Get top 2 results
         
         if not results:
             return {"documents": "No relevant information found in the knowledge base.", "min_distance": None}
