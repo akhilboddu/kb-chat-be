@@ -308,5 +308,77 @@ class KBManager:
             # Raise the exception to be handled by the API layer
             raise e 
 
+    def cleanup_duplicates(self, kb_id: str) -> int:
+        """
+        Finds and removes documents with duplicate text content within a KB collection.
+        Keeps the first encountered instance of each document text.
+
+        Args:
+            kb_id: The unique identifier for the knowledge base.
+
+        Returns:
+            The number of duplicate documents deleted.
+
+        Raises:
+            NotFoundError: If the collection (kb_id) does not exist.
+            Exception: For other unexpected errors during retrieval or deletion.
+        """
+        print(f"Starting duplicate cleanup for KB: {kb_id}")
+        deleted_count = 0
+        try:
+            collection = self.client.get_collection(name=kb_id)
+            print(f"Retrieved collection: {kb_id}")
+
+            # Retrieve all documents and their IDs
+            # ChromaDB's get() retrieves all if limit is not specified.
+            # Warning: This could be memory intensive for very large KBs.
+            print(f"Retrieving all documents and IDs for KB: {kb_id}...")
+            results = collection.get(include=['documents']) # IDs are included by default
+            print(f"Retrieved {len(results.get('ids', []))} documents from KB: {kb_id}")
+
+            if not results or not results.get('ids'):
+                print(f"KB {kb_id} is empty or could not retrieve documents. No cleanup needed.")
+                return 0
+
+            doc_texts = results.get('documents', [])
+            doc_ids = results.get('ids', [])
+
+            seen_texts = {} # Store {text_content: first_id}
+            ids_to_delete = []
+
+            for doc_id, text in zip(doc_ids, doc_texts):
+                if not text: # Skip potentially empty/None text entries
+                    continue
+                # Normalize whitespace for comparison? Optional, but might catch more duplicates.
+                normalized_text = " ".join(text.split())
+
+                if normalized_text in seen_texts:
+                    # Found a duplicate, mark this ID for deletion
+                    ids_to_delete.append(doc_id)
+                else:
+                    # First time seeing this text, record its ID
+                    seen_texts[normalized_text] = doc_id
+
+            if ids_to_delete:
+                print(f"Found {len(ids_to_delete)} duplicate documents to delete in KB: {kb_id}.")
+                # Perform batch deletion
+                collection.delete(ids=ids_to_delete)
+                deleted_count = len(ids_to_delete)
+                print(f"Successfully deleted {deleted_count} duplicates from KB: {kb_id}.")
+            else:
+                print(f"No duplicate documents found in KB: {kb_id}.")
+
+            return deleted_count
+
+        except NotFoundError:
+            print(f"Error: Collection {kb_id} not found during cleanup.")
+            raise # Re-raise NotFoundError to be handled by the caller (API endpoint)
+        except Exception as e:
+            print(f"An unexpected error occurred during cleanup for KB {kb_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            # Re-raise the exception so the API endpoint knows something went wrong
+            raise e
+
 # Singleton instance
 kb_manager = KBManager()

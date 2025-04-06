@@ -65,7 +65,7 @@ def init_db():
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        print("- Table 'conversation_history' checked/created.")
+        print("- Table 'conversation_history' checked/created (without confidence_score).")
         
         # --- NEW: Table for KB Update Log ---
         cursor.execute('''
@@ -78,6 +78,17 @@ def init_db():
             )
         ''')
         print("- Table 'kb_update_log' checked/created.")
+        
+        # --- NEW: Table for Agent Configuration ---
+        cursor.execute(f'''
+            CREATE TABLE IF NOT EXISTS agent_config (
+                kb_id TEXT PRIMARY KEY NOT NULL,
+                system_prompt TEXT DEFAULT '{DEFAULT_SYSTEM_PROMPT.replace("'", "''")}', -- Use f-string carefully
+                max_iterations INTEGER DEFAULT {DEFAULT_MAX_ITERATIONS}
+                -- Add other config columns here with defaults
+            )
+        ''')
+        print("- Table 'agent_config' checked/created (without confidence_threshold).")
         
         # Optional: Add indexes for faster lookups
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_json_kb_id ON json_payloads (kb_id)")
@@ -204,7 +215,16 @@ def delete_uploaded_files(kb_id: str) -> bool:
 # --- Conversation History Functions ---
 
 def add_conversation_message(kb_id: str, message_type: str, content: str) -> bool:
-    """Adds a message to the conversation history for a given kb_id."""
+    """Adds a message to the conversation history for a given kb_id.
+
+    Args:
+        kb_id: The knowledge base ID.
+        message_type: Type of message ('human', 'ai', 'human_agent').
+        content: The message content.
+
+    Returns:
+        True if successful, False otherwise.
+    """
     if message_type not in ('human', 'ai', 'human_agent'):
         print(f"Error: Invalid message_type '{message_type}'. Must be 'human', 'ai', or 'human_agent'.")
         return False
@@ -288,6 +308,134 @@ def log_kb_update(kb_id: str, added_content: str) -> bool:
             return True
     except sqlite3.Error as e:
         print(f"SQLite error logging KB update for {kb_id}: {e}")
+        return False
+
+# Default values for agent configuration
+DEFAULT_SYSTEM_PROMPT = """You are Alex, a dedicated employee at the company who is enthusiastic and knowledgeable about our products and services! 🤖 Your goal is to help users understand our business/services by providing clear, accurate information based *only* on the knowledge base content provided. Make the conversation engaging and fun!
+
+**Your Personality & Style:**
+*   **Tone:** Friendly, helpful, slightly informal, and proactive. You speak as a real employee, not as a third-party AI.
+*   **Emojis:** Use relevant emojis sparingly to add personality (e.g., ✨, 🤔, 👍, 🎉). Don't overdo it!
+*   **Formatting:** Use Markdown (like *bold* or bullet points) to make your answers easy to read and understand.
+*   **Grounding:** ALWAYS base your answers on the information retrieved. **IMPORTANT:** In your `Final Answer` to the user, **NEVER mention your tools, your knowledge base, or the search process itself.** Speak naturally as if you *know* the information (or know that you *don't* know it). Instead of "Based on my knowledge base...", say "I see here that..." or just state the fact directly.
+*   **Greetings:** Start the *very first* response in a conversation with a greeting (like "Hi there!"). For subsequent responses, **do not repeat greetings**; just answer the user's query directly.
+*   **Proactivity:** When you don't know an answer, don't ask if the user wants you to check - instead, state confidently that you'll find out for them. For example: "You know what, I don't know about that. Let me check with my team and get back to you! I will get back to you, or my manager will help. In the meantime, do you have any other questions?"
+
+**TOOLS:**
+------
+You have access to the following tools:
+{tools}
+
+**How to Use Tools:**
+To use a tool, ALWAYS use the following format exactly:
+```
+Thought: Do I need to use a tool? Yes. I need to check the knowledge base for information about [topic].
+Action: The action to take. Should be one of [{tool_names}]
+Action Input: The specific question or topic to search for in the knowledge base.
+Observation: [The tool will populate this with the retrieved information]
+```
+
+**How to Respond to the User:**
+When you have the final answer based on the Observation, or if you don't need a tool, ALWAYS use the format:
+```
+Thought: Do I need to use a tool? No. I have the information from the Observation (or don't need a tool) and can now formulate the final answer.
+Final Answer: [Your friendly, Markdown-formatted, emoji-enhanced answer based *only* on the Observation goes here. Be conversational and speak as an employee of the company!]
+```
+
+**IMPORTANT - When Information is Missing:**
+*   If the `knowledge_base_retriever` Observation explicitly states 'No relevant information found', OR
+*   If the retrieved information (Observation) does not actually answer the user's specific question,
+*   Then, formulate a proactive `Final Answer`. **Do NOT mention searching or your knowledge base.** Explain naturally what you *do* know (if anything relevant was found), but state confidently that you'll check with your team/get back to them.
+*   **Crucially:** In **ALL** cases where you cannot provide a direct answer to the user's specific question based *only* on the provided Observation, you **MUST** end your entire `Final Answer` with the exact marker `(needs help)`. No extra text or punctuation after it.
+*   Example 1 (Information Missing): "You know what, I don't see the specific detail about [topic] here. Let me check with my team and get back to you! I will get back to you, or my manager will help. In the meantime, do you have any other questions? (needs help)"
+*   Example 2 (Related Info Found, But Not Specific Answer): "I see we have details about [related topic X] and [related topic Y], but I don't have the specific information on [user's specific query] right now. I'll find out the exact details for you. Is there anything else I can help with while I look into that? (needs help)"
+
+Okay, let's get started! 🎉
+
+Previous conversation history:
+{chat_history}
+
+New input: {input}
+{agent_scratchpad}"""
+DEFAULT_MAX_ITERATIONS = 8
+# Add other defaults as needed (model_name, temperature...)
+
+
+def get_agent_config(kb_id: str) -> Dict[str, Any]:
+    """Retrieves agent configuration or returns defaults if not found."""
+    config = {
+        "system_prompt": DEFAULT_SYSTEM_PROMPT,
+        "max_iterations": DEFAULT_MAX_ITERATIONS,
+        # Add other defaults here
+    }
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            # Fetch specific columns
+            cursor.execute(
+                """SELECT system_prompt, max_iterations 
+                   FROM agent_config 
+                   WHERE kb_id = ?""", 
+                (kb_id,)
+            )
+            row = cursor.fetchone()
+            if row:
+                # Update defaults with fetched values only if they are not NULL
+                # Convert row to dict first for easier access
+                row_dict = dict(row)
+                if row_dict.get("system_prompt") is not None:
+                    config["system_prompt"] = row_dict["system_prompt"]
+                if row_dict.get("max_iterations") is not None:
+                    config["max_iterations"] = row_dict["max_iterations"]
+                # Update other fields similarly...
+                print(f"Loaded specific config for KB: {kb_id}")
+            else:
+                print(f"No specific config found for KB: {kb_id}. Using defaults.")
+        return config
+    except sqlite3.Error as e:
+        print(f"SQLite error retrieving agent config for {kb_id}, using defaults: {e}")
+        # Return defaults on error
+        return config
+
+def upsert_agent_config(kb_id: str, config_data: Dict[str, Any]) -> bool:
+    """Updates or inserts agent configuration."""
+    # Filter out keys with None values from input, as we only want to update provided fields
+    # Also filter out confidence_threshold if it's accidentally passed
+    update_data = {k: v for k, v in config_data.items() if v is not None and k != 'confidence_threshold'}
+    
+    if not update_data:
+        print(f"No valid configuration data provided to update for KB: {kb_id}")
+        return False # Or True, depending on desired behavior for empty update
+
+    set_clauses = ", ".join([f"{key} = ?" for key in update_data.keys()])
+    values = list(update_data.values())
+    
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            # Check if config exists
+            cursor.execute("SELECT 1 FROM agent_config WHERE kb_id = ?", (kb_id,))
+            exists = cursor.fetchone()
+
+            if exists:
+                # Update existing config
+                sql = f"UPDATE agent_config SET {set_clauses} WHERE kb_id = ?"
+                values.append(kb_id) # Add kb_id for the WHERE clause
+                cursor.execute(sql, values)
+                print(f"Updated agent config for KB: {kb_id}")
+            else:
+                # Insert new config - include kb_id in keys and values
+                all_keys = list(update_data.keys()) + ["kb_id"]
+                placeholders = ", ".join(["?"] * len(all_keys))
+                sql = f"INSERT INTO agent_config ({', '.join(all_keys)}) VALUES ({placeholders})"
+                values.append(kb_id) # Add kb_id for the INSERT values
+                cursor.execute(sql, values)
+                print(f"Inserted new agent config for KB: {kb_id}")
+                
+            conn.commit()
+            return True
+    except sqlite3.Error as e:
+        print(f"SQLite error upserting agent config for {kb_id}: {e}")
         return False
 
 # Initialize the DB schema when the module is loaded (idempotent)
