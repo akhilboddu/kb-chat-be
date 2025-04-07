@@ -5,15 +5,23 @@ import time
 import asyncio # <--- Import asyncio
 import re  # For splitting sentences
 import json # For formatting SSE data
-from fastapi import FastAPI, HTTPException, UploadFile, File, Body, status, Query, Request # Added Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Body, status, Query, Request, BackgroundTasks # Added Request and BackgroundTasks
 from fastapi.responses import StreamingResponse # Added StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl
 from typing import Dict, Any, List, Optional
 from langchain_core.messages import HumanMessage, AIMessage # Import message types
 from fastapi.middleware.cors import CORSMiddleware # Import CORS middleware
 import datetime
 import os
 from chromadb.errors import NotFoundError # <--- Import NotFoundError
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Import core components
 import data_processor
@@ -26,6 +34,8 @@ from langchain.memory import ConversationBufferMemory # Keep this one
 from langchain_core.memory import BaseMemory # Correct import path for BaseMemory
 from langchain_core.prompts import PromptTemplate # Add PromptTemplate import
 from langchain_core.output_parsers import StrOutputParser # Add StrOutputParser import
+from scraper import scrape_website # Import the scraper function
+from data_processor import extract_text_from_json # Import JSON processor
 
 # --- Initialize SQLite DB --- 
 # Ensure the DB and tables are created when the app starts
@@ -196,6 +206,30 @@ class UpdateAgentConfigRequest(BaseModel):
     max_iterations: Optional[int] = Field(None, ge=1, description="New maximum iterations for the agent loop.")
     # Add other configurable fields here as Optional
 
+# --- NEW: Models for Scrape URL Endpoint ---
+class ScrapeURLRequest(BaseModel):
+    """Request body for initiating a website scrape."""
+    url: HttpUrl = Field(..., description="The URL of the website to scrape.")
+    max_pages: Optional[int] = Field(None, ge=1, description="Optional override for the maximum number of pages to scrape.")
+
+class ScrapeInitiatedResponse(BaseModel):
+    """Response confirming that scraping has started."""
+    kb_id: str
+    status: str = "processing"
+    message: str
+    submitted_url: str
+
+class ScrapeStatusResponse(BaseModel):
+    """Response containing the current status of a scraping operation."""
+    kb_id: str
+    status: str  # "processing", "completed", "failed"
+    progress: Optional[dict] = None  # Optional progress details
+    error: Optional[str] = None  # Error message if status is "failed"
+    submitted_url: str
+    pages_scraped: Optional[int] = None
+    total_pages: Optional[int] = None
+    last_update: Optional[datetime.datetime] = None
+
 # --- FastAPI App Initialization ---
 app = FastAPI(
     title="Multi-Tenant AI Sales Agent API",
@@ -248,6 +282,133 @@ def clean_agent_output(text: str) -> str:
     return final_cleaned
 
 # Removed chunk_response function - no longer needed with SSE generator
+
+# --- Background Task Function --- 
+async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]):
+    """Runs the scraping and KB population process in the background."""
+    logger.info(f"[Background Task] Starting scrape for KB '{kb_id}' from URL: {url} (max_pages: {max_pages or 'default'})" )
+    current_status = "processing" # Keep track of the current status
+    
+    # Initialize scraping status
+    db_manager.update_scrape_status(kb_id, {
+        'status': current_status,
+        'submitted_url': url,
+        'pages_scraped': 0,
+        'total_pages': max_pages if max_pages else config.get("MAX_INTERNAL_PAGES", 15),
+        'progress': {'stage': 'starting', 'details': 'Initializing scraper'}
+    })
+    
+    try:
+        # 1. Run the scraper
+        scrape_result = await scrape_website(url, max_pages=max_pages) # Pass max_pages override
+
+        if not scrape_result or "error" in scrape_result:
+            error_detail = scrape_result.get("error", "Unknown scraping error") if scrape_result else "Empty scrape result"
+            logger.error(f"[Background Task] Scrape failed for KB '{kb_id}', URL '{url}'. Error: {error_detail}")
+            current_status = "failed"
+            # Update status to failed
+            db_manager.update_scrape_status(kb_id, {
+                'status': current_status,
+                'submitted_url': url,
+                'error': error_detail,
+                'progress': {'stage': 'failed', 'details': f"Scraping failed: {error_detail}"}
+            })
+            return # Stop processing
+
+        # Update pages scraped from metadata (merge with next status update if possible or ensure fields are present)
+        pages_scraped_count = 0
+        if "scrape_metadata" in scrape_result:
+            pages_scraped_count = scrape_result["scrape_metadata"].get("pages_scraped", 0)
+            # Update status including pages scraped
+            db_manager.update_scrape_status(kb_id, {
+                'status': current_status, # Still 'processing'
+                'submitted_url': url,
+                'pages_scraped': pages_scraped_count,
+                'progress': {'stage': 'scraping_complete', 'details': f'Scraped {pages_scraped_count} pages'}
+            })
+
+        # 2. Extract the business profile
+        business_profile = scrape_result.get("business_profile")
+        if not business_profile or "error" in business_profile:
+            error_detail = business_profile.get("error", "Unknown profile compilation error") if business_profile else "Missing business profile"
+            logger.error(f"[Background Task] Profile compilation failed for KB '{kb_id}', URL '{url}'. Error: {error_detail}")
+            current_status = "failed"
+            db_manager.update_scrape_status(kb_id, {
+                'status': current_status,
+                'submitted_url': url,
+                'error': error_detail,
+                'progress': {'stage': 'failed', 'details': f"Profile compilation failed: {error_detail}"}
+            })
+            return # Stop processing
+            
+        logger.info(f"[Background Task] Scrape successful for KB '{kb_id}', URL '{url}'. Profile keys: {list(business_profile.keys())}")
+        
+        # Update status before processing
+        db_manager.update_scrape_status(kb_id, {
+            'status': current_status, # Still 'processing'
+            'submitted_url': url,
+            'pages_scraped': pages_scraped_count, # Include potentially updated count
+            'progress': {'stage': 'processing_profile', 'details': 'Extracting text from profile'}
+        })
+        
+        # 3. Process JSON profile to text
+        text_to_add = extract_text_from_json(business_profile)
+        if not text_to_add or not text_to_add.strip():
+             logger.warning(f"[Background Task] No text extracted from scraped JSON profile for KB '{kb_id}', URL '{url}'. KB not populated.")
+             current_status = "failed"
+             db_manager.update_scrape_status(kb_id, {
+                'status': current_status,
+                'submitted_url': url,
+                'error': 'No text content extracted from scraped profile',
+                'progress': {'stage': 'failed', 'details': 'No text extracted from profile'}
+             })
+             return # Stop processing
+             
+        logger.info(f"[Background Task] Extracted {len(text_to_add)} characters from profile for KB '{kb_id}'.")
+
+        # Update status before adding to KB
+        db_manager.update_scrape_status(kb_id, {
+            'status': current_status, # Still 'processing'
+            'submitted_url': url,
+            'progress': {'stage': 'populating_kb', 'details': 'Adding extracted text to knowledge base'}
+        })
+
+        # 4. Add text to Knowledge Base
+        add_success = kb_manager.add_to_kb(kb_id, text_to_add)
+        if add_success:
+            logger.info(f"[Background Task] Successfully populated KB '{kb_id}' with scraped content from URL '{url}'.")
+            current_status = "completed"
+            db_manager.update_scrape_status(kb_id, {
+                'status': current_status,
+                'submitted_url': url,
+                'pages_scraped': pages_scraped_count, # Final count
+                'progress': {
+                    'stage': 'completed',
+                    'details': 'Successfully added content to knowledge base',
+                    'chars_added': len(text_to_add),
+                    'profile_keys': list(business_profile.keys())
+                }
+            })
+        else:
+             logger.error(f"[Background Task] Failed to add scraped content to KB '{kb_id}' from URL '{url}'.")
+             current_status = "failed"
+             db_manager.update_scrape_status(kb_id, {
+                'status': current_status,
+                'submitted_url': url,
+                'error': 'Failed to add extracted content to knowledge base',
+                'progress': {'stage': 'failed', 'details': 'Failed to add content to KB'}
+             })
+             
+    except Exception as e:
+        logger.exception(f"[Background Task] Unhandled exception during scrape/populate for KB '{kb_id}', URL '{url}': {e}")
+        # Ensure status reflects failure
+        current_status = "failed"
+        db_manager.update_scrape_status(kb_id, {
+            'status': current_status,
+            'submitted_url': url,
+            'error': f"Unhandled exception: {str(e)}",
+            'progress': {'stage': 'failed', 'details': f'Unhandled exception: {str(e)}'}
+        })
 
 # --- HTTP Endpoints ---
 
@@ -1102,6 +1263,89 @@ async def chat_endpoint(kb_id: str, request: ChatRequest):
         # Return a generic error via HTTPException, don't save anything
         raise HTTPException(status_code=500, detail=f"Error processing chat request: {str(e)}")
 
+
+# --- NEW: Scrape URL Endpoint ---
+@app.post("/agents/{kb_id}/scrape-url", response_model=ScrapeInitiatedResponse, status_code=status.HTTP_202_ACCEPTED)
+async def scrape_url_and_populate_kb(
+    kb_id: str, 
+    request: ScrapeURLRequest, 
+    background_tasks: BackgroundTasks
+):
+    """
+    Initiate scraping of a URL to populate a knowledge base.
+    The scraping happens in the background.
+    """
+    try:
+        # Initialize scraping status
+        initial_status = {
+            "status": "processing",
+            "submitted_url": str(request.url),
+            "pages_scraped": 0,
+            "total_pages": request.max_pages if request.max_pages else config.get("MAX_INTERNAL_PAGES", 15),
+            "progress": {
+                "stage": "initialized",
+                "details": "Starting scrape process"
+            }
+        }
+        
+        # Update initial status
+        if not db_manager.update_scrape_status(kb_id, initial_status):
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to initialize scraping status"
+            )
+        
+        # Add the background task
+        background_tasks.add_task(
+            run_scrape_and_populate,
+            kb_id=kb_id,
+            url=str(request.url),
+            max_pages=request.max_pages
+        )
+        
+        return ScrapeInitiatedResponse(
+            kb_id=kb_id,
+            status="processing",
+            message="Scraping initiated in background",
+            submitted_url=str(request.url)
+        )
+        
+    except Exception as e:
+        logger.error(f"Error initiating scrape for KB {kb_id}: {e}")
+        # Update status to failed if initialization fails
+        db_manager.update_scrape_status(kb_id, {
+            "status": "failed",
+            "submitted_url": str(request.url),
+            "error": str(e),
+            "progress": {
+                "stage": "failed",
+                "details": f"Failed to initialize scrape: {str(e)}"
+            }
+        })
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to initiate scraping: {str(e)}"
+        )
+
+@app.get("/agents/{kb_id}/scrape-status", response_model=ScrapeStatusResponse)
+async def get_scrape_status(kb_id: str):
+    """
+    Get the current status of a scraping operation for a specific KB.
+    """
+    try:
+        status = db_manager.get_scrape_status(kb_id)
+        if not status:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No scraping operation found for KB {kb_id}"
+            )
+        return ScrapeStatusResponse(**status)
+    except Exception as e:
+        logger.error(f"Error retrieving scrape status for KB {kb_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve scraping status: {str(e)}"
+        )
 
 # --- Run Instruction (for local development) ---
 if __name__ == "__main__":

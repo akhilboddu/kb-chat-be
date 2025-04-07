@@ -9,6 +9,8 @@ pydantic>=2.0.0
 # Add the HuggingFace integration for embeddings
 langchain-huggingface>=0.0.1
 langchain-openai>=0.0.5 # Add the OpenAI integration (used for DeepSeek via compatibility)
+langchain-google-genai # Add Gemini import
+langchain-deepseek # Add Deepseek integration
 # Add any other specific dependencies your project uses
 # e.g., specific LLM client libraries if not included above
 accelerate>=0.20.0 # Required by transformers/sentence-transformers
@@ -24,3 +26,4 @@ openpyxl>=3.1.0 # For XLSX files
 python-multipart>=0.0.5 # For handling form data and file uploads
 
 pymupdf4llm # Added PDF parsing library for LLM
+playwright # Added for web scraping
