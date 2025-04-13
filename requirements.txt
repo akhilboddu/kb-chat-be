@@ -27,3 +27,5 @@ python-multipart>=0.0.5 # For handling form data and file uploads
 
 pymupdf4llm # Added PDF parsing library for LLM
 playwright # Added for web scraping
+
+supabase
