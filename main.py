@@ -36,6 +36,7 @@ from langchain_core.prompts import PromptTemplate # Add PromptTemplate import
 from langchain_core.output_parsers import StrOutputParser # Add StrOutputParser import
 from scraper import scrape_website # Import the scraper function
 from data_processor import extract_text_from_json # Import JSON processor
+from supabase_client import supabase # Import the supabase client
 
 # --- Initialize SQLite DB --- 
 # Ensure the DB and tables are created when the app starts
@@ -244,7 +245,9 @@ origins = [
     "http://localhost:3002",
     "http://127.0.0.1:3002",
     "http://localhost:8080",
-    "http://127.0.0.1:8080"
+    "http://127.0.0.1:8080",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
 ] 
 
 app.add_middleware(
@@ -1351,6 +1354,22 @@ async def get_scrape_status(kb_id: str):
             status_code=500,
             detail=f"Failed to retrieve scraping status: {str(e)}"
         )
+
+
+# --- BOT: Endpoints ---
+@app.post("/bots/{bot_id}/chat", response_model=ChatResponse)
+async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
+    """
+    HTTP endpoint for stateful, non-streaming chat interactions with a bot,
+    maintaining conversation history using the database.
+    """
+    print(f"Received HTTP chat request for bot_id: {bot_id}")
+
+    response = supabase.table("bots").select("*").eq("id", bot_id).execute()
+    kb_id = response.data[0]["kb_id"]
+
+    # now use all logic from /agents/{kb_id}/chat endpoint
+    return await chat_endpoint(kb_id, request)
 
 # --- Run Instruction (for local development) ---
 if __name__ == "__main__":
