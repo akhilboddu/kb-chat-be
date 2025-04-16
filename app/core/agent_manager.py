@@ -1,16 +1,20 @@
 # agent_manager.py
 
+import os
+import re
 from typing import List, Optional
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain.memory import ConversationBufferMemory
 from langchain_core.memory import BaseMemory
+import logging
 
-# Import LLM from config and tool functions
-from config import llm
-from tools import get_retriever_tool, get_knowledge_update_tool, get_answering_tool
-import db_manager # Import db_manager
+from app.core.config import llm
+from app.core.tools import get_retriever_tool, get_knowledge_update_tool, get_answering_tool
+from app.core import db_manager # Import db_manager
+
+logger = logging.getLogger(__name__)
 
 # Define the core ReAct prompt template
 # Updated for Persona, Tone, Proactivity, and Markdown
@@ -86,7 +90,6 @@ if __name__ == '__main__':
     # Find a recent test KB ID in the ChromaDB directory or use a known one
     try:
         # Simple way to find one - replace with a known good ID if needed
-        import os
         db_path = os.path.join(".", "chromadb_data")
         potential_kbs = [d for d in os.listdir(db_path) if os.path.isdir(os.path.join(db_path, d)) and d.startswith("test_kb_")]
         if not potential_kbs:

@@ -11,9 +11,7 @@ from app.models.chat import (
 )
 from app.models.base import StatusResponse
 
-import db_manager
-from kb_manager import kb_manager
-from agent_manager import create_agent_executor
+from app.core import db_manager, kb_manager, agent_manager
 from app.utils.text_processing import clean_agent_output
 
 router = APIRouter(tags=["chat"])
@@ -53,7 +51,7 @@ async def chat_endpoint(kb_id: str, request: ChatRequest):
 
         # Instantiate the agent executor for this KB, passing the populated memory
         print(f"Creating agent executor with memory for kb_id: {kb_id}")
-        agent_executor = create_agent_executor(kb_id=kb_id, memory=memory) 
+        agent_executor = agent_manager.create_agent_executor(kb_id=kb_id, memory=memory) 
         print(f"Agent executor created successfully for kb_id: {kb_id}")
         
         # --- Format History for Prompt --- 
@@ -475,7 +473,7 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     """
     print(f"Received HTTP chat request for bot_id: {bot_id}")
 
-    from supabase_client import supabase
+    from app.core.supabase_client import supabase
     response = supabase.table("bots").select("*").eq("id", bot_id).execute()
     kb_id = response.data[0]["kb_id"]
 

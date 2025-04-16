@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Set, Tuple, Optional
 from urllib.parse import urljoin, urlparse
 from dotenv import load_dotenv
-from data_processor import chunk_text
+from app.core.data_processor import chunk_text
 
 # Configure logging
 logging.basicConfig(

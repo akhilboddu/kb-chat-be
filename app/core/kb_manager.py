@@ -4,8 +4,8 @@ from chromadb.errors import NotFoundError
 from chromadb.config import Settings
 from typing import List, Optional, Dict, Any
 from chromadb.api.models.Collection import Collection
-from config import CHROMADB_PATH, chroma_embedding_function
-import data_processor
+from app.core.config import CHROMADB_PATH, chroma_embedding_function
+from app.core import data_processor
 import time
 
 class KBManager:

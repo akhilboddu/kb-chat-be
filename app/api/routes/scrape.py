@@ -1,8 +1,7 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks, status
 import logging
 
-import db_manager
-import config
+from app.core import db_manager, config
 from app.models.scrape import ScrapeURLRequest, ScrapeInitiatedResponse, ScrapeStatusResponse
 from app.services.scrape_service import run_scrape_and_populate
 
