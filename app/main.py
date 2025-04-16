@@ -2,8 +2,8 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-import db_manager
-from config import llm
+from app.core.db_manager import init_db
+from app.core.config import llm
 from app.api.routes import router
 
 # Configure logging
@@ -43,7 +43,7 @@ def create_app() -> FastAPI:
     )
 
     # Initialize database
-    db_manager.init_db()
+    init_db()
     
     # Mount all routes from the router
     app.include_router(router)

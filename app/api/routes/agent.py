@@ -4,9 +4,7 @@ from fastapi import APIRouter, Body, HTTPException, Query, status
 from typing import Dict, Any, List, Optional
 from chromadb.errors import NotFoundError
 
-import db_manager
-from kb_manager import kb_manager
-import data_processor
+from app.core import db_manager, kb_manager, data_processor
 from app.models.agent import (
     CreateNamedAgentRequest, CreateAgentResponse, PopulateAgentJSONRequest,
     StatusResponse, ListKBsResponse, KBInfo, KBContentResponse, KBContentItem,

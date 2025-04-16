@@ -3,7 +3,7 @@ from langchain.tools import Tool
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
-from kb_manager import kb_manager
+from app.core.kb_manager import kb_manager
 
 def get_retriever_tool(kb_id: str) -> Tool:
     """

@@ -2,11 +2,7 @@ import asyncio
 import logging
 from typing import Optional
 
-import config
-import db_manager
-from kb_manager import kb_manager
-from scraper import scrape_website
-from data_processor import extract_text_from_json
+from app.core import config, db_manager, kb_manager, scraper, data_processor
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +22,7 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
     
     try:
         # 1. Run the scraper
-        scrape_result = await scrape_website(url, max_pages=max_pages) # Pass max_pages override
+        scrape_result = await scraper.scrape_website(url, max_pages=max_pages) # Pass max_pages override
 
         if not scrape_result or "error" in scrape_result:
             error_detail = scrape_result.get("error", "Unknown scraping error") if scrape_result else "Empty scrape result"
@@ -78,7 +74,7 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
         })
         
         # 3. Process JSON profile to text
-        text_to_add = extract_text_from_json(business_profile)
+        text_to_add = data_processor.extract_text_from_json(business_profile)
         if not text_to_add or not text_to_add.strip():
              logger.warning(f"[Background Task] No text extracted from scraped JSON profile for KB '{kb_id}', URL '{url}'. KB not populated.")
              current_status = "failed"

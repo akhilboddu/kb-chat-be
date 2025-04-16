@@ -3,7 +3,7 @@ import json
 import time
 import os
 from typing import List, Dict, Any, Optional
-from config import SQLITE_DB_DIR, SQLITE_DB_PATH # Import path from config
+from app.core.config import SQLITE_DB_DIR, SQLITE_DB_PATH # Import path from app.core
 import datetime
 
 # Database path - assuming '/app/' is covered by the persistent disk mount

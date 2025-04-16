@@ -2,12 +2,9 @@ import os
 from fastapi import APIRouter, HTTPException, UploadFile, File, status
 from typing import List
 
-import db_manager
-from kb_manager import kb_manager
-from file_parser import parse_file, get_file_extension
+from app.core import db_manager, kb_manager, file_parser, supabase_client
 from app.models.base import StatusResponse
 from app.models.file import ListFilesResponse, UploadedFileInfo
-from supabase_client import supabase
 
 router = APIRouter(tags=["files"])
 
@@ -52,7 +49,7 @@ async def upload_to_kb(kb_id: str, files: List[UploadFile] = File(...)):
         # --- Parse File Content ---
         raw_extracted_text: str = None
         try:
-            raw_extracted_text = await parse_file(file)
+            raw_extracted_text = await file_parser.parse_file(file)
         except Exception as e:
             print(f"Error during file parsing for {file.filename}: {e}")
             import traceback
@@ -72,7 +69,7 @@ async def upload_to_kb(kb_id: str, files: List[UploadFile] = File(...)):
         
         # PDF parsing now happens directly into Markdown via pymupdf4llm in file_parser.py
         text_to_add = raw_extracted_text 
-        file_extension = get_file_extension(file.filename)
+        file_extension = file_parser.get_file_extension(file.filename)
         
         # --- Add to Knowledge Base --- 
         print(f"Adding parsed text from {file.filename} to KB {kb_id}...") # Simplified log
@@ -159,10 +156,10 @@ async def bot_upload_endpoint(bot_id: str, files: List[UploadFile] = File(...)):
             "source_type": "file",
             "content": fileContent
         }
-        response = supabase.table("knowledge_sources").insert(sourceData).execute()
+        response = supabase_client.supabase.table("knowledge_sources").insert(sourceData).execute()
         print(f"Knowledge source added: {response}")
 
-    response = supabase.table("bots").select("*").eq("id", bot_id).execute()
+    response = supabase_client.supabase.table("bots").select("*").eq("id", bot_id).execute()
     print(f"Bot response: {response}")
 
     kb_id = response.data[0]["kb_id"]
