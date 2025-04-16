@@ -139,6 +139,7 @@ dmypy.json
 *.swo
 
 # Scraping results
+app/results
 app/results/
 *.json
 
