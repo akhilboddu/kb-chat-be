@@ -76,6 +76,8 @@ if __name__ == "__main__":
             "./.git/*",
             "./.pytest_cache/*",
             "./__pycache__/*",
-            "./app/__pycache__/*"
+            "./app/__pycache__/*",
+            "./tests/*",
+            "./tests/__pycache__/*"
         ]
     ) 

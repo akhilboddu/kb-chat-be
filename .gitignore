@@ -121,7 +121,9 @@ dmypy.json
 /.env/
 /.venv/
 /chromadb_data/
+/chromadb_data_test/
 /db/
+/db_test/
 
 # Project Specific Ignores
 /chromadb_data/
@@ -129,3 +131,43 @@ dmypy.json
 *.sqlite3
 *.sqlite3-journal
 .DS_Store 
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Scraping results
+app/results/
+*.json
+
+# Local test data
+test_data/
+*_test_data/
+
+# Logs
+logs/
+*.log.*
+
+# Temporary files
+*.tmp
+*.temp
+.~*
+
+# Docker related (if not being tracked)
+*.dockerignore
+
+# Build artifacts
+*.pkl
+*.pickle
+index_metadata.pickle
+*_metadata.pickle
+
+# Local configuration overrides
+.env.*
+!.env.test  # Keep test environment file
+
+# System specific
+Thumbs.db
+desktop.ini 

@@ -52,13 +52,35 @@ OPENAI_API_KEY=your_openai_api_key
 
 ## Running the Application
 
-Start the development server:
+Start the development server with hot reload (tests excluded):
 
 ```bash
-python main.py
+./start.sh
+```
+
+Or manually:
+
+```bash
+uvicorn app.main:app --reload --reload-exclude="tests/*" --host 0.0.0.0 --port 8000
 ```
 
 The API will be available at http://localhost:8000.
+
+## Testing
+
+Run all tests with the provided test script:
+
+```bash
+./run_tests.sh
+```
+
+Run specific tests:
+
+```bash
+./run_tests.sh tests/api/routes/test_agent.py -v
+```
+
+See the detailed testing documentation in [tests/README.md](tests/README.md).
 
 ## API Documentation
 
