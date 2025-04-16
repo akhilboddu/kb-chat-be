@@ -1,40 +1,48 @@
 # requirements.txt
 # Core FastAPI and Server
-fastapi==0.105.0
-uvicorn==0.24.0
-pydantic==2.5.2
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+pydantic>=2.0.0
 
 # Language Models
-langchain==0.0.350
-langchain-core==0.1.0
-langchain-community==0.0.15
-langchain-openai==0.0.2
+langchain>=0.1.0
+langchain-core>=0.1.0
+# langchain-community>=0.0.1 # Deprecated
+langchain-openai>=0.0.5 # Add the OpenAI integration (used for DeepSeek via compatibility)
+langchain-huggingface>=0.0.1
+langchain-google-genai # Add Gemini import
+langchain-deepseek # Add Deepseek integration
+sentence-transformers>=2.2.0
+accelerate>=0.20.0 # Required by transformers/sentence-transformers
 
 # Vector Database and Processing
-chromadb==0.4.18
-pymupdf==1.23.7
-pymupdf4llm==0.0.4
-pdfplumber==0.10.3
-python-docx==1.1.0
-python-multipart==0.0.6
+chromadb>=0.4.0
+pymupdf>=1.23.7
+pymupdf4llm
+pdfplumber>=0.10.3
+pypdf>=4.0.0 # For PDF files
+python-docx>=1.1.0 # For DOCX files
+openpyxl>=3.1.0 # For XLSX files
+python-multipart>=0.0.5 # For handling form data and file uploads
 
 # Web Scraping and API
-requests==2.31.0
-beautifulsoup4==4.12.2
-openai==1.6.1
-httpx==0.25.2
-supabase==2.0.0
+requests>=2.31.0
+beautifulsoup4>=4.12.2
+openai>=1.6.1
+httpx>=0.24.0 # Modified to be compatible with both openai and supabase
+supabase>=2.0.0
+playwright # Added for web scraping
 
 # SQLite And Data Processing
-aiosqlite==0.19.0
-pytesseract==0.3.10
-python-dotenv==1.0.0
+aiosqlite>=0.19.0
+pytesseract>=0.3.10
+python-dotenv>=1.0.0
 
 # Utilities
-pytest==7.4.3
-pytest-asyncio==0.21.1
-Pillow==10.1.0
-tiktoken==0.5.2
-pypandoc==1.12
+pytest>=7.4.3
+pytest-asyncio>=0.21.1
+Pillow>=10.1.0
+tiktoken>=0.5.2
+pypandoc>=1.12
 
 # Add any new packages here if needed
