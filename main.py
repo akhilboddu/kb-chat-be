@@ -754,72 +754,101 @@ async def human_response_endpoint(kb_id: str, request: HumanResponseRequest):
 
 # --- File Upload Endpoint ---
 @app.post("/agents/{kb_id}/upload", response_model=StatusResponse)
-async def upload_to_kb(kb_id: str, file: UploadFile = File(...)):
+async def upload_to_kb(kb_id: str, files: List[UploadFile] = File(...)):
     """
-    Accepts a file upload, parses its content, stores file metadata,
-    and adds the extracted text (potentially structured by AI for PDFs) 
-    to the specified knowledge base.
+    Accepts multiple file uploads, parses their content, stores file metadata,
+    and adds the extracted text to the specified knowledge base.
     """
-    print(f"Received file upload request for kb_id: {kb_id}. Filename: {file.filename}, Content-Type: {file.content_type}")
-
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No filename provided with the upload.")
-
-    # --- Store File Metadata ---
-    # Get file size (requires reading the file or seeking)
-    file.file.seek(0, os.SEEK_END)
-    file_size = file.file.tell()
-    file.file.seek(0) # Reset file pointer for parsing
-    print(f"Storing file record for '{file.filename}' ({file_size} bytes)... ")
-    record_success = db_manager.add_uploaded_file_record(
-        kb_id=kb_id,
-        filename=file.filename,
-        file_size=file_size,
-        content_type=file.content_type
-    )
-    if not record_success:
-        print(f"Error: Failed to store file metadata record for '{file.filename}' in KB {kb_id}. Aborting upload.")
-        raise HTTPException(status_code=500, detail=f"Failed to store file metadata before processing knowledge base.")
-
-    # --- Parse File Content ---
-    raw_extracted_text: Optional[str] = None
-    try:
-        raw_extracted_text = await parse_file(file)
-    except Exception as e:
-        print(f"Internal server error during file parsing for {file.filename}: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Server error processing file: {str(e)}")
+    if not files or len(files) == 0:
+        raise HTTPException(status_code=400, detail="No files provided for upload.")
     
-    if raw_extracted_text is None:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Unsupported file type or failed to parse file: {file.filename}. Supported types: {', '.join(SUPPORTED_EXTENSIONS)}"
+    processed_files = 0
+    failed_files = 0
+    no_content_files = 0
+    
+    for file in files:
+        print(f"Processing file for kb_id: {kb_id}. Filename: {file.filename}, Content-Type: {file.content_type}")
+
+        if not file.filename:
+            print(f"Skipping file with no filename in request")
+            failed_files += 1
+            continue
+
+        # --- Store File Metadata ---
+        # Get file size (requires reading the file or seeking)
+        file.file.seek(0, os.SEEK_END)
+        file_size = file.file.tell()
+        file.file.seek(0) # Reset file pointer for parsing
+        print(f"Storing file record for '{file.filename}' ({file_size} bytes)... ")
+        record_success = db_manager.add_uploaded_file_record(
+            kb_id=kb_id,
+            filename=file.filename,
+            file_size=file_size,
+            content_type=file.content_type
         )
-    if not raw_extracted_text.strip():
-        print(f"File {file.filename} parsed successfully but contained no text content.")
-        return StatusResponse(status="success", message="File processed, but no text content found to add.")
+        if not record_success:
+            print(f"Error: Failed to store file metadata record for '{file.filename}' in KB {kb_id}. Skipping this file.")
+            failed_files += 1
+            continue
+
+        # --- Parse File Content ---
+        raw_extracted_text: Optional[str] = None
+        try:
+            raw_extracted_text = await parse_file(file)
+        except Exception as e:
+            print(f"Error during file parsing for {file.filename}: {e}")
+            import traceback
+            traceback.print_exc()
+            failed_files += 1
+            continue
+        
+        if raw_extracted_text is None:
+            print(f"Unsupported file type or failed to parse file: {file.filename}")
+            failed_files += 1
+            continue
+            
+        if not raw_extracted_text.strip():
+            print(f"File {file.filename} parsed successfully but contained no text content.")
+            no_content_files += 1
+            continue
+        
+        # PDF parsing now happens directly into Markdown via pymupdf4llm in file_parser.py
+        text_to_add = raw_extracted_text 
+        file_extension = get_file_extension(file.filename)
+        
+        # --- Add to Knowledge Base --- 
+        print(f"Adding parsed text from {file.filename} to KB {kb_id}...") # Simplified log
+        try:
+            success = kb_manager.add_to_kb(kb_id, text_to_add)
+            if success:
+                # Simplified message, as structuring is now part of parsing for PDFs
+                parsed_as = "Markdown" if file_extension == '.pdf' else "text"
+                print(f"Successfully added content (parsed as {parsed_as}) from {file.filename} to KB {kb_id}.")
+                processed_files += 1
+            else:
+                print(f"Failed to add content from {file.filename} to KB {kb_id} (add_to_kb returned False).")
+                failed_files += 1
+        except Exception as e:
+            print(f"Error adding parsed content from {file.filename} to KB {kb_id}: {e}")
+            failed_files += 1
+
+    # Generate a summary message based on processing results
+    message = f"Processed {processed_files} file(s) successfully"
+    if no_content_files > 0:
+        message += f", {no_content_files} file(s) had no text content"
+    if failed_files > 0:
+        message += f", {failed_files} file(s) failed to process"
     
-    # --- REMOVED AI Structuring Step --- 
-    # PDF parsing now happens directly into Markdown via pymupdf4llm in file_parser.py
-    text_to_add = raw_extracted_text 
-    file_extension = get_file_extension(file.filename)
-    # The structuring logic previously here is now removed.
-    
-    # --- Add to Knowledge Base --- 
-    print(f"Adding parsed text from {file.filename} to KB {kb_id}...") # Simplified log
-    try:
-        success = kb_manager.add_to_kb(kb_id, text_to_add)
-        if success:
-            # Simplified message, as structuring is now part of parsing for PDFs
-            parsed_as = "Markdown" if file_extension == '.pdf' else "text"
-            print(f"Successfully added content (parsed as {parsed_as}) from {file.filename} to KB {kb_id}.")
-            return StatusResponse(status="success", message=f"File '{file.filename}' processed, metadata stored, and content (parsed as {parsed_as}) added to knowledge base {kb_id}.")
+    if processed_files == 0 and (failed_files > 0 or no_content_files > 0):
+        # If we processed nothing but had failures, return a 207 (Multi-Status)
+        # or could use 422 Unprocessable Entity or 500 Internal Server Error
+        if failed_files > 0:
+            raise HTTPException(status_code=422, detail=message)
         else:
-            print(f"Failed to add content from {file.filename} to KB {kb_id} (add_to_kb returned False).")
-            raise HTTPException(status_code=500, detail="Failed to add extracted content to the knowledge base after parsing.")
-    except Exception as e:
-        print(f"Error adding parsed content from {file.filename} to KB {kb_id}: {e}")
+            # All files were processed but had no content
+            return StatusResponse(status="warning", message=message)
+    
+    return StatusResponse(status="success", message=message)
 
 
 # --- NEW: Endpoint to list uploaded files ---
@@ -1370,6 +1399,42 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
 
     # now use all logic from /agents/{kb_id}/chat endpoint
     return await chat_endpoint(kb_id, request)
+
+@app.post("/bots/{bot_id}/upload", response_model=StatusResponse)
+async def bot_upload_endpoint(bot_id: str, files: List[UploadFile] = File(...)):
+    """
+    Upload files to a bot's knowledge base.
+    """
+    print(f"Received upload request for bot_id: {bot_id}")
+    print(f"Files: {files}")
+    # also add to knowledge_sources table under supabase
+    for file in files:
+        fileContent = ""
+        fileExtension = file.filename.split(".")[-1]
+
+        # Read file size
+        file.file.seek(0, os.SEEK_END)
+        file_size = file.file.tell()
+        file.file.seek(0)  # Reset file pointer
+        
+        # Format with Python's f-string formatting for floating point (:.1f for 1 decimal place)
+        fileContent = f"File: {file.filename} ({file.content_type or f'{fileExtension} file'}) - Size: {file_size / 1024:.1f} KB"
+
+        sourceData = {
+            "bot_id": bot_id,
+            "source_type": "file",
+            "content": fileContent
+        }
+        response = supabase.table("knowledge_sources").insert(sourceData).execute()
+        print(f"Knowledge source added: {response}")
+
+    response = supabase.table("bots").select("*").eq("id", bot_id).execute()
+    print(f"Bot response: {response}")
+
+    kb_id = response.data[0]["kb_id"]
+
+    # now use all logic from /agents/{kb_id}/upload endpoint
+    return await upload_to_kb(kb_id, files)
 
 # --- Run Instruction (for local development) ---
 if __name__ == "__main__":
