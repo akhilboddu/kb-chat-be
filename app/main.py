@@ -69,5 +69,13 @@ if __name__ == "__main__":
         host="0.0.0.0", 
         port=8000, 
         reload=True,
-        reload_excludes=["./chromadb_data/*"]
+        reload_excludes=[
+            "./chromadb_data/*",
+            "./db/*",
+            "./venv/*",
+            "./.git/*",
+            "./.pytest_cache/*",
+            "./__pycache__/*",
+            "./app/__pycache__/*"
+        ]
     ) 
