@@ -483,7 +483,7 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     response = await chat_endpoint(kb_id, request) 
 
     # save user's message and bot's response to supabase
-    supabase.table("messages").insert([
+    messages_response = supabase.table("messages").insert([
         {
             "conversation_id": request.conversation_id,
             "role": "user",
@@ -497,7 +497,13 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
             "created_at": datetime.datetime.now().isoformat()
         }   
     ]).execute()
-    
+
+    # if response.type == "handoff", save handoff to supabase
+    if response.type == "handoff":
+        supabase.table("handover_requests").insert({
+            "conversation_id": request.conversation_id,
+            "last_message_id": messages_response.data[0]["id"],
+        }).execute()
     return response
 @router.post("/bots/{bot_id}/conversations", response_model=CreateBotConversationResponse)
 async def create_bot_conversation_endpoint(
