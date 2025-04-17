@@ -27,4 +27,4 @@ EXPOSE 8000
 
 # Define the command to run your app using uvicorn
 # Ensure it binds to 0.0.0.0 to be accessible from outside the container
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"] 
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"] 
