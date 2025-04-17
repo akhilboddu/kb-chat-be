@@ -5,6 +5,7 @@ import datetime
 class ChatRequest(BaseModel):
     """Request body for chat interactions via HTTP."""
     message: str = Field(..., description="User message to the agent")
+    conversation_id: str = Field(..., description="Conversation ID")
     
 class ChatResponse(BaseModel):
     """Response from the agent via HTTP."""

@@ -480,8 +480,25 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     kb_id = response.data[0]["kb_id"]
 
     # now use all logic from /agents/{kb_id}/chat endpoint
-    return await chat_endpoint(kb_id, request) 
+    response = await chat_endpoint(kb_id, request) 
 
+    # save user's message and bot's response to supabase
+    supabase.table("messages").insert([
+        {
+            "conversation_id": request.conversation_id,
+            "role": "user",
+            "content": request.message,
+            "created_at": datetime.datetime.now().isoformat()
+        },
+        {
+            "conversation_id": request.conversation_id,
+            "role": "bot",
+            "content": response.content,
+            "created_at": datetime.datetime.now().isoformat()
+        }   
+    ]).execute()
+    
+    return response
 @router.post("/bots/{bot_id}/conversations", response_model=CreateBotConversationResponse)
 async def create_bot_conversation_endpoint(
     bot_id: str, 
