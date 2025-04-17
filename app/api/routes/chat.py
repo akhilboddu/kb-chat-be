@@ -3,6 +3,7 @@ import datetime  # For timestamp handling
 from fastapi import APIRouter, HTTPException, status, Body, Query, Depends
 from langchain.memory import ConversationBufferMemory
 from langchain_core.messages import HumanMessage, AIMessage
+import math
 
 from app.models.chat import (
     ChatRequest, ChatResponse, HumanResponseRequest, 
@@ -10,7 +11,9 @@ from app.models.chat import (
     HistoryMessage, ListConversationsResponse, KBConversationGroup, 
     ConversationPreview
 )
-from app.models.bot import CreateBotConversationResponse
+from app.models.bot import (
+    CreateBotConversationResponse, ListBotConversationsResponse, PaginatedListBotConversationsResponse
+)
 from app.models.base import StatusResponse
 
 from app.core import db_manager, kb_manager, agent_manager
@@ -505,6 +508,7 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
             "last_message_id": messages_response.data[0]["id"],
         }).execute()
     return response
+
 @router.post("/bots/{bot_id}/conversations", response_model=CreateBotConversationResponse)
 async def create_bot_conversation_endpoint(
     bot_id: str, 
@@ -562,3 +566,57 @@ async def create_bot_conversation_endpoint(
         print(f"Error creating conversation: {error_detail}")
         print(f"Traceback: {error_traceback}")
         raise HTTPException(status_code=500, detail=f"Failed to create conversation: {error_detail}")
+
+
+@router.get("/bots/{bot_id}/conversations", response_model=PaginatedListBotConversationsResponse)
+async def list_bot_conversations_endpoint(
+    bot_id: str,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(10, ge=1, le=100, description="Number of items per page"),
+):
+    """
+    Lists all conversations for a specific bot with pagination.
+    
+    Parameters:
+    - page: Page number (starts at 1)
+    - page_size: Number of items per page (default 10, max 100)
+    """
+    print(f"Received request to list conversations for bot_id: {bot_id}, page: {page}, page_size: {page_size}")
+
+    try:
+        from app.core.supabase_client import supabase
+        
+        # Calculate range for pagination
+        start = (page - 1) * page_size
+        end = start + page_size - 1
+        
+        # Get total count first
+        count_response = supabase.table("conversations").select("id", count="exact").eq("bot_id", bot_id).execute()
+        total_count = count_response.count if hasattr(count_response, 'count') else 0
+        
+        # Get paginated data
+        response = supabase.table("conversations") \
+            .select("*") \
+            .eq("bot_id", bot_id) \
+            .order("created_at", desc=True) \
+            .range(start, end) \
+            .execute()
+        
+        # Calculate total pages
+        total_pages = math.ceil(total_count / page_size) if total_count > 0 else 1
+        
+        return PaginatedListBotConversationsResponse(
+            conversations=response.data,
+            total_count=total_count,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages
+        )
+    
+    except Exception as e:
+        print(f"Error listing conversations: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to list conversations: {str(e)}")
+
+
