@@ -1,5 +1,6 @@
 import asyncio
-from fastapi import APIRouter, HTTPException, status
+import datetime  # For timestamp handling
+from fastapi import APIRouter, HTTPException, status, Body, Query, Depends
 from langchain.memory import ConversationBufferMemory
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -9,6 +10,7 @@ from app.models.chat import (
     HistoryMessage, ListConversationsResponse, KBConversationGroup, 
     ConversationPreview
 )
+from app.models.bot import CreateBotConversationResponse
 from app.models.base import StatusResponse
 
 from app.core import db_manager, kb_manager, agent_manager
@@ -478,6 +480,62 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     kb_id = response.data[0]["kb_id"]
 
     # now use all logic from /agents/{kb_id}/chat endpoint
-    return await chat_endpoint(kb_id, request)
+    return await chat_endpoint(kb_id, request) 
 
-import datetime  # For timestamp handling 
+@router.post("/bots/{bot_id}/conversations", response_model=CreateBotConversationResponse)
+async def create_bot_conversation_endpoint(
+    bot_id: str, 
+    customer_email: str = Query(None),
+    customer_name: str = Query(None),
+    request_body: dict = Body(None)
+):
+    """
+    Creates a new conversation for a bot.
+    Accepts customer_email and customer_name either as query parameters or in the request body.
+    """
+    print(f"Received request to create a new conversation for bot_id: {bot_id}")
+    
+    # Get values from either query params or request body
+    if request_body:
+        if not customer_email:
+            customer_email = request_body.get("customer_email")
+        
+        if not customer_name:
+            customer_name = request_body.get("customer_name")
+    
+    if not customer_email or not customer_name:
+        raise HTTPException(status_code=400, detail="customer_email and customer_name are required")
+    
+    try:
+        from app.core.supabase_client import supabase
+        # Convert datetime to ISO format string for JSON serialization
+        current_time = datetime.datetime.now().isoformat()
+        
+        # Create the data payload
+        data = {
+            "bot_id": bot_id,
+            "customer_email": customer_email,
+            "customer_name": customer_name,
+            "created_at": current_time
+        }
+        
+        # Make the Supabase API call
+        response = supabase.table("conversations").insert(data).execute()
+                
+        # Check if we have data in the response
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=500, detail="Failed to create conversation: No data returned from Supabase")
+        
+        return CreateBotConversationResponse(
+            conversation_id=response.data[0]["id"],
+            created_at=response.data[0]["created_at"],
+            customer_email=response.data[0]["customer_email"],
+            customer_name=response.data[0]["customer_name"]
+        )
+    except Exception as e:
+        import traceback
+        error_detail = str(e)
+        error_traceback = traceback.format_exc()
+        print(f"Error creating conversation: {error_detail}")
+        print(f"Traceback: {error_traceback}")
+        raise HTTPException(status_code=500, detail=f"Failed to create conversation: {error_detail}")
