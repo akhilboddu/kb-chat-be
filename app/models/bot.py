@@ -23,6 +23,8 @@ class Conversation(BaseModel):
     read: Optional[bool] = False
     created_at: Optional[datetime.datetime] = None
     updated_at: Optional[datetime.datetime] = None
+    last_message: Optional[str] = None
+    last_message_time: Optional[datetime.datetime] = None
 
 class PaginatedListBotConversationsResponse(BaseModel):
     """Response model for listing all conversations for a bot with pagination."""
