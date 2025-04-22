@@ -507,6 +507,9 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
             "conversation_id": request.conversation_id,
             "last_message_id": messages_response.data[0]["id"],
         }).execute()
+        supabase.table("conversations").update({
+            "status": "human"
+        }).eq("id", request.conversation_id).execute()
     return response
 
 @router.post("/bots/{bot_id}/conversations", response_model=CreateBotConversationResponse)
@@ -571,6 +574,7 @@ async def create_bot_conversation_endpoint(
 @router.get("/bots/{bot_id}/conversations", response_model=PaginatedListBotConversationsResponse)
 async def list_bot_conversations_endpoint(
     bot_id: str,
+    filter: str = Query(None, description="Filter by status (open, my, unassigned, closed)"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(10, ge=1, le=100, description="Number of items per page"),
 ):
@@ -593,20 +597,55 @@ async def list_bot_conversations_endpoint(
         # Get total count first
         count_response = supabase.table("conversations").select("id", count="exact").eq("bot_id", bot_id).execute()
         total_count = count_response.count if hasattr(count_response, 'count') else 0
+
+        query = supabase.table("conversations") \
+            .select("*") \
+            .eq("bot_id", bot_id)
+
+        # Map filter values to status values
+        filter_map = {
+            "open": "*",
+            "my": "human",
+            "unassigned": "ai",
+            "closed": "closed"
+        }
+
+        if filter and filter != "open":
+            query = query.eq("status", filter_map[filter])
         
         # Get paginated data
-        response = supabase.table("conversations") \
-            .select("*") \
-            .eq("bot_id", bot_id) \
-            .order("created_at", desc=True) \
-            .range(start, end) \
-            .execute()
+        response = query.order("created_at", desc=True).range(start, end).execute() 
         
         # Calculate total pages
         total_pages = math.ceil(total_count / page_size) if total_count > 0 else 1
         
+        # Fetch last messages in parallel
+        conversations = response.data
+        
+        async def fetch_last_message(conversation):
+            # This function fetches the last message for a single conversation
+            last_message_response = supabase.table("messages") \
+                .select("*") \
+                .eq("conversation_id", conversation["id"]) \
+                .order("created_at", desc=True) \
+                .limit(1) \
+                .execute()
+                
+            if last_message_response.data and len(last_message_response.data) > 0:
+                conversation["last_message"] = last_message_response.data[0]["content"]
+                conversation["last_message_time"] = last_message_response.data[0]["created_at"]
+            else:
+                conversation["last_message"] = None
+                conversation["last_message_time"] = None
+            
+            return conversation
+        
+        # Run all fetch operations in parallel
+        tasks = [fetch_last_message(conversation) for conversation in conversations]
+        conversations = await asyncio.gather(*tasks)
+        
         return PaginatedListBotConversationsResponse(
-            conversations=response.data,
+            conversations=conversations,
             total_count=total_count,
             page=page,
             page_size=page_size,
