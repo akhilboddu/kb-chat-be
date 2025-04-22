@@ -491,13 +491,11 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
             "conversation_id": request.conversation_id,
             "role": "user",
             "content": request.message,
-            "created_at": datetime.datetime.now().isoformat()
         },
         {
             "conversation_id": request.conversation_id,
             "role": "bot",
             "content": response.content,
-            "created_at": datetime.datetime.now().isoformat()
         }   
     ]).execute()
 
@@ -612,6 +610,8 @@ async def list_bot_conversations_endpoint(
 
         if filter and filter != "open":
             query = query.eq("status", filter_map[filter])
+        if filter == "open":
+            query = query.neq("status", "closed")
         
         # Get paginated data
         response = query.order("created_at", desc=True).range(start, end).execute() 

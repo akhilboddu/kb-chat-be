@@ -37,3 +37,8 @@ class PaginatedListBotConversationsResponse(BaseModel):
 class ListBotConversationsResponse(BaseModel):
     """Response model for listing all conversations for a bot."""
     conversations: List[Conversation]
+
+class AddKnowledgeRequest(BaseModel):
+    """Request model for adding verified knowledge to a bot's knowledge base."""
+    knowledge_text: str
+    source_conversation_id: Optional[str] = None
