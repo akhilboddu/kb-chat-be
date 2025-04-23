@@ -9,7 +9,7 @@ from app.models.chat import (
     ChatRequest, ChatResponse, HumanResponseRequest, 
     HumanChatRequest, HumanKnowledgeRequest, ChatHistoryResponse,
     HistoryMessage, ListConversationsResponse, KBConversationGroup, 
-    ConversationPreview
+    ConversationPreview, PaginatedListMessagesResponse
 )
 from app.models.bot import (
     CreateBotConversationResponse, ListBotConversationsResponse, PaginatedListBotConversationsResponse
@@ -479,6 +479,15 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     print(f"Received HTTP chat request for bot_id: {bot_id}")
 
     from app.core.supabase_client import supabase
+    
+    add_user_message_response = supabase.table("messages").insert(
+        {
+            "conversation_id": request.conversation_id,
+            "role": "user",
+            "content": request.message,
+        }
+    ).execute()
+
     response = supabase.table("bots").select("*").eq("id", bot_id).execute()
     kb_id = response.data[0]["kb_id"]
 
@@ -486,24 +495,19 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     response = await chat_endpoint(kb_id, request) 
 
     # save user's message and bot's response to supabase
-    messages_response = supabase.table("messages").insert([
-        {
-            "conversation_id": request.conversation_id,
-            "role": "user",
-            "content": request.message,
-        },
+    supabase.table("messages").insert(
         {
             "conversation_id": request.conversation_id,
             "role": "bot",
             "content": response.content,
         }   
-    ]).execute()
+    ).execute()
 
     # if response.type == "handoff", save handoff to supabase
     if response.type == "handoff":
         supabase.table("handover_requests").insert({
             "conversation_id": request.conversation_id,
-            "last_message_id": messages_response.data[0]["id"],
+            "last_message_id": add_user_message_response.data[0]["id"],
         }).execute()
         supabase.table("conversations").update({
             "status": "human"
@@ -658,4 +662,48 @@ async def list_bot_conversations_endpoint(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to list conversations: {str(e)}")
 
+@router.get("/conversations/{conversation_id}/messages", response_model=PaginatedListMessagesResponse)
+async def list_messages_endpoint(
+    conversation_id: str,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(100, ge=1, le=100, description="Number of items per page"),
+):
+    """
+    Lists all messages for a specific conversation with pagination.
+    """
+    print(f"Received request to list messages for conversation_id: {conversation_id}, page: {page}, page_size: {page_size}")
 
+    try:
+        from app.core.supabase_client import supabase
+        
+        # Calculate range for pagination
+        start = (page - 1) * page_size
+        end = start + page_size - 1
+        
+        # Get total count first
+        count_response = supabase.table("messages").select("id", count="exact").eq("conversation_id", conversation_id).execute()
+        total_count = count_response.count if hasattr(count_response, 'count') else 0
+
+        # Get paginated data
+        response = supabase.table("messages") \
+            .select("*") \
+            .eq("conversation_id", conversation_id) \
+            .order("created_at", desc=True) \
+            .range(start, end) \
+            .execute()
+        
+        # Calculate total pages
+        total_pages = math.ceil(total_count / page_size) if total_count > 0 else 1
+
+        return PaginatedListMessagesResponse(
+            messages=response.data,
+            total_count=total_count,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages)
+    
+    except Exception as e:
+        print(f"Error listing messages: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to list messages: {str(e)}")

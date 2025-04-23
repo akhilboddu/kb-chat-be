@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Literal
 import datetime
 
 class ChatRequest(BaseModel):
@@ -54,3 +54,19 @@ class KBConversationGroup(BaseModel):
 class ListConversationsResponse(BaseModel):
     """Response model listing all conversations grouped by KB."""
     conversations: List[KBConversationGroup] 
+
+
+class Message(BaseModel):
+    """Represents a single message in the conversation."""
+    id: str
+    content: str
+    created_at: datetime.datetime
+    role: Literal["bot", "user", "human"]
+
+class PaginatedListMessagesResponse(BaseModel):
+    """Response model for paginated list of messages."""
+    messages: List[Message]
+    total_count: int
+    page: int
+    page_size: int
+    total_pages: int
