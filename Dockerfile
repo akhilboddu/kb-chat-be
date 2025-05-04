@@ -39,8 +39,7 @@ RUN apt-get update && \
         libxrandr2 \
         xdg-utils \
         libu2f-udev \
-        libvulkan1 \
-        --no-install-recommends && \
+        libvulkan1 && \
     rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user with a home directory and set the correct permissions
@@ -52,19 +51,19 @@ RUN groupadd -r appuser && \
 # Set the working directory in the container
 WORKDIR /app
 
-# Create and prepare necessary directories
-RUN mkdir -p /app/chromadb_data /ms-playwright && \
-    chmod -R 777 /app/chromadb_data /ms-playwright
+# Create necessary directories and set permissions
+RUN mkdir -p /app/chromadb_data /app/db /ms-playwright && \
+    chmod -R 777 /app/chromadb_data /app/db /ms-playwright
 
-# Copy requirements.txt and install Python dependencies
+# Copy requirements and install Python packages
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code
+# Copy the rest of the application code with appropriate ownership
 COPY --chown=appuser:appuser . .
 
-# Pre-download sentence transformer model
+# Pre-download SentenceTransformer model
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')" && \
     chown -R appuser:appuser /app/.cache
 
