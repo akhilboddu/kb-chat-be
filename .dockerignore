@@ -19,7 +19,6 @@ __pycache__/
 Thumbs.db
 
 # Ignore local environment files
-.env
 *.env.local
 
 # Ignore git directory

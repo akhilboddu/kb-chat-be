@@ -16,6 +16,7 @@ sentence-transformers>=2.2.0
 accelerate>=0.20.0 # Required by transformers/sentence-transformers
 
 # Vector Database and Processing
+protobuf==3.20.3 # Pin protobuf version for compatibility with ChromaDB
 chromadb>=0.4.0
 pymupdf>=1.23.7
 pymupdf4llm

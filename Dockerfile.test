@@ -1,0 +1,46 @@
+# Use an official Python runtime as a parent image
+FROM python:3.10-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/app \
+    PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
+
+# Create a non-root user to run the app
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        && rm -rf /var/lib/apt/lists/*
+
+# Create necessary directories with correct permissions
+RUN mkdir -p /app/db /app/chromadb_data && \
+    chown -R appuser:appuser /app
+
+# Copy only what's needed for the test app
+COPY --chown=appuser:appuser app/test_app.py /app/app/
+COPY --chown=appuser:appuser requirements.txt /app/
+
+# Install only required dependencies
+RUN pip install --no-cache-dir fastapi uvicorn
+
+# Switch to non-root user
+USER appuser
+
+# Make port 8000 available to the world outside this container
+EXPOSE 8000
+
+# Healthcheck to ensure app is running
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Define the command to run the test app using uvicorn
+CMD ["uvicorn", "app.test_app:app", "--host", "0.0.0.0", "--port", "8000"] 
