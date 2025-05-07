@@ -18,7 +18,7 @@ def get_retriever_tool(kb_id: str) -> Tool:
     """
     def retrieve_from_kb(query: str) -> str:
         """Get relevant information from the knowledge base."""
-        results = kb_manager.get_similar_docs(kb_id, query, n_results=2) # Get top 2 results
+        results = kb_manager.get_similar_docs(kb_id, query, n_results=10) # Get top 2 results
         
         if not results:
             return "No relevant information found in the knowledge base."
@@ -28,11 +28,12 @@ def get_retriever_tool(kb_id: str) -> Tool:
         
         return formatted_docs
     
-    return Tool(
+    retriever_tool = Tool(
         name="knowledge_base_retriever",
-        description="Retrieves relevant information from the knowledge base to answer user questions. Provides only the text of relevant documents.",
-        func=retrieve_from_kb # Function now returns string
+        description="Use this tool to search the knowledge base. Format: Action: knowledge_base_retriever",
+        func=retrieve_from_kb
     )
+    return retriever_tool
 
 def get_answering_tool(llm) -> Tool:
     """

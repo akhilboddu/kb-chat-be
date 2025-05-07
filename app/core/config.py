@@ -15,6 +15,8 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE") # Should be set in .env, e.g., "https://api.deepseek.com/v1"
 # DEEPSEEK_MODEL_NAME = "deepseek-chat" # Hardcoded model name as requested - Moved to LLM init block
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") # Read Google API Key
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL")
 
 # --- SQLite Metadata DB --- 
 # For local development, use a local path
@@ -47,10 +49,24 @@ llm = None
 if GOOGLE_API_KEY:
     try:
         # Explicitly pass the key, though it often reads from env var too
-        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GOOGLE_API_KEY)
-        print(f"LLM: Initialized Google Gemini Flash (gemini-1.5-flash)")
+        llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash-lite", google_api_key=GOOGLE_API_KEY)
+        print(f"LLM: Initialized Google Gemini Pro (gemini-2.0-flash-lite)")
     except Exception as e:
         print(f"Warning: Failed to initialize Google Gemini even though key was found: {e}")
+        llm = None # Ensure llm is None if initialization fails
+
+# Fallback to OPENAI if Gemini is not initialized and OPENAI_API_KEY and OPENAI_MODEL are available
+if llm is None and OPENAI_API_KEY and OPENAI_MODEL:
+    try:
+        OPENAI_MODEL  = "gpt-4" # Define model name here
+        llm = ChatOpenAI(
+            model=OPENAI_MODEL,
+            api_key=OPENAI_API_KEY,
+            # temperature=0.7 # Example: You can uncomment and set temperature if needed
+        )
+        print(f"LLM: Initialized {OPENAI_MODEL} via OpenAI wrapper pointing to")
+    except Exception as e:
+        print(f"Warning: Failed to initialize OpenAI: {e}")
         llm = None # Ensure llm is None if initialization fails
 
 # Fallback to DeepSeek if Gemini is not initialized and DeepSeek keys are available

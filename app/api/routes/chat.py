@@ -40,6 +40,7 @@ async def chat_endpoint(kb_id: str, request: ChatRequest):
         # --- Memory Management (Load from DB) ---
         print(f"Loading conversation history for kb_id: {kb_id} from DB...")
         db_history = db_manager.get_conversation_history(kb_id)
+        print(f"DB history: {db_history}")
         
         # Create a new memory instance for this request
         memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)

@@ -173,6 +173,9 @@ class KBManager:
                     {"document": doc, "distance": dist} 
                     for doc, dist in zip(docs, distances)
                 ]
+                print("_______________________________________________")
+                print(f"[KB RESULT] Returned {len(doc_info)} docs: {doc_info}")
+                print("_______________________________________________")
                 return doc_info
             else:
                 print(f"No documents or distances found for query in KB {kb_id}")
