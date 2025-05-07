@@ -1,0 +1,125 @@
+{
+  "scrape_metadata": {
+    "url": "https://www.zaio.io/",
+    "base_domain": "zaio.io",
+    "pages_scraped": 3,
+    "pages_analyzed": 1,
+    "early_termination": false,
+    "scrape_time": "2025-05-07T18:43:23.432805",
+    "processing_time_seconds": 14.927352905273438
+  },
+  "business_profile": {
+    "business_name": "Zaio",
+    "tagline": null,
+    "description": "Zaio offers accredited tech bootcamps designed to fast-track careers with real-world projects, expert support, and job placement assistance, featuring flexible payment options.",
+    "contact_info": {
+      "email": null,
+      "phone": null,
+      "address": null,
+      "contact_form_mention": null
+    },
+    "offerings": [
+      {
+        "type": "bootcamp",
+        "name": "Fullstack Web Development",
+        "description": "Learn HTML, CSS, JavaScript, React, Node.js, and more. Build dynamic websites and applications.",
+        "attributes": [
+          "NQF Level 5 certification",
+          "Beginner level",
+          "6 Months duration"
+        ],
+        "pricing": null
+      },
+      {
+        "type": "bootcamp",
+        "name": "Data Science",
+        "description": "Master Python, machine learning, data analysis, and SQL. Work on real-world data science projects.",
+        "attributes": [
+          "Microsoft certification",
+          "Beginner level",
+          "7 Months duration"
+        ],
+        "pricing": null
+      },
+      {
+        "type": "bootcamp",
+        "name": "Cybersecurity",
+        "description": "Master Cybersecurity fundamentals and best practices. Gain in-demand skills.",
+        "attributes": [
+          "CompTIA A+ Security certification",
+          "Beginner level",
+          "7 Months duration"
+        ],
+        "pricing": null
+      }
+    ],
+    "value_props": [
+      "Flexible payment plans",
+      "24/7 support",
+      "Guaranteed placement support",
+      "Flexible learning options"
+    ],
+    "audience": [
+      "Beginner tech learners",
+      "Career changers"
+    ],
+    "payment_options": {
+      "methods": [
+        "Installments",
+        "Financing"
+      ],
+      "plans": [
+        "Flexible payment plans",
+        "Pay upfront",
+        "Pay in installments"
+      ],
+      "tiers": [],
+      "free_offer": "Free Consultation"
+    },
+    "support": [
+      "24/7 support (community, AI Tutor, expert tutors)"
+    ],
+    "faqs": [
+      {
+        "question": "Do I need any prior coding or tech experience to join a bootcamp?",
+        "answer": "No, our bootcamps are designed for beginners!"
+      },
+      {
+        "question": "How do the live classes work?",
+        "answer": "We offer live classes twice a week—once in the morning and once in the evening."
+      },
+      {
+        "question": "What kind of job support does Zaio offer?",
+        "answer": "We offer guaranteed job placement assistance."
+      },
+      {
+        "question": "How flexible are the payment options?",
+        "answer": "We offer multiple payment options to fit your budget."
+      },
+      {
+        "question": "What happens if I fall behind in the course?",
+        "answer": "Our 24/7 tutor support is here to help."
+      },
+      {
+        "question": "What career outcomes can I expect after completing the bootcamp?",
+        "answer": "Zaio graduates have gone on to secure roles as web developers, data scientists, and junior software engineers."
+      },
+      {
+        "question": "Can I study while working full-time?",
+        "answer": "Yes! Our flexible learning options allow you to study while balancing a full-time job."
+      }
+    ],
+    "social_links": {
+      "linkedin": "https://www.linkedin.com/company/zaio-io/",
+      "twitter": "https://www.twitter.com/zaionite",
+      "facebook": "https://www.facebook.com/zaionite",
+      "instagram": "https://www.instagram.com/zaiocodingschool/"
+    },
+    "source_urls": [
+      "https://www.zaio.io/"
+    ],
+    "base_domain": "zaio.io",
+    "business_type": "other",
+    "course_prices": {}
+  }
+}
