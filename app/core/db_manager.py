@@ -1,10 +1,10 @@
 import sqlite3
 import json
-import time
 import os
 from typing import List, Dict, Any, Optional
-from app.core.config import SQLITE_DB_DIR, SQLITE_DB_PATH # Import path from app.core
-import datetime
+from app.core.config import SQLITE_DB_DIR, SQLITE_DB_PATH  # Import path from app.core
+
+from pydantic import BaseModel
 
 # Database path - assuming '/app/' is covered by the persistent disk mount
 # If your persistent disk is mounted differently (e.g., only '/app/data/'), adjust this path.
@@ -17,24 +17,26 @@ os.makedirs(SQLITE_DB_DIR, exist_ok=True)
 
 DATABASE = SQLITE_DB_PATH
 
+
 def get_db():
     """Gets a database connection."""
     conn = sqlite3.connect(DATABASE)
     # Return rows as dictionaries
-    conn.row_factory = sqlite3.Row 
+    conn.row_factory = sqlite3.Row
     return conn
+
 
 def init_db():
     """Initializes the database schema."""
     with get_db() as conn:
         cursor = conn.cursor()
         print("Initializing SQLite metadata database...")
-        
+
         # Drop existing scraping_status table to recreate with correct constraints
-        cursor.execute('DROP TABLE IF EXISTS scraping_status')
-        
+        cursor.execute("DROP TABLE IF EXISTS scraping_status")
+
         # Create scraping_status table with proper constraints
-        cursor.execute('''
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS scraping_status (
                 kb_id TEXT PRIMARY KEY,
                 status TEXT NOT NULL CHECK(status IN ('processing', 'completed', 'failed')),
@@ -45,22 +47,22 @@ def init_db():
                 last_update DATETIME DEFAULT CURRENT_TIMESTAMP,
                 progress_data TEXT
             )
-        ''')
+        """)
         print("- Table 'scraping_status' recreated with proper constraints.")
-        
+
         # Table for original JSON payloads
-        cursor.execute('''
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS json_payloads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 kb_id TEXT NOT NULL,
                 payload TEXT NOT NULL, -- Store JSON as text
                 upload_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
         print("- Table 'json_payloads' checked/created.")
-        
+
         # --- NEW: Table for uploaded file metadata ---
-        cursor.execute('''
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS uploaded_files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 kb_id TEXT NOT NULL,
@@ -69,12 +71,12 @@ def init_db():
                 content_type TEXT, -- Store MIME type
                 upload_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
         print("- Table 'uploaded_files' checked/created.")
 
         # --- Table for conversation history (with check constraint) ---
         # Use IF NOT EXISTS to avoid errors/data loss on subsequent runs
-        cursor.execute('''
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS conversation_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 kb_id TEXT NOT NULL,
@@ -82,11 +84,13 @@ def init_db():
                 content TEXT NOT NULL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
-        print("- Table 'conversation_history' checked/created (without confidence_score).")
-        
+        """)
+        print(
+            "- Table 'conversation_history' checked/created (without confidence_score)."
+        )
+
         # --- NEW: Table for KB Update Log ---
-        cursor.execute('''
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS kb_update_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 kb_id TEXT NOT NULL,
@@ -94,28 +98,44 @@ def init_db():
                 source TEXT DEFAULT 'human_verified',
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        ''')
+        """)
         print("- Table 'kb_update_log' checked/created.")
-        
-        # --- NEW: Table for Agent Configuration ---
-        cursor.execute(f'''
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS anon_push_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT ,
+                anon_id TEXT NOT NULL,
+                user_id TEXT,
+                subscription TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS agent_config (
                 kb_id TEXT PRIMARY KEY NOT NULL,
                 system_prompt TEXT DEFAULT '{DEFAULT_SYSTEM_PROMPT.replace("'", "''")}', -- Use f-string carefully
                 max_iterations INTEGER DEFAULT {DEFAULT_MAX_ITERATIONS}
                 -- Add other config columns here with defaults
             )
-        ''')
+        """)
         print("- Table 'agent_config' checked/created (without confidence_threshold).")
-        
+
         # Create indexes
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_json_kb_id ON json_payloads (kb_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_files_kb_id ON uploaded_files (kb_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_conv_history_kb_id ON conversation_history (kb_id)")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_json_kb_id ON json_payloads (kb_id)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_files_kb_id ON uploaded_files (kb_id)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conv_history_kb_id ON conversation_history (kb_id)"
+        )
         print("- Indexes checked/created.")
-        
+
         conn.commit()
         print("Database initialization complete.")
+
 
 def add_json_payload(kb_id: str, payload: Dict[str, Any]) -> bool:
     """Stores the original JSON payload associated with a KB ID."""
@@ -124,7 +144,7 @@ def add_json_payload(kb_id: str, payload: Dict[str, Any]) -> bool:
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT INTO json_payloads (kb_id, payload) VALUES (?, ?)",
-                (kb_id, json.dumps(payload)) # Store payload as JSON string
+                (kb_id, json.dumps(payload)),  # Store payload as JSON string
             )
             conn.commit()
             print(f"Stored JSON payload for KB: {kb_id}")
@@ -132,6 +152,7 @@ def add_json_payload(kb_id: str, payload: Dict[str, Any]) -> bool:
     except sqlite3.Error as e:
         print(f"SQLite error adding JSON payload for {kb_id}: {e}")
         return False
+
 
 def get_json_payloads(kb_id: str) -> List[Dict[str, Any]]:
     """Retrieves all original JSON payloads associated with a KB ID."""
@@ -141,23 +162,25 @@ def get_json_payloads(kb_id: str) -> List[Dict[str, Any]]:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT payload, upload_timestamp FROM json_payloads WHERE kb_id = ? ORDER BY upload_timestamp DESC",
-                 (kb_id,)
+                (kb_id,),
             )
             rows = cursor.fetchall()
             for row in rows:
                 try:
-                    payload_data = json.loads(row['payload'])
-                    payloads.append({
-                        "data": payload_data, 
-                        "uploaded_at": row['upload_timestamp']
-                    })
+                    payload_data = json.loads(row["payload"])
+                    payloads.append(
+                        {"data": payload_data, "uploaded_at": row["upload_timestamp"]}
+                    )
                 except json.JSONDecodeError:
-                    print(f"Warning: Could not decode JSON payload for KB {kb_id} stored at {row['upload_timestamp']}")
+                    print(
+                        f"Warning: Could not decode JSON payload for KB {kb_id} stored at {row['upload_timestamp']}"
+                    )
                     # Optionally skip or add an error placeholder
             return payloads
     except sqlite3.Error as e:
         print(f"SQLite error retrieving JSON payloads for {kb_id}: {e}")
-        return [] # Return empty list on error
+        return []  # Return empty list on error
+
 
 def delete_json_payloads(kb_id: str) -> bool:
     """Deletes all JSON payloads associated with a KB ID."""
@@ -174,7 +197,10 @@ def delete_json_payloads(kb_id: str) -> bool:
         print(f"SQLite error deleting JSON payloads for {kb_id}: {e}")
         return False
 
-def add_uploaded_file_record(kb_id: str, filename: str, file_size: Optional[int], content_type: Optional[str]) -> bool:
+
+def add_uploaded_file_record(
+    kb_id: str, filename: str, file_size: Optional[int], content_type: Optional[str]
+) -> bool:
     """Stores metadata about an uploaded file associated with a KB ID."""
     try:
         with get_db() as conn:
@@ -183,14 +209,19 @@ def add_uploaded_file_record(kb_id: str, filename: str, file_size: Optional[int]
                 """INSERT INTO uploaded_files 
                    (kb_id, filename, file_size, content_type) 
                    VALUES (?, ?, ?, ?)""",
-                (kb_id, filename, file_size, content_type) 
+                (kb_id, filename, file_size, content_type),
             )
             conn.commit()
-            print(f"Stored file record for KB '{kb_id}': {filename} ({content_type}, {file_size} bytes)")
+            print(
+                f"Stored file record for KB '{kb_id}': {filename} ({content_type}, {file_size} bytes)"
+            )
             return True
     except sqlite3.Error as e:
-        print(f"SQLite error adding file record for KB '{kb_id}', file '{filename}': {e}")
+        print(
+            f"SQLite error adding file record for KB '{kb_id}', file '{filename}': {e}"
+        )
         return False
+
 
 def get_uploaded_files(kb_id: str) -> List[Dict[str, Any]]:
     """Retrieves metadata for all files uploaded for a specific KB ID."""
@@ -203,16 +234,17 @@ def get_uploaded_files(kb_id: str) -> List[Dict[str, Any]]:
                    FROM uploaded_files 
                    WHERE kb_id = ? 
                    ORDER BY upload_timestamp DESC""",
-                 (kb_id,)
+                (kb_id,),
             )
             rows = cursor.fetchall()
             for row in rows:
                 # Convert row object to dictionary
-                files_info.append(dict(row)) 
+                files_info.append(dict(row))
             return files_info
     except sqlite3.Error as e:
         print(f"SQLite error retrieving file records for {kb_id}: {e}")
-        return [] # Return empty list on error
+        return []  # Return empty list on error
+
 
 def delete_uploaded_files(kb_id: str) -> bool:
     """Deletes all uploaded file records associated with a KB ID."""
@@ -224,13 +256,17 @@ def delete_uploaded_files(kb_id: str) -> bool:
             # Check how many records were deleted
             # Note: conn.total_changes might reflect changes from previous operations in the same connection
             # For more accuracy, you might query count before deleting or check cursor.rowcount if supported reliably
-            print(f"Attempted deletion of file records for KB: {kb_id}. Check logs for affected rows if needed.")
+            print(
+                f"Attempted deletion of file records for KB: {kb_id}. Check logs for affected rows if needed."
+            )
             return True
     except sqlite3.Error as e:
         print(f"SQLite error deleting file records for {kb_id}: {e}")
         return False
 
+
 # --- Conversation History Functions ---
+
 
 def add_conversation_message(kb_id: str, message_type: str, content: str) -> bool:
     """Adds a message to the conversation history for a given kb_id.
@@ -243,13 +279,15 @@ def add_conversation_message(kb_id: str, message_type: str, content: str) -> boo
     Returns:
         True if successful, False otherwise.
     """
-    if message_type not in ('human', 'ai', 'human_agent'):
-        print(f"Error: Invalid message_type '{message_type}'. Must be 'human', 'ai', or 'human_agent'.")
+    if message_type not in ("human", "ai", "human_agent"):
+        print(
+            f"Error: Invalid message_type '{message_type}'. Must be 'human', 'ai', or 'human_agent'."
+        )
         return False
     if not content or not content.strip():
         print(f"Error: Cannot add empty content to conversation history for {kb_id}.")
         return False
-        
+
     try:
         with get_db() as conn:
             cursor = conn.cursor()
@@ -257,7 +295,7 @@ def add_conversation_message(kb_id: str, message_type: str, content: str) -> boo
                 """INSERT INTO conversation_history 
                    (kb_id, message_type, content) 
                    VALUES (?, ?, ?)""",
-                (kb_id, message_type, content)
+                (kb_id, message_type, content),
             )
             conn.commit()
             # print(f"Added {message_type} message to history for KB: {kb_id}") # Less verbose logging
@@ -265,6 +303,7 @@ def add_conversation_message(kb_id: str, message_type: str, content: str) -> boo
     except sqlite3.Error as e:
         print(f"SQLite error adding conversation message for {kb_id}: {e}")
         return False
+
 
 def get_conversation_history(kb_id: str) -> List[Dict[str, Any]]:
     """Retrieves conversation history for a given kb_id, ordered by timestamp."""
@@ -276,17 +315,18 @@ def get_conversation_history(kb_id: str) -> List[Dict[str, Any]]:
                 """SELECT message_type, content, timestamp 
                    FROM conversation_history 
                    WHERE kb_id = ? 
-                   ORDER BY timestamp ASC""", # ASC to get chronological order
-                 (kb_id,)
+                   ORDER BY timestamp ASC""",  # ASC to get chronological order
+                (kb_id,),
             )
             rows = cursor.fetchall()
             for row in rows:
                 # Convert row object to dictionary
-                history.append(dict(row)) 
+                history.append(dict(row))
             return history
     except sqlite3.Error as e:
         print(f"SQLite error retrieving conversation history for {kb_id}: {e}")
-        return [] # Return empty list on error
+        return []  # Return empty list on error
+
 
 def delete_conversation_history(kb_id: str) -> bool:
     """Deletes all conversation history messages associated with a specific kb_id."""
@@ -298,20 +338,24 @@ def delete_conversation_history(kb_id: str) -> bool:
             # Get the number of rows affected before committing
             rows_deleted = cursor.rowcount
             conn.commit()
-            print(f"Deleted {rows_deleted} conversation history records for KB: {kb_id}")
+            print(
+                f"Deleted {rows_deleted} conversation history records for KB: {kb_id}"
+            )
             return True
     except sqlite3.Error as e:
         print(f"SQLite error deleting conversation history for {kb_id}: {e}")
         return False
 
+
 # --- KB Update Log Functions ---
+
 
 def log_kb_update(kb_id: str, added_content: str) -> bool:
     """Logs when content is added to the KB via human verification."""
     if not added_content or not added_content.strip():
         print(f"Error: Cannot log empty content addition for KB {kb_id}.")
         return False
-        
+
     try:
         with get_db() as conn:
             cursor = conn.cursor()
@@ -319,7 +363,7 @@ def log_kb_update(kb_id: str, added_content: str) -> bool:
                 """INSERT INTO kb_update_log 
                    (kb_id, added_content) 
                    VALUES (?, ?)""",
-                (kb_id, added_content)
+                (kb_id, added_content),
             )
             conn.commit()
             print(f"Logged KB update for KB: {kb_id}")
@@ -327,6 +371,7 @@ def log_kb_update(kb_id: str, added_content: str) -> bool:
     except sqlite3.Error as e:
         print(f"SQLite error logging KB update for {kb_id}: {e}")
         return False
+
 
 # Default values for agent configuration
 DEFAULT_SYSTEM_PROMPT = """You are **TOM**, a friendly and enthusiastic team member at our company! 🎯  
@@ -562,7 +607,7 @@ Previous conversation history:
 New input: {input}
 {agent_scratchpad}"""
 
-DEFAULT_MAX_ITERATIONS = 8 # Increased from 5
+DEFAULT_MAX_ITERATIONS = 8  # Increased from 5
 # Add other defaults as needed (model_name, temperature...)
 
 
@@ -580,11 +625,10 @@ def get_agent_config(kb_id: str) -> Dict[str, Any]:
             cursor.execute(
                 """SELECT system_prompt, max_iterations 
                    FROM agent_config 
-                   WHERE kb_id = ?""", 
-                (kb_id,)
+                   WHERE kb_id = ?""",
+                (kb_id,),
             )
             row = cursor.fetchone()
-
 
             if row:
                 # Update defaults with fetched values only if they are not NULL
@@ -604,19 +648,24 @@ def get_agent_config(kb_id: str) -> Dict[str, Any]:
         # Return defaults on error
         return config
 
+
 def upsert_agent_config(kb_id: str, config_data: Dict[str, Any]) -> bool:
     """Updates or inserts agent configuration."""
     # Filter out keys with None values from input, as we only want to update provided fields
     # Also filter out confidence_threshold if it's accidentally passed
-    update_data = {k: v for k, v in config_data.items() if v is not None and k != 'confidence_threshold'}
-    
+    update_data = {
+        k: v
+        for k, v in config_data.items()
+        if v is not None and k != "confidence_threshold"
+    }
+
     if not update_data:
         print(f"No valid configuration data provided to update for KB: {kb_id}")
-        return False # Or True, depending on desired behavior for empty update
+        return False  # Or True, depending on desired behavior for empty update
 
     set_clauses = ", ".join([f"{key} = ?" for key in update_data.keys()])
     values = list(update_data.values())
-    
+
     try:
         with get_db() as conn:
             cursor = conn.cursor()
@@ -627,7 +676,7 @@ def upsert_agent_config(kb_id: str, config_data: Dict[str, Any]) -> bool:
             if exists:
                 # Update existing config
                 sql = f"UPDATE agent_config SET {set_clauses} WHERE kb_id = ?"
-                values.append(kb_id) # Add kb_id for the WHERE clause
+                values.append(kb_id)  # Add kb_id for the WHERE clause
                 cursor.execute(sql, values)
                 print(f"Updated agent config for KB: {kb_id}")
             else:
@@ -635,57 +684,59 @@ def upsert_agent_config(kb_id: str, config_data: Dict[str, Any]) -> bool:
                 all_keys = list(update_data.keys()) + ["kb_id"]
                 placeholders = ", ".join(["?"] * len(all_keys))
                 sql = f"INSERT INTO agent_config ({', '.join(all_keys)}) VALUES ({placeholders})"
-                values.append(kb_id) # Add kb_id for the INSERT values
+                values.append(kb_id)  # Add kb_id for the INSERT values
                 cursor.execute(sql, values)
                 print(f"Inserted new agent config for KB: {kb_id}")
-                
+
             conn.commit()
             return True
     except sqlite3.Error as e:
         print(f"SQLite error upserting agent config for {kb_id}: {e}")
         return False
 
+
 # Initialize the DB schema when the module is loaded (idempotent)
-# init_db() # Call this explicitly from main.py or app startup instead 
+# init_db() # Call this explicitly from main.py or app startup instead
+
 
 def update_scrape_status(kb_id: str, status_data: dict) -> bool:
     """Updates the scraping status for a KB."""
     try:
         with get_db() as conn:
             cursor = conn.cursor()
-            
+
             # Convert progress dict to JSON string if present
             progress_json = None
-            if 'progress' in status_data:
-                progress_json = json.dumps(status_data['progress'])
-                del status_data['progress']
-            
+            if "progress" in status_data:
+                progress_json = json.dumps(status_data["progress"])
+                del status_data["progress"]
+
             # Build column lists and values for the query
             columns = list(status_data.keys())
             values = list(status_data.values())
-            
+
             # Add progress_data if present
             if progress_json is not None:
-                columns.append('progress_data')
+                columns.append("progress_data")
                 values.append(progress_json)
-            
+
             # Add kb_id
-            columns.append('kb_id')
+            columns.append("kb_id")
             values.append(kb_id)
-            
+
             # Add last_update to columns (it will be set by CURRENT_TIMESTAMP)
-            columns.append('last_update')
-            
+            columns.append("last_update")
+
             # Construct the placeholders for values
-            placeholders = ['?' for _ in range(len(values))] + ['CURRENT_TIMESTAMP']
-            
+            placeholders = ["?" for _ in range(len(values))] + ["CURRENT_TIMESTAMP"]
+
             # Construct the UPDATE part for the UPSERT
             update_fields = []
             for col in columns[:-1]:  # Exclude last_update from the SET clause
-                if col != 'kb_id':  # Don't update the primary key
+                if col != "kb_id":  # Don't update the primary key
                     update_fields.append(f"{col} = excluded.{col}")
             update_fields.append("last_update = CURRENT_TIMESTAMP")
-            
+
             # Construct and execute the query
             query = f"""
                 INSERT INTO scraping_status 
@@ -694,7 +745,7 @@ def update_scrape_status(kb_id: str, status_data: dict) -> bool:
                 ON CONFLICT(kb_id) DO UPDATE SET 
                 {', '.join(update_fields)}
             """
-            
+
             cursor.execute(query, values)
             conn.commit()
             return True
@@ -702,32 +753,36 @@ def update_scrape_status(kb_id: str, status_data: dict) -> bool:
         print(f"Error updating scrape status for KB {kb_id}: {e}")
         return False
 
+
 def get_scrape_status(kb_id: str) -> Optional[dict]:
     """Retrieves the current scraping status for a KB."""
     try:
         with get_db() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM scraping_status WHERE kb_id = ?",
-                (kb_id,)
-            )
+            cursor.execute("SELECT * FROM scraping_status WHERE kb_id = ?", (kb_id,))
             row = cursor.fetchone()
-            
+
             if not row:
                 return None
-                
+
             # Convert row to dict
             status = dict(row)
-            
+
             # Parse progress_data JSON if present
-            if status.get('progress_data'):
+            if status.get("progress_data"):
                 try:
-                    status['progress'] = json.loads(status['progress_data'])
+                    status["progress"] = json.loads(status["progress_data"])
                 except json.JSONDecodeError:
-                    status['progress'] = None
-                del status['progress_data']
-                
+                    status["progress"] = None
+                del status["progress_data"]
+
             return status
     except Exception as e:
         print(f"Error retrieving scrape status for KB {kb_id}: {e}")
-        return None 
+        return None
+
+
+class PushSub(BaseModel):
+    anon_id: str
+    user_id: str
+    subscription: dict[str, Any]
