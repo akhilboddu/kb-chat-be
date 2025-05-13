@@ -122,4 +122,3 @@ async def bot_scrape_url_status_endpoint(bot_id: str):
     Endpoint for checking the status of a scrape URL request.
     """
     pass
-

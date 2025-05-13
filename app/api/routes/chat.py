@@ -558,9 +558,22 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     response = supabase.table("bots").select("*").eq("id", bot_id).execute()
     kb_id = response.data[0]["kb_id"]
 
+    repsonse = (
+        supabase.table("conversations")
+        .select("status")
+        .eq("id", request.conversation_id)
+        .execute()
+    )
+    print(f"status is {repsonse.data}")
+    if repsonse.data and len(repsonse.data) > 0:
+        print(repsonse.data)
+        status = repsonse.data[0]["status"]
+        if status == "human":
+            return {
+                "content": "",
+            }
     # now use all logic from /agents/{kb_id}/chat endpoint
     response = await chat_endpoint(kb_id, request)
-    print("here after the chat_endpoint")
 
     # save user's message and bot's response to supabase
     supabase.table("messages").insert(
@@ -570,7 +583,7 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
             "content": response.content,
         }
     ).execute()
-    print("after savign the messages", response)
+    print(f"type is {response.type}")
 
     # if response.type == "handoff", save handoff to supabase
     if response.type == "handoff":

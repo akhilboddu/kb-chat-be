@@ -218,4 +218,3 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
                 },
             },
         )
-
