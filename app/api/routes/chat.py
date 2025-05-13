@@ -587,6 +587,7 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
 
     # if response.type == "handoff", save handoff to supabase
     if response.type == "handoff":
+        print("handed off printed")
         supabase.table("handover_requests").insert(
             {
                 "conversation_id": request.conversation_id,
@@ -596,29 +597,32 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
         supabase.table("conversations").update({"status": "human"}).eq(
             "id", request.conversation_id
         ).execute()
+
         # sending a notification to the bot admin
 
         result = supabase.table("bots").select("*").eq("id", bot_id).single().execute()
 
         if result.data:  # ✅ Check if data exists
             user_id = result.data["user_id"]  # ✅ Access dict key
+            print(user_id, "userid")
             result = (
                 supabase.table("anon_push_subscriptions")
                 .select("*")
                 .eq("user_id", user_id)
-                .single()
                 .execute()
             )
-            if result.data:
-                sub_obj = json.loads(result.data["subscription"])
-                send_push_notification(
-                    sub_obj,
-                    "Support Required",
-                    "A new user has request for human support",
-                )
-                print(
-                    f"msg: Result for {result.data['user_id']} is ready and push notification is been sent"
-                )
+            print("result anon", result)
+            if result.data and len(result.data) > 0:
+                for data in result.data:
+                    sub_obj = json.loads(data["subscription"])
+                    send_push_notification(
+                        sub_obj,
+                        "Support Required",
+                        "A new user has request for human support",
+                    )
+                    print(
+                        f"msg: Result for {data['user_id']} is ready and push notification is been sent"
+                    )
         else:
             print("Bot not found or query failed")
     return response
