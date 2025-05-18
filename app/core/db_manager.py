@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional
 from app.core.config import SQLITE_DB_DIR, SQLITE_DB_PATH  # Import path from app.core
 
 from pydantic import BaseModel
+import psycopg2
 
 # Database path - assuming '/app/' is covered by the persistent disk mount
 # If your persistent disk is mounted differently (e.g., only '/app/data/'), adjust this path.
@@ -17,12 +18,19 @@ os.makedirs(SQLITE_DB_DIR, exist_ok=True)
 
 DATABASE = SQLITE_DB_PATH
 
+POSTGRES_DB = "postgresql://postgres.qbhevelbszcvxkutfmlg:x8ODxTQ0LVDthVpV@aws-0-eu-west-2.pooler.supabase.com:5432/postgres"
+
 
 def get_db():
     """Gets a database connection."""
     conn = sqlite3.connect(DATABASE)
     # Return rows as dictionaries
     conn.row_factory = sqlite3.Row
+    return conn
+
+
+def get_postgres_db():
+    conn = psycopg2.connect(POSTGRES_DB)
     return conn
 
 
@@ -779,6 +787,53 @@ def get_scrape_status(kb_id: str) -> Optional[dict]:
             return status
     except Exception as e:
         print(f"Error retrieving scrape status for KB {kb_id}: {e}")
+        return None
+
+
+def get_conversation_count(user_id: str):
+    try:
+        with get_postgres_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT COUNT(*) 
+                FROM conversations c 
+                JOIN bots b ON c.bot_id = b.id
+                WHERE b.user_id = %s
+                  AND c.created_at >= DATE_TRUNC('month', CURRENT_DATE);
+            """,
+                (user_id,),
+            )
+
+            count = cursor.fetchone()[0]
+            return count
+
+    except Exception as e:
+        print(f"Error retrieving conversation count: {e}")
+        return None
+
+
+def get_message_count(user_id: str):
+    try:
+        with get_postgres_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT COUNT(*) 
+                FROM messages m
+                JOIN conversations c ON m.conversation_id = c.id
+                JOIN bots b ON c.bot_id = b.id
+                WHERE b.user_id = %s
+                AND c.created_at >= DATE_TRUNC('month', CURRENT_DATE);
+            """,
+                (user_id,),
+            )
+
+            count = cursor.fetchone()[0]
+            return count
+
+    except Exception as e:
+        print(f"Error retrieving conversation count: {e}")
         return None
 
 

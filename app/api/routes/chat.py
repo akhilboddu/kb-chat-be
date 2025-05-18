@@ -1,12 +1,12 @@
 import asyncio
-import datetime
 import json  # For timestamp handling
 from fastapi import APIRouter, HTTPException, status, Body, Query, Depends
 from langchain.memory import ConversationBufferMemory
 from langchain_core.messages import HumanMessage, AIMessage
 import math
-
+from datetime import datetime, timezone
 from app.core.supabase_client import supabase
+from app.database.operations import post_message
 from app.models.chat import (
     ChatRequest,
     ChatResponse,
@@ -30,6 +30,7 @@ from app.models.base import StatusResponse
 from app.core import db_manager, kb_manager, agent_manager
 from app.services.push_notifications import send_push_notification
 from app.utils.text_processing import clean_agent_output
+from app.utils.verification import get_current_user
 
 router = APIRouter(tags=["chat"])
 
@@ -535,6 +536,13 @@ async def list_conversations_endpoint():
         )
 
 
+@router.post("/bots/{bot_id}/chat_human")
+async def bot_chathuman_endpoint(request: ChatRequest, user=Depends(get_current_user)):
+    if not user:
+        return {"detail": "authentication error"}
+    return post_message(request.conversation_id, request.message, "human")
+
+
 @router.post("/bots/{bot_id}/chat", response_model=ChatResponse)
 async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     """
@@ -556,7 +564,10 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     )
 
     response = supabase.table("bots").select("*").eq("id", bot_id).execute()
-    kb_id = response.data[0]["kb_id"]
+    bots_data = response.data[0]
+
+    user_id = bots_data["user_id"]
+    kb_id = bots_data["kb_id"]
 
     repsonse = (
         supabase.table("conversations")
@@ -566,7 +577,6 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     )
     print(f"status is {repsonse.data}")
     if repsonse.data and len(repsonse.data) > 0:
-        print(repsonse.data)
         status = repsonse.data[0]["status"]
         if status == "human":
             return {
@@ -583,11 +593,17 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
             "content": response.content,
         }
     ).execute()
-    print(f"type is {response.type}")
+
+    conversation_count = db_manager.get_conversation_count(user_id)
+    message_count = db_manager.get_message_count(user_id)
+    if conversation_count is not None and message_count is not None:
+        if conversation_count >= 20 or message_count >= 100:
+            return {
+                "content": "",
+            }
 
     # if response.type == "handoff", save handoff to supabase
     if response.type == "handoff":
-        print("handed off printed")
         supabase.table("handover_requests").insert(
             {
                 "conversation_id": request.conversation_id,
@@ -660,7 +676,7 @@ async def create_bot_conversation_endpoint(
         from app.core.supabase_client import supabase
 
         # Convert datetime to ISO format string for JSON serialization
-        current_time = datetime.datetime.now().isoformat()
+        current_time = datetime.now().isoformat()
 
         # Create the data payload
         data = {
@@ -752,7 +768,7 @@ async def list_bot_conversations_endpoint(
             query = query.neq("status", "closed")
 
         # Get paginated data
-        response = query.order("created_at", desc=True).range(start, end).execute()
+        response = query.order("created_at", desc=True).execute()
 
         # Calculate total pages
         total_pages = math.ceil(total_count / page_size) if total_count > 0 else 1

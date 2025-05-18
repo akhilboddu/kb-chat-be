@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import uvicorn
+from app.config.dbconnection import get_db_pool
 from app.core.db_manager import init_db
 from app.core.config import llm
 from app.api.routes import router
@@ -66,6 +67,14 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=status.HTTP_200_OK, content={"status": "healthy"}
         )
+
+    @app.on_event("startup")
+    def init_db_pool():
+        get_db_pool()
+
+    @app.on_event("shutdown")
+    def close_db_pool():
+        get_db_pool().closeall()
 
     return app
 
