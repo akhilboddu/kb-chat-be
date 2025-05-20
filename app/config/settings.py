@@ -1,0 +1,9 @@
+import os
+
+ONLINE = "online"
+EXPIRY_STATUS_TIME = 10
+
+
+SES_ACCESS_KEY = os.getenv("SES_ACCESS_KEY")
+SES_SECRET_ACCESS_KEY = os.getenv("SES_SECRET_ACCESS_KEY")
+SES_REGION = os.getenv("SES_REGION")
