@@ -605,6 +605,7 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
 
     # if response.type == "handoff", save handoff to supabase
     if response.type == "handoff":
+        print("Sending handover request to admin...........")
         notify_admin_on_user_message(
             conversation_repsonse.data[0]["customer_name"],
             conversation_repsonse.data[0]["customer_email"],
