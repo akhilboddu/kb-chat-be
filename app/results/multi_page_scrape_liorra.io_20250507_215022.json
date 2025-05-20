@@ -1,0 +1,273 @@
+{
+  "scrape_metadata": {
+    "url": "https://www.liorra.io/",
+    "base_domain": "liorra.io",
+    "pages_scraped": 11,
+    "pages_analyzed": 10,
+    "early_termination": false,
+    "scrape_time": "2025-05-07T21:50:22.107367",
+    "processing_time_seconds": 36.45362615585327
+  },
+  "business_profile": {
+    "business_name": "Liorra",
+    "tagline": "We Empower Businesses with Digital Innovation.",
+    "description": "Liorra helps businesses build a brighter future by using cutting-edge technologies, expert guidance, and unparalleled support.",
+    "contact_info": {
+      "email": "hello@liorra.io",
+      "phone": "+27 21 813 9767",
+      "address": "51 Gogosoa St, Cape Town City Centre, Cape Town, 8000",
+      "contact_form_mention": true
+    },
+    "offerings": [
+      {
+        "type": "service",
+        "name": "App Design",
+        "description": "Professional, user-centered UX/UI design services for mobile and web applications.",
+        "attributes": [
+          "Custom UI/UX design",
+          "Interactive prototypes",
+          "Comprehensive design consultation",
+          "User-centered design approach"
+        ],
+        "pricing": null
+      },
+      {
+        "type": "service",
+        "name": "Custom web app development",
+        "description": "Build scalable, secure, and user-centric web applications designed to drive your business forward.  Our skilled web developers utilize advanced frameworks and technologies to deliver powerful web solutions tailored precisely to your unique business objectives.",
+        "attributes": [
+          "Scalable backend and frontend solutions",
+          "Responsive design for optimal user experience",
+          "Continuous support and maintenance"
+        ],
+        "pricing": null
+      },
+      {
+        "type": "service",
+        "name": "Custom AI solution development",
+        "description": "Development of customized AI solutions tailored to address operational challenges.",
+        "attributes": [
+          "Customizable",
+          "Addresses operational challenges"
+        ],
+        "pricing": null
+      },
+      {
+        "type": "service",
+        "name": "AI-powered chatbots & NLP assistants",
+        "description": "AI-powered chatbots and natural language processing assistants.",
+        "attributes": [
+          "AI-powered",
+          "NLP integration"
+        ],
+        "pricing": null
+      },
+      {
+        "type": "service",
+        "name": "Predictive analytics & business intelligence dashboards",
+        "description": "Predictive analytics and business intelligence dashboards.",
+        "attributes": [
+          "Predictive",
+          "Business intelligence"
+        ],
+        "pricing": null
+      },
+      {
+        "type": "service",
+        "name": "AI-driven personalization for e-commerce & SaaS",
+        "description": "AI-driven personalization for e-commerce and SaaS platforms.",
+        "attributes": [
+          "AI-driven",
+          "E-commerce & SaaS focused"
+        ],
+        "pricing": null
+      },
+      {
+        "type": "service",
+        "name": "On-Demand Tech Teams",
+        "description": "Access dedicated, high-performing tech teams tailored to your project's specific requirements. Teams include developers, designers, project managers, and QA specialists.",
+        "attributes": [
+          "Fully managed agile teams",
+          "Scalable resource allocation",
+          "Expertise across diverse technologies",
+          "Flexible engagement models"
+        ],
+        "pricing": null
+      },
+      {
+        "type": "service",
+        "name": "UX/UI Audit & Redesign",
+        "description": "Comprehensive UX/UI auditing and strategic redesign solutions to enhance digital products.  Includes in-depth analysis, actionable recommendations, complete redesign or targeted improvements, and enhanced user engagement strategies.",
+        "attributes": [
+          "In-depth UX/UI analysis",
+          "Actionable recommendations",
+          "Complete redesign or targeted improvements",
+          "Enhanced user engagement strategies"
+        ],
+        "pricing": null
+      },
+      {
+        "type": "service",
+        "name": "Mobile App Development",
+        "description": "Develop cutting-edge mobile applications designed to engage users, boost brand loyalty, and drive business growth. Specializing in both native and cross-platform solutions.",
+        "attributes": [
+          "Native and cross-platform development",
+          "End-to-end app lifecycle management",
+          "Agile development methodology",
+          "Rigorous quality assurance"
+        ],
+        "pricing": null
+      },
+      {
+        "type": "service",
+        "name": "Web App Development",
+        "description": "Develops web applications.",
+        "attributes": [],
+        "pricing": null
+      },
+      {
+        "type": "service",
+        "name": "AI & Automation",
+        "description": "Develops AI-powered solutions and automation systems.",
+        "attributes": [],
+        "pricing": null
+      },
+      {
+        "type": "service",
+        "name": "Custom Software Development",
+        "description": "Tailored to specific needs, including web, mobile, and enterprise software.",
+        "attributes": [
+          "web application",
+          "mobile app",
+          "enterprise software"
+        ],
+        "pricing": null
+      },
+      {
+        "type": "service",
+        "name": "Cybersecurity Solutions",
+        "description": "Includes risk assessments, security audits, threat detection and response, and employee training.",
+        "attributes": [
+          "risk assessments",
+          "security audits",
+          "threat detection and response",
+          "employee training"
+        ],
+        "pricing": null
+      },
+      {
+        "type": "service",
+        "name": "IT Consultancy",
+        "description": "Provides IT consulting services.",
+        "attributes": [],
+        "pricing": null
+      }
+    ],
+    "value_props": [
+      "Cutting-edge technologies",
+      "Expert guidance",
+      "Unparalleled support",
+      "User-centered design",
+      "Latest design principles and user behavior insights",
+      "Visually appealing, interactive, and intuitive applications",
+      "Exceptional design",
+      "Robust Web Applications Tailored for Your Success",
+      "Exceptional performance, security, and scalability",
+      "Streamlined operations",
+      "Reduced manual workloads",
+      "Enhanced decision-making",
+      "Increased productivity",
+      "Improved accuracy",
+      "Substantial cost savings",
+      "Elevates user satisfaction",
+      "Boosts engagement",
+      "Improves overall conversion rates",
+      "Long-term partnerships",
+      "Transparent communication",
+      "High-quality, engaging mobile apps",
+      "Growth-driving applications",
+      "Enhanced customer loyalty",
+      "Boosted competitive edge",
+      "Expert guidance and unparalleled support",
+      "Unmatched efficiency",
+      "Security",
+      "Scalability",
+      "Instantly access dedicated, high-performing tech teams",
+      "Perfectly tailored to your project's specific requirements",
+      "Reduce operational overhead",
+      "Accelerate project timelines",
+      "Enhance overall productivity and efficiency"
+    ],
+    "audience": [
+      "Businesses",
+      "Startups launching new products",
+      "Companies optimizing digital experiences",
+      "Enterprises improving usability & accessibility",
+      "Enterprises requiring reliable, scalable web solutions",
+      "Businesses aiming to enhance customer engagement",
+      "Startups launching innovative online platforms",
+      "Businesses automating customer support & workflows",
+      "Companies seeking operational efficiency improvements",
+      "Startups integrating AI-powered features into their platforms",
+      "SaaS companies needing higher user retention",
+      "E-commerce brands looking to boost conversions",
+      "Platforms requiring better mobile & web experience",
+      "Startups",
+      "Enterprises",
+      "Businesses needing mobile commerce & fintech apps",
+      "Educational institutions",
+      "Professionals",
+      "Companies needing on-demand, high-quality talent",
+      "Startups looking for cost-effective development support",
+      "Enterprises requiring specialized skills in AI & cloud computing"
+    ],
+    "payment_options": {
+      "methods": [],
+      "plans": [],
+      "tiers": [],
+      "free_offer": "Request a free consultation"
+    },
+    "support": [
+      "Contact form",
+      "Phone",
+      "email"
+    ],
+    "faqs": [
+      {
+        "question": "How do I get started with your consulting and services?",
+        "answer": "To begin, please reach out to us via our contact form or phone number on our website. We'll schedule an initial consultation to discuss your specific requirements and create a tailored strategy for your business."
+      },
+      {
+        "question": "Can you provide examples of successful projects or case studies?",
+        "answer": "Yes, we can provide references and case studies upon request. Feel free to contact us for more information."
+      },
+      {
+        "question": "What types of Custom Software Development do you offer?",
+        "answer": "We provide custom software development services tailored to your specific needs. Whether you need a web application, mobile app, or enterprise software, we can design, develop, and maintain the software solution that aligns with your business goals."
+      },
+      {
+        "question": "What kind of Cybersecurity Solutions do you provide?",
+        "answer": "Our Cybersecurity Solutions encompass a range of services, including risk assessments, security audits, threat detection and response, and employee training. We help protect your data, systems, and networks from cyber threats and breaches."
+      }
+    ],
+    "social_links": {
+      "linkedin": "https://www.linkedin.com/company/liorra",
+      "twitter": "https://www.twitter.com/liorratech"
+    },
+    "source_urls": [
+      "https://www.liorra.io/",
+      "https://www.liorra.io/services/design-your-app",
+      "https://www.liorra.io/services/web-app-development",
+      "https://www.liorra.io/services/ai-solutions",
+      "https://www.liorra.io/faq",
+      "https://www.liorra.io/services/ux-optimization",
+      "https://www.liorra.io/about-us",
+      "https://www.liorra.io/services/mobile-app-development",
+      "https://www.liorra.io/services",
+      "https://www.liorra.io/services/on-demand-tech-teams"
+    ],
+    "base_domain": "liorra.io",
+    "business_type": "service-based",
+    "course_prices": {}
+  }
+}
