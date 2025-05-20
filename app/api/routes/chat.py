@@ -29,6 +29,7 @@ from app.models.base import StatusResponse
 
 from app.core import db_manager, kb_manager, agent_manager
 from app.services.push_notifications import send_push_notification
+from app.services.send_email import notify_admin_on_user_message
 from app.utils.text_processing import clean_agent_output
 from app.utils.verification import get_current_user
 
@@ -569,15 +570,15 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     user_id = bots_data["user_id"]
     kb_id = bots_data["kb_id"]
 
-    repsonse = (
+    conversation_repsonse = (
         supabase.table("conversations")
-        .select("status")
+        .select("*")
         .eq("id", request.conversation_id)
         .execute()
     )
-    print(f"status is {repsonse.data}")
-    if repsonse.data and len(repsonse.data) > 0:
-        status = repsonse.data[0]["status"]
+    print(f"status is {conversation_repsonse.data}")
+    if conversation_repsonse.data and len(conversation_repsonse.data) > 0:
+        status = conversation_repsonse.data[0]["status"]
         if status == "human":
             return {
                 "content": "",
@@ -604,6 +605,12 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
 
     # if response.type == "handoff", save handoff to supabase
     if response.type == "handoff":
+        notify_admin_on_user_message(
+            conversation_repsonse.data[0]["customer_name"],
+            conversation_repsonse.data[0]["customer_email"],
+            request.message,
+            bot_id,
+        )
         supabase.table("handover_requests").insert(
             {
                 "conversation_id": request.conversation_id,

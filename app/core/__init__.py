@@ -12,4 +12,5 @@ from app.core.agent_manager import *
 from app.core.scraper import *
 from app.core.data_processor import *
 from app.core.supabase_client import *
-from app.core.tools import * 
+from app.core.tools import *
+
