@@ -1,61 +1,127 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
-# Dependency directories
-node_modules/
-.bower_components/
-
-# Python
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
 .Python
-env/
-venv/
-*.env
-
-# Build output
-dist/
 build/
-out/
-*.egg-info/
+dist/
+downloads/
+eggs/
 .eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# OS / Editor / IDE files
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-*.swp
-*.swo
+# PyInstaller
+# *.manifest
+# *.spec
 
-# dotenv environment files
-.env
-.env.local
-.env.*.local
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Coverage / test reports
-coverage/
-*.lcov
-.nyc_output/
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+osetests.xml
+.pytest_cache/
+.hypothesis/
 
-# Git directory ignore
-.git/
-*.orig
+# Translations
+*.mo
+*.pot
+*.log
 
-# Docker
-*.pid
-*.pid.lock
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
 
-# Jupyter
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
 .ipynb_checkpoints
 
-# Misc
-*.bak
-*.tmp
+# IPython
+profile_default/
+ipython_config.py
+
+# PEP 582; used by PDM, Flit, and Pipenv
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+venv/
+ENV/
+env/
+ENV/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static analyzer
+.pytype/
+
+# Environments - commonly used virtualenv directory names
+/venv/
+/env/
+/.env/
+/.venv/
+
+# Project Specific Ignores
+/chromadb_data/
+/db/ # Ignore the local SQLite db directory
+*.sqlite3
+*.sqlite3-journal
+.DS_Store 
