@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import uvicorn
+from app.config.redisconnection import redisConnection
 from app.config.dbconnection import get_db_pool
 from app.core.db_manager import init_db
 from app.core.config import llm
@@ -31,6 +32,7 @@ def create_app() -> FastAPI:
     # Format for CORS_ORIGINS: comma-separated URLs like "https://example.com,https://app.example.com"
     cors_origins_str = os.getenv("CORS_ORIGINS", "")
     additional_origins = cors_origins_str.split(",") if cors_origins_str else []
+    redisConnection.connect()
 
     # Default development origins
     default_origins = [
