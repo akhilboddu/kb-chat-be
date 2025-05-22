@@ -5,6 +5,7 @@ from langchain.memory import ConversationBufferMemory
 from langchain_core.messages import HumanMessage, AIMessage
 import math
 from datetime import datetime, timezone
+from app.config.redisconnection import redisConnection
 from app.core.supabase_client import supabase
 from app.database.operations import post_message
 from app.models.chat import (
@@ -605,6 +606,7 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
 
     # if response.type == "handoff", save handoff to supabase
     if response.type == "handoff":
+<<<<<<< HEAD
         print("Sending handover request to admin...........")
         notify_admin_on_user_message(
             conversation_repsonse.data[0]["customer_name"],
@@ -612,6 +614,18 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
             request.message,
             bot_id,
         )
+=======
+        client = redisConnection.client
+        if client:
+            user_online = client.get(user_id)
+            if user_online is None:
+                notify_admin_on_user_message(
+                    conversation_repsonse.data[0]["customer_name"],
+                    conversation_repsonse.data[0]["customer_email"],
+                    request.message,
+                    bot_id,
+                )
+>>>>>>> 74f44c1ab8c2071d783ddc3fcf5f21c3c4e85db1
         supabase.table("handover_requests").insert(
             {
                 "conversation_id": request.conversation_id,
