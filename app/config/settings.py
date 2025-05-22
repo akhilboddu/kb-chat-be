@@ -1,7 +1,7 @@
 import os
 
 ONLINE = "online"
-EXPIRY_STATUS_TIME = 10
+EXPIRY_STATUS_TIME = 11
 
 
 SES_ACCESS_KEY = os.getenv("SES_ACCESS_KEY")
