@@ -7,6 +7,7 @@ from pydantic import BaseModel
 SES_ACCESS_KEY = os.getenv("SES_ACCESS_KEY")
 SES_SECRET_ACCESS_KEY = os.getenv("SES_SECRET_ACCESS_KEY")
 SES_REGION = os.getenv("SES_REGION")
+SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 
 
 class EmailContent(BaseModel):
@@ -37,8 +38,8 @@ def notify_admin_on_user_message(
 
     try:
         response = ses_client.send_templated_email(
-            Source="tilakreddy19102000@gmail.com",
-            Destination={"ToAddresses": ["tilakreddy19102000@gmail.com"]},
+            Source=SENDER_EMAIL,
+            Destination={"ToAddresses": [SENDER_EMAIL]},
             Template="DeskforceUserMessageWithLink",
             TemplateData=json.dumps(
                 {

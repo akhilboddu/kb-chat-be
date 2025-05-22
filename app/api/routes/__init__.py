@@ -3,6 +3,7 @@ from app.api.routes.anon_notifications import router as anon_router
 from app.api.routes.agent import router as agent_router
 from app.api.routes.chat import router as chat_router
 from app.api.routes.file import router as file_router
+from app.api.routes.online_status import router as online_status_router
 from app.api.routes.scrape import router as scrape_router
 from app.api.routes.bot import router as bot_router
 from app.api.routes.payment import router as payment_router
@@ -19,3 +20,4 @@ router.include_router(payment_router)
 router.include_router(agent_router)
 router.include_router(anon_router)
 router.include_router(subscriptions_router)
+router.include_router(online_status_router)
