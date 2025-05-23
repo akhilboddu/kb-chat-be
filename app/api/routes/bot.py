@@ -1,5 +1,4 @@
-from fastapi import APIRouter, HTTPException, Body, Query
-import datetime
+from fastapi import APIRouter, HTTPException
 from .scrape import scrape_url_and_populate_kb
 from app.models.scrape import ScrapeURLRequest
 
