@@ -4,8 +4,10 @@ from fastapi import APIRouter, HTTPException, status, Body, Query, Depends
 from langchain.memory import ConversationBufferMemory
 from langchain_core.messages import HumanMessage, AIMessage
 import math
-from datetime import datetime, timezone
+
+from datetime import datetime
 from app.config.redisconnection import redisConnection
+from app.config.settings import EXPIRY_STATUS_TIME, ONLINE
 from app.core.supabase_client import supabase
 from app.database.operations import post_message
 from app.models.chat import (
@@ -23,18 +25,47 @@ from app.models.chat import (
 )
 from app.models.bot import (
     CreateBotConversationResponse,
-    ListBotConversationsResponse,
     PaginatedListBotConversationsResponse,
 )
 from app.models.base import StatusResponse
 
 from app.core import db_manager, kb_manager, agent_manager
 from app.services.push_notifications import send_push_notification
-from app.services.send_email import notify_admin_on_user_message
+from app.services.send_email import notify_admin_on_user_message, notify_client_message
 from app.utils.text_processing import clean_agent_output
 from app.utils.verification import get_current_user
 
 router = APIRouter(tags=["chat"])
+
+
+@router.post("/send-mail")
+async def send_mail(request: ChatRequest):
+    client = redisConnection.client
+    if not client:
+        return {"message": "Redis client not available"}
+
+    if client.get(request.conversation_id):
+        return {"message": "user is online"}
+
+    response = (
+        await supabase.table("conversations")
+        .select("*")
+        .eq("id", request.conversation_id)
+        .single()
+    )  # ensures you get one row or error
+
+    data = response.data if hasattr(response, "data") else None
+
+    if data:
+        notify_client_message(
+            data["customer_name"],
+            request.message,
+            data["customer_email"],
+            request.conversation_id,
+        )
+        return {"message": "mail has been sent"}
+
+    return {"message": "conversation not found"}
 
 
 @router.post("/agents/{kb_id}/chat", response_model=ChatResponse)
@@ -849,7 +880,9 @@ async def list_messages_endpoint(
     )
 
     try:
-        from app.core.supabase_client import supabase
+        client = redisConnection.client
+        if client:
+            client.set(conversation_id, ONLINE, ex=EXPIRY_STATUS_TIME)
 
         # Calculate range for pagination
         start = (page - 1) * page_size
