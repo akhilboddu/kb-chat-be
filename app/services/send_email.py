@@ -24,6 +24,39 @@ ses_client = boto3.client(
 )
 
 
+def notify_client_message(
+    user_name: str, message: str, user_email: str, conversation_id: str
+):
+    conversation_link = f"http://localhost:8080/conversations/{conversation_id}"
+
+    ses_client = boto3.client(
+        "ses",
+        region_name=SES_REGION,
+        aws_access_key_id=SES_ACCESS_KEY,
+        aws_secret_access_key=SES_SECRET_ACCESS_KEY,
+    )
+
+    try:
+        response = ses_client.send_templated_email(
+            Source=SENDER_EMAIL,
+            Destination={"ToAddresses": [SENDER_EMAIL]},
+            Template="DeskforceUserMessageWithLink",
+            TemplateData=json.dumps(
+                {
+                    "user_name": user_name,
+                    "user_email": user_email,
+                    "message": message,
+                    "conversation_link": conversation_link,
+                }
+            ),
+        )
+        print("User notified with link:", response)
+    except Exception as e:
+        print("Error sending linked email to admin:", e)
+
+    pass
+
+
 def notify_admin_on_user_message(
     user_name: str, user_email: str, message: str, conversation_id: str
 ):
