@@ -43,18 +43,23 @@ async def send_mail(request: ChatRequest):
     client = redisConnection.client
     if not client:
         return {"message": "Redis client not available"}
-
-    if client.get(request.conversation_id):
-        return {"message": "user is online"}
-
+    #
+    # if client.get(request.conversation_id):
+    #     return {"message": "user is online"}
+    #
     response = (
-        await supabase.table("conversations")
+        supabase.table("conversations")
         .select("*")
         .eq("id", request.conversation_id)
-        .single()
+        .execute()
     )  # ensures you get one row or error
+    print(response.data[0])
 
-    data = response.data if hasattr(response, "data") else None
+    data = (
+        response.data[0]
+        if hasattr(response, "data") and len(response.data) > 0
+        else None
+    )
 
     if data:
         notify_client_message(
