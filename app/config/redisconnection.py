@@ -4,17 +4,20 @@ import redis
 
 class RedisConnection:
     def __init__(self):
-        self.redis_url = "redis://localhost:6379/0"
+        self.redis_url = "redis://redis:6379/0"
         self.client = None
 
     def connect(self):
+        print(self.redis_url, "-----------------------------k")
         if self.redis_url:
+            print(self.redis_url)
             self.client = redis.Redis.from_url(self.redis_url)
             try:
                 self.client.ping()
                 logging.info("Redis Connected!!")
             except redis.ConnectionError:
                 logging.error("Failed to connect to Redis")
+                logging.error(self.redis_url)
 
     def disconnect(self):
         if self.client:
