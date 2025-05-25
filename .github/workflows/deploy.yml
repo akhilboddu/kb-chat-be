@@ -1,0 +1,51 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH Key
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY }}" | tee private_key.pem > /dev/null
+          chmod 600 private_key.pem
+
+      - name: Deploy to EC2
+        run: |
+          for i in {1..5}; do  # Retry SSH connection up to 5 times
+            ssh -o StrictHostKeyChecking=no -i private_key.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "exit" && break
+            echo "SSH connection failed, retrying in 5 seconds..."
+            sleep 5
+          done
+
+          ssh -o StrictHostKeyChecking=no -i private_key.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+
+            # Navigate to project directory (create if missing)
+            mkdir -p ~/kb-chat-be && cd ~/kb-chat-be
+
+            # Ensure clean repo state
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Start or update Docker services
+            docker-compose pull  # Fetch updated images without rebuilding everything
+            docker-compose down
+            # docker-compose up --no-deps -d --build app
+            docker-compose up -d --build
+
+            # Cleanup unused Docker resources
+            docker system prune -af  # Removes stopped containers, unused networks, images, and volumes
+
+            exit
+          EOF
+
+      - name: Cleanup SSH Key
+        run: rm -f private_key.pem
