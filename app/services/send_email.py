@@ -8,6 +8,7 @@ SES_ACCESS_KEY = os.getenv("SES_ACCESS_KEY")
 SES_SECRET_ACCESS_KEY = os.getenv("SES_SECRET_ACCESS_KEY")
 SES_REGION = os.getenv("SES_REGION")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
+SENDER_EMAIL = "asif@liorra.io"
 
 
 class EmailContent(BaseModel):
@@ -27,15 +28,13 @@ ses_client = boto3.client(
 def notify_client_message(
     user_name: str, message: str, user_email: str, conversation_id: str
 ):
-    conversation_link = f"http://localhost:8080/conversations/{conversation_id}"
-
     ses_client = boto3.client(
         "ses",
         region_name=SES_REGION,
         aws_access_key_id=SES_ACCESS_KEY,
         aws_secret_access_key=SES_SECRET_ACCESS_KEY,
     )
-
+    converssationLink = f"http://localhost:8080/chat-convo/{conversation_id}"
     try:
         response = ses_client.send_templated_email(
             Source=SENDER_EMAIL,
@@ -46,7 +45,7 @@ def notify_client_message(
                     "user_name": user_name,
                     "user_email": user_email,
                     "message": message,
-                    "conversation_link": conversation_link,
+                    "conversation_link": converssationLink,
                 }
             ),
         )

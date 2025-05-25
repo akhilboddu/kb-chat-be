@@ -1,5 +1,6 @@
 import asyncio
-import json  # For timestamp handling
+import json
+from logging import Logger  # For timestamp handling
 from fastapi import APIRouter, HTTPException, status, Body, Query, Depends
 from langchain.memory import ConversationBufferMemory
 from langchain_core.messages import HumanMessage, AIMessage
@@ -44,9 +45,9 @@ async def send_mail(request: ChatRequest):
     if not client:
         return {"message": "Redis client not available"}
     #
-    # if client.get(request.conversation_id):
-    #     return {"message": "user is online"}
-    #
+    if client.get(request.conversation_id):
+        return {"message": "user is online"}
+
     response = (
         supabase.table("conversations")
         .select("*")
@@ -71,6 +72,27 @@ async def send_mail(request: ChatRequest):
         return {"message": "mail has been sent"}
 
     return {"message": "conversation not found"}
+
+
+@router.get("/{conversation_id}/chat-history")
+async def get_chat_history(conversation_id: str):
+    try:
+        conversation_response = (
+            supabase.table("messages")
+            .select("*")
+            .eq("conversation_id", conversation_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        data = conversation_response.data
+        response = []
+        for dat in data:
+            response.append({"role": dat["role"], "message": dat["content"]})
+            print(dat)
+        return response
+    except Exception as e:
+        print(e)
+        return []
 
 
 @router.post("/agents/{kb_id}/chat", response_model=ChatResponse)
@@ -912,7 +934,7 @@ async def list_messages_endpoint(
             .execute()
         )
 
-        # Calculate total pages
+        # Calculate total page
         total_pages = math.ceil(total_count / page_size) if total_count > 0 else 1
 
         return PaginatedListMessagesResponse(
@@ -931,3 +953,17 @@ async def list_messages_endpoint(
         raise HTTPException(
             status_code=500, detail=f"Failed to list messages: {str(e)}"
         )
+
+
+@router.get("/bot_id/{conversation_id}")
+def get_bot_id_from_conversation_id(conversation_id: str):
+    try:
+        conversation_response = (
+            supabase.table("conversations")
+            .select("*")
+            .eq("id", conversation_id)
+            .execute()
+        )
+        return conversation_response.data[0]["bot_id"]
+    except Exception:
+        return ""
