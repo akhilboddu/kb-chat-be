@@ -18,13 +18,11 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./db:/app/db
-      - ./chromadb_data:/app/chromadb_data
+      - db_data:/app/db
+      - chromadb_data:/app/chromadb_data
       - huggingface_cache:/app/.cache
-
     environment:
       REDIS_URL: redis://redis:6379/0
-
     env_file:
       - .env
     restart: unless-stopped
@@ -37,12 +35,13 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-
     networks:
       - chatwise_net
+
 volumes:
+  db_data:
+  chromadb_data:
   huggingface_cache:
-    name: huggingface_cache
 
 networks:
   chatwise_net:
