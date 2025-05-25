@@ -32,7 +32,6 @@ def create_app() -> FastAPI:
     # Format for CORS_ORIGINS: comma-separated URLs like "https://example.com,https://app.example.com"
     cors_origins_str = os.getenv("CORS_ORIGINS", "")
     additional_origins = cors_origins_str.split(",") if cors_origins_str else []
-    redisConnection.connect()
 
     # Default development origins
     default_origins = [
@@ -47,6 +46,7 @@ def create_app() -> FastAPI:
 
     # Combine default and environment-provided origins, filtering out empty strings
     origins = default_origins + [origin for origin in additional_origins if origin]
+    redisConnection.connect()
 
     app.add_middleware(
         CORSMiddleware,
