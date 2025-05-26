@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import boto3
 from typing import List
 import json
@@ -8,7 +9,7 @@ SES_ACCESS_KEY = os.getenv("SES_ACCESS_KEY")
 SES_SECRET_ACCESS_KEY = os.getenv("SES_SECRET_ACCESS_KEY")
 SES_REGION = os.getenv("SES_REGION")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
-SENDER_EMAIL = "asif@liorra.io"
+SENDER_EMAIL = "tilakreddy19102000@gmail.com"
 
 
 class EmailContent(BaseModel):
@@ -34,26 +35,48 @@ def notify_client_message(
         aws_access_key_id=SES_ACCESS_KEY,
         aws_secret_access_key=SES_SECRET_ACCESS_KEY,
     )
-    converssationLink = f"http://localhost:8080/chat-convo/{conversation_id}"
+    url = os.getenv("FRONTEND_LINK")
+    converssationLink = f"{url}/chat-convo/{conversation_id}"
+    user_email = (
+        SENDER_EMAIL or ""
+    )  # to be removed in production after we get ses access
+
     try:
-        response = ses_client.send_templated_email(
+        TEMPLATE_PATH = (
+            Path(__file__).resolve().parent.parent
+            / "html_templates"
+            / "client_message_template.html"
+        )
+        print(TEMPLATE_PATH)
+        with open(TEMPLATE_PATH, "r") as f:
+            html_template = f.read()
+
+        html_body = (
+            html_template.replace("{{name}}", user_name)
+            .replace("{{conversation_reply}}", message)
+            .replace("{{conversation_link}}", converssationLink)
+        )
+
+        response = ses_client.send_email(
             Source=SENDER_EMAIL,
-            Destination={"ToAddresses": [SENDER_EMAIL]},
-            Template="DeskforceUserMessageWithLink",
-            TemplateData=json.dumps(
-                {
-                    "user_name": user_name,
-                    "user_email": user_email,
-                    "message": message,
-                    "conversation_link": converssationLink,
-                }
-            ),
+            Destination={"ToAddresses": [user_email]},
+            Message={
+                "Subject": {
+                    "Charset": "UTF-8",
+                    "Data": " New Reply to Your Conversation in Deskforce!",
+                },
+                "Body": {
+                    "Html": {"Charset": "UTF-8", "Data": html_body},
+                    "Text": {
+                        "Charset": "UTF-8",
+                        "Data": f"Link to your conversation {converssationLink}",
+                    },
+                },
+            },
         )
         print("User notified with link:", response)
     except Exception as e:
         print("Error sending linked email to admin:", e)
-
-    pass
 
 
 def notify_admin_on_user_message(

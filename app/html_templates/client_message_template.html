@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>New Reply to Your Deskforce Conversation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      body {
+        font-family: "Inter", sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        margin: 0;
+        padding: 0;
+        background-color: #f3f4f6; /* Light gray background */
+      }
+      /* Basic inline styles for email client compatibility */
+      .container {
+        max-width: 600px;
+        margin: 20px auto;
+        background-color: #ffffff;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      }
+      .header {
+        background-color: #4f46e5; /* Indigo */
+        color: #ffffff;
+        padding: 24px;
+        text-align: center;
+        border-top-left-radius: 8px;
+        border-top-right-radius: 8px;
+      }
+      .content {
+        padding: 24px;
+        color: #374151; /* Dark gray text */
+        line-height: 1.6;
+      }
+      .button-container {
+        text-align: center;
+        padding: 24px;
+      }
+      .button {
+        display: inline-block;
+        background-color: #4f46e5; /* Indigo */
+        color: #ffffff;
+        padding: 12px 24px;
+        border-radius: 6px;
+        text-decoration: none;
+        font-weight: 600;
+        transition: background-color 0.3s ease;
+      }
+      .button:hover {
+        background-color: #4338ca; /* Darker indigo on hover */
+      }
+      .footer {
+        background-color: #e5e7eb; /* Lighter gray */
+        color: #6b7280; /* Medium gray */
+        padding: 24px;
+        text-align: center;
+        font-size: 0.875rem; /* text-sm */
+        border-bottom-left-radius: 8px;
+        border-bottom-right-radius: 8px;
+      }
+      .reply-box {
+        background-color: #f9fafb; /* Even lighter gray */
+        border-left: 4px solid #a78bfa; /* Light purple border */
+        padding: 16px;
+        margin-top: 20px;
+        margin-bottom: 20px;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1 class="text-3xl font-bold">Deskforce</h1>
+        <p class="text-xl mt-2">New Reply Received!</p>
+      </div>
+
+      <div class="content">
+        <p class="mb-4">Hi <strong style="color: #1f2937">{{name}}</strong>,</p>
+        <p class="mb-4">
+          Good news! You've received a new reply to your conversation in
+          Deskforce. We're here to help keep you updated.
+        </p>
+
+        <div class="reply-box">
+          <p class="font-semibold text-lg mb-2" style="color: #1f2937">
+            Reply:
+          </p>
+          <p style="color: #374151">{{conversation_reply}}</p>
+        </div>
+
+        <p class="mb-6">
+          You can view the full conversation and respond directly by clicking
+          the button below:
+        </p>
+      </div>
+
+      <div class="button-container">
+        <a
+          href="{{conversation_link}}"
+          class="button"
+          target="_blank"
+          style="
+            display: inline-block;
+            background-color: #4f46e5;
+            color: #ffffff;
+            padding: 12px 24px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-weight: 600;
+          "
+        >
+          View Conversation
+        </a>
+      </div>
+
+      <div class="footer">
+        <p>&copy; 2025 Deskforce. All rights reserved.</p>
+        <p class="mt-2">
+          This is an automated email, please do not reply directly to this
+          message.
+        </p>
+      </div>
+    </div>
+  </body>
+</html>
