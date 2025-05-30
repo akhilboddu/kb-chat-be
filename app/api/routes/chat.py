@@ -56,6 +56,15 @@ async def send_mail(request: ChatRequest):
     )  # ensures you get one row or error
     print(response.data[0])
 
+    botId = response.data[0]["bot_id"]
+    botData = supabase.table("bots").select("company","user_id").eq("id", botId).execute()
+    company_name = botData.data[0]["company"]
+
+    userId = botData.data[0]["user_id"] 
+    userData = supabase.auth.admin.get_user_by_id(userId)
+    company_email = userData.user.email
+    print(company_email+"_____________________________________________________________")
+
     data = (
         response.data[0]
         if hasattr(response, "data") and len(response.data) > 0
@@ -64,9 +73,9 @@ async def send_mail(request: ChatRequest):
 
     if data:
         notify_client_message(
-            data["customer_name"],
+            company_name,
+            company_email,
             request.message,
-            data["customer_email"],
             request.conversation_id,
         )
         return {"message": "mail has been sent"}
