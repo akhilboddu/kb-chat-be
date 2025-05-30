@@ -124,4 +124,4 @@ dmypy.json
 /db/ # Ignore the local SQLite db directory
 *.sqlite3
 *.sqlite3-journal
-.DS_Store 
+.DS_Store .env
