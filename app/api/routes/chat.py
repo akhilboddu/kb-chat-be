@@ -642,6 +642,11 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
             return {
                 "content": "",
             }
+        # If conversation is closed, update it to "ai"
+        if status == "closed":
+            supabase.table("conversations").update({"status": "ai"}).eq(
+                "id", request.conversation_id
+            ).execute()
     # now use all logic from /agents/{kb_id}/chat endpoint
     response = await chat_endpoint(kb_id, request)
 
