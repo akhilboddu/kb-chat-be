@@ -31,10 +31,11 @@ def create_app() -> FastAPI:
     # Get allowed origins from environment or use defaults
     # Format for CORS_ORIGINS: comma-separated URLs like "https://example.com,https://app.example.com"
     cors_origins_str = os.getenv("CORS_ORIGINS", "")
-    additional_origins = cors_origins_str.split(",") if cors_origins_str else []
+    additional_origins = [origin.strip() for origin in cors_origins_str.split(",") if origin.strip()] if cors_origins_str else []
 
     # Default development origins
     default_origins = [
+        "https://5db7-169-0-251-103.ngrok-free.app",
         "http://localhost:3002",
         "http://127.0.0.1:3002",
         "http://localhost:8080",
@@ -44,13 +45,16 @@ def create_app() -> FastAPI:
         "https://chatwise-dev-aryan.netlify.app",
     ]
 
-    # Combine default and environment-provided origins, filtering out empty strings
-    origins = default_origins + [origin for origin in additional_origins if origin]
+    # Combine default and environment-provided origins, filtering out empty strings and duplicates
+    all_origins = default_origins + additional_origins
+    origins = list(set(all_origins))  # Remove duplicates
+    
+    print(f"CORS Origins configured: {origins}")  # Debug logging
     redisConnection.connect()
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

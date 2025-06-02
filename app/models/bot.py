@@ -19,6 +19,7 @@ class Conversation(BaseModel):
     customer_email: Optional[str] = None
     customer_phone: Optional[str] = None
     customer_location: Optional[str] = None
+    channel: Optional[str] = None
     status: Optional[str] = "ai"
     read: Optional[bool] = False
     created_at: Optional[datetime.datetime] = None

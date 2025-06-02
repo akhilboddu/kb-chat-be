@@ -240,7 +240,7 @@ app = FastAPI(
 # --- CORS Middleware Configuration ---
 # Allow requests from all origins during development
 # In production, replace "*" with the specific origin(s) of your frontend
-origins = ["http://localhost:3000", "http://127.0.0.1:3000"] 
+origins = ["https://6d89-105-245-240-58.ngrok-free.app", "http://127.0.0.1:3000","https://u84xh54xp4gr.share.zrok.io"] 
 
 app.add_middleware(
     CORSMiddleware,

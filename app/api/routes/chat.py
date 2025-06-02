@@ -838,6 +838,8 @@ async def list_bot_conversations_endpoint(
 
         query = supabase.table("conversations").select("*").eq("bot_id", bot_id)
 
+        print("conversations------>", query)
+
         # Map filter values to status values
         filter_map = {
             "open": "*",

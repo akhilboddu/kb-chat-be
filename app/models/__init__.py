@@ -5,3 +5,4 @@ from app.models.chat import *
 from app.models.file import *
 from app.models.scrape import * 
 from app.models.bot import *
+from app.models.whatsapp import *
