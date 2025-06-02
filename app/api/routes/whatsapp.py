@@ -437,7 +437,6 @@ async def whatsapp_webhook(request: Request):
                             if not bot_result.data:
                                 logger.error(f"No kb_id found for bot_id: {bot_id}")
                                 continue
-            
 
                             kb_id = bot_result.data[0]["kb_id"]
 
@@ -450,7 +449,7 @@ async def whatsapp_webhook(request: Request):
                                 conversation_id = conversation_result.data[0]["id"]
                                 supabase.table("conversations").update({
                                     "updated_at": datetime.utcnow().isoformat(),
-                                    "status": "active"
+                                    "status": "ai" if conversation_result.data[0]["status"] == "closed" else conversation_result.data[0]["status"]
                                 }).eq("id", conversation_id).execute()
                             else:
                                 # Create new conversation
@@ -476,12 +475,17 @@ async def whatsapp_webhook(request: Request):
                                 "created_at": datetime.utcnow().isoformat()
                             }).execute()
 
+                            # If conversation is in human mode, just store the message and return
+                            if conversation_result.data and conversation_result.data[0]["status"] == "human":
+                                logger.info("Conversation is in human mode, storing message only")
+                                return {"status": "success", "message": "Message stored for human agent"}
+
                             # Process the message using chat functionality
                             try:
                                 # Create chat request
                                 chat_request = ChatRequest(
                                     message=message_content,
-                                    conversation_id=message_id  # Using message_id as conversation_id
+                                    conversation_id=message_id
                                 )
 
                                 # Get conversation history
@@ -584,8 +588,8 @@ async def whatsapp_webhook(request: Request):
                                         }).execute()
                                         
                                         # Send notification to admin
-                                       
-                                        notify_admin_on_user_message(conversation_result.data[0]["customer_name"],
+                                        notify_admin_on_user_message(
+                                            conversation_result.data[0]["customer_name"],
                                             conversation_result.data[0]["customer_email"],
                                             message_content,
                                             bot_id
