@@ -454,21 +454,37 @@ async def whatsapp_webhook(request: Request):
                                     "status": "ai" if conversation_result.data[0]["status"] == "closed" else conversation_result.data[0]["status"]
                                 }).eq("id", conversation_id).execute()
                             else:
-                                # Create new conversation
-
+                                # Create new conversation with 'awaiting_name' status
                                 random_number = random.randint(1000, 9999)
                                 new_conversation = supabase.table("conversations").insert({
                                     "bot_id": bot_id,
                                     "customer_phone": from_number,
                                     "customer_email": None,
-                                    "customer_name": f"Whatsapp User {random_number}",
+                                    "customer_name": f"Whatsapp User {random_number}",  # Initial random name
                                     "channel": "whatsapp",
-                                    "status": "ai",
+                                    "status": "awaiting_name",  # Special status for first-time users
                                     "read": False,
                                     "created_at": datetime.utcnow().isoformat(),
                                     "updated_at": datetime.utcnow().isoformat()
                                 }).execute()
                                 conversation_id = new_conversation.data[0]["id"]
+
+                                # Send welcome message asking for name
+                                welcome_message = "Hey! To get started, please tell me your name."
+                                await send_whatsapp_message(
+                                    phone_number_id=phone_number_id,
+                                    to_number=from_number,
+                                    message=welcome_message
+                                )
+                                # Store the welcome message
+                                supabase.table("messages").insert({
+                                    "conversation_id": conversation_id,
+                                    "content": welcome_message,
+                                    "role": "bot",
+                                    "read": False,
+                                    "created_at": datetime.utcnow().isoformat()
+                                }).execute()
+                                return {"status": "success", "message": "Welcome message sent"}
 
                             # Store the incoming message
                             supabase.table("messages").insert({
@@ -479,10 +495,46 @@ async def whatsapp_webhook(request: Request):
                                 "created_at": datetime.utcnow().isoformat()
                             }).execute()
 
-                            # If conversation is in human mode, just store the message and return
-                            if conversation_result.data and conversation_result.data[0]["status"] == "human":
-                                logger.info("Conversation is in human mode, storing message only")
-                                return {"status": "success", "message": "Message stored for human agent"}
+                            # Handle name collection for first-time users
+                            if conversation_result.data and conversation_result.data[0]["status"] == "awaiting_name":
+                                # Update the conversation with the user's name
+                                supabase.table("conversations").update({
+                                    "customer_name": message_content,
+                                    "status": "ai",
+                                    "updated_at": datetime.utcnow().isoformat()
+                                }).eq("id", conversation_id).execute()
+
+                                # Update CRM with the new name
+                                first_name, last_name = None, None
+                                if message_content:
+                                    parts = message_content.split(" ", 1)
+                                    first_name = parts[0]
+                                    last_name = parts[1] if len(parts) > 1 else ""
+
+                                ensure_crm_entry(
+                                    bot_id=bot_id,
+                                    first_name=first_name,
+                                    last_name=last_name,
+                                    phone_number=from_number,
+                                    email=None
+                                )
+
+                                # Send confirmation message
+                                confirmation_message = f"Thank you {message_content}! How can I help you today?"
+                                await send_whatsapp_message(
+                                    phone_number_id=phone_number_id,
+                                    to_number=from_number,
+                                    message=confirmation_message
+                                )
+                                # Store the confirmation message
+                                supabase.table("messages").insert({
+                                    "conversation_id": conversation_id,
+                                    "content": confirmation_message,
+                                    "role": "bot",
+                                    "read": False,
+                                    "created_at": datetime.utcnow().isoformat()
+                                }).execute()
+                                return {"status": "success", "message": "Name collected"}
 
                             # Process the message using chat functionality
                             try:
@@ -623,21 +675,6 @@ async def whatsapp_webhook(request: Request):
                                     to_number=from_number,
                                     message="I apologize, but I encountered an error processing your message."
                                 )
-
-                            first_name, last_name = None, None
-                            if conversation_result.data[0]["customer_name"]:
-                                parts = conversation_result.data[0]["customer_name"].split(" ", 1)
-                                first_name = parts[0]
-                                last_name = parts[1] if len(parts) > 1 else ""
-
-                            # Ensure CRM entry
-                            ensure_crm_entry(
-                                bot_id=bot_id,
-                                first_name=first_name,
-                                last_name=last_name,
-                                phone_number=from_number,   
-                                email=conversation_result.data[0]["customer_email"] or None
-                            )
 
         return {"status": "success", "message": "Webhook received"}
 

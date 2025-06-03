@@ -35,7 +35,7 @@ def create_app() -> FastAPI:
 
     # Default development origins
     default_origins = [
-        "https://5db7-169-0-251-103.ngrok-free.app",
+        "https://deskforce.co.za",
         "http://localhost:3002",
         "http://127.0.0.1:3002",
         "http://localhost:8080",
