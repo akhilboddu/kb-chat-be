@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl
 from typing import List, Optional, Literal
 import datetime
 
@@ -97,3 +97,9 @@ class PaginatedListMessagesResponse(BaseModel):
     page: int
     page_size: int
     total_pages: int
+
+
+class DemoChatRequest(BaseModel):
+    """Request body for demo bot chat interactions."""
+    message: str = Field(..., description="User message to the demo bot")
+    url: HttpUrl = Field(..., description="URL of the website the demo bot is associated with")

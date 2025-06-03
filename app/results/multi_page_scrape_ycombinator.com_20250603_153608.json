@@ -1,0 +1,96 @@
+{
+  "scrape_metadata": {
+    "url": "https://www.ycombinator.com/",
+    "base_domain": "ycombinator.com",
+    "pages_scraped": 5,
+    "pages_analyzed": 3,
+    "early_termination": false,
+    "scrape_time": "2025-06-03T15:36:08.200473",
+    "processing_time_seconds": 30.368544816970825
+  },
+  "business_profile": {
+    "business_name": "Y Combinator",
+    "tagline": "Make something people want.",
+    "description": "Y Combinator is a startup accelerator that helps founders build successful companies.  They provide funding, mentorship, and access to a vast network of investors and resources.",
+    "contact_info": {
+      "email": null,
+      "phone": null,
+      "address": null,
+      "contact_form_mention": false
+    },
+    "offerings": [
+      {
+        "type": "accelerator program",
+        "name": "YC Program",
+        "description": "A three-month program designed to help startups grow and improve their product and fundraising options.",
+        "attributes": [
+          "Funding",
+          "Mentorship from experienced partners",
+          "Access to investor network",
+          "Exclusive deals",
+          "Private social network for founders",
+          "Resources and advice",
+          "Mentorship",
+          "Office hours",
+          "Community access",
+          "Demo Day",
+          "Alumni network"
+        ],
+        "pricing": "No fees mentioned"
+      },
+      {
+        "type": "educational program",
+        "name": "Startup School",
+        "description": "An online educational program for founders.",
+        "attributes": [],
+        "pricing": "Pricing not specified"
+      }
+    ],
+    "value_props": [
+      "Improved success rate for startups",
+      "Huge fundraising advantage",
+      "Access to experienced mentors",
+      "Extensive investor network",
+      "Exclusive deals with software companies",
+      "Private social network for founders",
+      "Extensive resources and advice",
+      "Funding",
+      "Mentorship from experienced partners",
+      "Access to a powerful alumni network",
+      "Improved product and fundraising",
+      "Increased motivation and productivity"
+    ],
+    "audience": [
+      "Early-stage startups",
+      "Founders",
+      "Startups"
+    ],
+    "payment_options": {
+      "methods": [],
+      "plans": [],
+      "tiers": [],
+      "free_offer": null
+    },
+    "support": [
+      "Email",
+      "Slack"
+    ],
+    "faqs": [],
+    "social_links": {
+      "twitter": "https://twitter.com/ycombinator",
+      "facebook": "https://www.facebook.com/YCombinator/",
+      "instagram": "https://www.instagram.com/ycombinator",
+      "youtube": "https://www.youtube.com/channel/UCcefcZRL2oaA_uBNeo5UOWg"
+    },
+    "source_urls": [
+      "https://www.ycombinator.com/",
+      "https://www.ycombinator.com/about",
+      "https://www.ycombinator.com/contact"
+    ],
+    "base_domain": "ycombinator.com",
+    "business_type": "other",
+    "course_prices": {
+      "Unknown": "$500,000"
+    }
+  }
+}

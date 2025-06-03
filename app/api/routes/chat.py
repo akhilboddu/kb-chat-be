@@ -23,6 +23,7 @@ from app.models.chat import (
     KBConversationGroup,
     ConversationPreview,
     PaginatedListMessagesResponse,
+    DemoChatRequest,
 )
 from app.models.bot import (
     CreateBotConversationResponse,
@@ -997,3 +998,60 @@ def get_bot_id_from_conversation_id(conversation_id: str):
         return conversation_response.data[0]["bot_id"]
     except Exception:
         return ""
+
+
+@router.post("/send-msg-demobot", response_model=ChatResponse)
+async def send_message_to_demo_bot(request: DemoChatRequest):
+    """
+    Endpoint for sending messages to a demo bot associated with a specific URL.
+    The endpoint will:
+    1. Find the demo bot's knowledge base using the URL
+    2. Process the message using the AI
+    3. Return the response
+    """
+    try:
+
+        #get the domain from the url
+        domain = str(request.url).replace("https://", "").replace("http://", "").replace("www.", "").replace("/", "")
+        
+        # 1. Get the demo bot's kb_id from the URL
+        demo_bot_response = supabase.table("demo_bots").select("kb_id").eq("url", domain).execute()
+        
+        if not demo_bot_response.data or len(demo_bot_response.data) == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No demo bot found for URL: {request.url}"
+            )
+        
+        kb_id = demo_bot_response.data[0]["kb_id"]
+        
+        # 2. Create a ChatRequest for the existing chat endpoint
+        chat_request = ChatRequest(
+            message=request.message,
+            conversation_id=f"demo_{kb_id}"  # Use a consistent conversation ID for demo bots
+        )
+        
+        # 3. Use the existing chat endpoint logic
+        response = await chat_endpoint(kb_id, chat_request)
+        
+        # 4. If the response is a handoff, add the additional message
+        if response.type == "handoff":
+            handoff_message = (
+                "\n\nOur AI was not able to answer this and this is where a human hand off would be triggered - "
+                "some one from your team can respond to the user and add this information to the knowledge base. "
+                "Sign up for a free trail to fully experience the Magic of deskForce ✨😃"
+            )
+            response.content = response.content + handoff_message
+        
+        return response
+        
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        print(f"Error processing demo bot message: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process message: {str(e)}"
+        )

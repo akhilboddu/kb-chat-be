@@ -10,11 +10,20 @@ from app.models.scrape import ScrapeStatusResponse
 from app.core import kb_manager, db_manager
 from app.core.supabase_client import supabase
 from fastapi import BackgroundTasks
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 from typing import List, Optional
 from app.models.crm import CRMEntry, PaginatedCRMResponse
+from datetime import datetime, timezone, timedelta
+from urllib.parse import urlparse
 
 router = APIRouter(prefix="/bots", tags=["bots"])
+
+# New model for demo bot requests
+class DemoBotRequest(BaseModel):
+    url: HttpUrl
+    name: Optional[str] = None
+    description: Optional[str] = None
+    max_pages: Optional[int] = 5
 
 
 @router.post("/{bot_id}/knowledge", response_model=StatusResponse)
@@ -148,3 +157,143 @@ def get_crm_entries_for_bot(
         page_size=page_size,
         total_pages=total_pages
     )
+
+
+@router.post("/demo-bot", response_model=StatusResponse)
+async def create_demo_bot(
+    request: DemoBotRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Creates a new demo bot for a given URL, including:
+    1. Extracts domain from URL
+    2. Checks if demo bot already exists
+    3. If exists and older than a week, recreates KB
+    4. If doesn't exist, creates new KB and demo bot
+    5. Initiates scraping of the URL
+    """
+    try:
+        # Extract domain from URL
+        parsed_url = urlparse(str(request.url))
+        domain = parsed_url.netloc.replace('www.', '')
+        
+        # Check if demo bot already exists
+        existing_bot = supabase.table("demo_bots").select("*").eq("url", domain).execute()
+        
+        if existing_bot.data:
+            bot = existing_bot.data[0]
+            created_at = datetime.fromisoformat(bot['created_at'].replace('Z', '+00:00'))
+            one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+            
+            if created_at < one_week_ago:
+                # Bot is older than a week, recreate KB
+                old_kb_id = bot['kb_id']
+                
+                # Delete old knowledge base
+                kb_manager.delete_kb(old_kb_id)
+                
+                # Create new knowledge base
+                kb_id = f"demo_{hash(domain)}"
+                kb_collection = kb_manager.create_or_get_kb(
+                    kb_id=kb_id,
+                    name=f"Demo KB for {domain}"
+                )
+                
+                if not kb_collection:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Failed to create new knowledge base"
+                    )
+                
+                # Update demo bot record with new kb_id
+                supabase.table("demo_bots").update({
+                    "kb_id": kb_id,
+                    "status": "processing",
+                    "created_at": datetime.now(timezone.utc).isoformat()
+                }).eq("url", domain).execute()
+                
+                # Start scraping in background
+                scrape_request = ScrapeURLRequest(
+                    url=str(request.url),
+                    max_pages=request.max_pages
+                )
+                background_tasks.add_task(
+                    scrape_url_and_populate_kb,
+                    kb_id,
+                    scrape_request,
+                    background_tasks
+                )
+                
+                return StatusResponse(
+                    status="success",
+                    message="Demo bot recreated and scraping started"
+                )
+            else:
+                # Bot is newer than a week, return existing KB
+                return StatusResponse(
+                    status="success",
+                    message="Using existing demo bot"
+                )
+        
+        # No existing bot found, create new one
+        kb_id = f"demo_{hash(domain)}"
+        
+        # Create new knowledge base
+        kb_collection = kb_manager.create_or_get_kb(
+            kb_id=kb_id,
+            name=f"Demo KB for {domain}"
+        )
+        
+        if not kb_collection:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to create knowledge base"
+            )
+        
+        # Create demo bot entry
+        demo_bot_data = {
+            "url": domain,
+            "name": request.name or f"Demo Bot for {domain}",
+            "description": request.description,
+            "kb_id": kb_id,
+            "status": "processing",
+            "max_pages": request.max_pages,
+            "metadata": {
+                "created_via": "demo_bot_endpoint",
+                "initial_scrape": True
+            }
+        }
+        
+        demo_bot_response = supabase.table("demo_bots").insert(demo_bot_data).execute()
+        
+        if not demo_bot_response.data:
+            # Clean up the KB if demo bot creation fails
+            kb_manager.delete_kb(kb_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to create demo bot entry"
+            )
+        
+        # Start scraping in background
+        scrape_request = ScrapeURLRequest(
+            url=str(request.url),
+            max_pages=request.max_pages
+        )
+        background_tasks.add_task(
+            scrape_url_and_populate_kb,
+            kb_id,
+            scrape_request,
+            background_tasks
+        )
+        
+        return StatusResponse(
+            status="success",
+            message="Demo bot created and scraping started"
+        )
+        
+    except Exception as e:
+        print(f"Error creating demo bot: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create demo bot: {str(e)}"
+        )

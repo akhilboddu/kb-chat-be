@@ -8,7 +8,7 @@ SES_ACCESS_KEY = os.getenv("SES_ACCESS_KEY")
 SES_SECRET_ACCESS_KEY = os.getenv("SES_SECRET_ACCESS_KEY")
 SES_REGION = os.getenv("SES_REGION")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
-VITE_BASE_URL = "http://localhost:8080"
+VITE_BASE_URL = os.getenv("VITE_BASE_URL")
 SENDER_EMAIL = "asif@liorra.io"
 
 
