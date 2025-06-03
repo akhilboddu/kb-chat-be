@@ -1,5 +1,6 @@
 import os
 import logging
+import random
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 import requests
@@ -22,6 +23,7 @@ from app.models.whatsapp import (
 )
 from app.core.supabase_client import supabase
 from app.services.send_email import notify_admin_on_user_message, notify_client_message
+from app.utils.crm_utils import ensure_crm_entry
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/whatsapp", tags=["WhatsApp"])
@@ -453,13 +455,15 @@ async def whatsapp_webhook(request: Request):
                                 }).eq("id", conversation_id).execute()
                             else:
                                 # Create new conversation
+
+                                random_number = random.randint(1000, 9999)
                                 new_conversation = supabase.table("conversations").insert({
                                     "bot_id": bot_id,
                                     "customer_phone": from_number,
-                                    "customer_email": "user@whatsapp.com",
-                                    "customer_name": "Whatsapp User #1245",
+                                    "customer_email": None,
+                                    "customer_name": f"Whatsapp User {random_number}",
                                     "channel": "whatsapp",
-                                    "status": "active",
+                                    "status": "ai",
                                     "read": False,
                                     "created_at": datetime.utcnow().isoformat(),
                                     "updated_at": datetime.utcnow().isoformat()
@@ -619,6 +623,21 @@ async def whatsapp_webhook(request: Request):
                                     to_number=from_number,
                                     message="I apologize, but I encountered an error processing your message."
                                 )
+
+                            first_name, last_name = None, None
+                            if conversation_result.data[0]["customer_name"]:
+                                parts = conversation_result.data[0]["customer_name"].split(" ", 1)
+                                first_name = parts[0]
+                                last_name = parts[1] if len(parts) > 1 else ""
+
+                            # Ensure CRM entry
+                            ensure_crm_entry(
+                                bot_id=bot_id,
+                                first_name=first_name,
+                                last_name=last_name,
+                                phone_number=from_number,   
+                                email=conversation_result.data[0]["customer_email"] or None
+                            )
 
         return {"status": "success", "message": "Webhook received"}
 

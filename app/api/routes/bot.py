@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from .scrape import scrape_url_and_populate_kb
 from app.models.scrape import ScrapeURLRequest
 
@@ -10,6 +10,9 @@ from app.models.scrape import ScrapeStatusResponse
 from app.core import kb_manager, db_manager
 from app.core.supabase_client import supabase
 from fastapi import BackgroundTasks
+from pydantic import BaseModel
+from typing import List, Optional
+from app.models.crm import CRMEntry, PaginatedCRMResponse
 
 router = APIRouter(prefix="/bots", tags=["bots"])
 
@@ -121,3 +124,27 @@ async def bot_scrape_url_status_endpoint(bot_id: str):
     Endpoint for checking the status of a scrape URL request.
     """
     pass
+
+
+@router.get("/crm/{bot_id}", response_model=PaginatedCRMResponse)
+def get_crm_entries_for_bot(
+    bot_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100)
+):
+    start = (page - 1) * page_size
+    end = start + page_size - 1
+    # Get total count
+    count_response = supabase.table("bot_crms").select("id", count="exact").eq("bot_id", bot_id).execute()
+    total_count = count_response.count if hasattr(count_response, "count") else 0
+    # Get paginated data
+    response = supabase.table("bot_crms").select("*").eq("bot_id", bot_id).order("created_at", desc=True).range(start, end).execute()
+    crms = response.data or []
+    total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 1
+    return PaginatedCRMResponse(
+        crms=crms,
+        total_count=total_count,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages
+    )

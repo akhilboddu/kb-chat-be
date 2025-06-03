@@ -35,6 +35,7 @@ from app.services.push_notifications import send_push_notification
 from app.services.send_email import notify_admin_on_user_message, notify_client_message
 from app.utils.text_processing import clean_agent_output
 from app.utils.verification import get_current_user
+from app.utils.crm_utils import ensure_crm_entry
 
 router = APIRouter(tags=["chat"])
 
@@ -779,6 +780,19 @@ async def create_bot_conversation_endpoint(
                 status_code=500,
                 detail="Failed to create conversation: No data returned from Supabase",
             )
+
+        # Add to CRM if not present
+        first_name, last_name = None, None
+        if customer_name:
+            parts = customer_name.split(" ", 1)
+            first_name = parts[0]
+            last_name = parts[1] if len(parts) > 1 else ""
+        ensure_crm_entry(
+            bot_id=bot_id,
+            first_name=first_name,
+            last_name=last_name,
+            email=customer_email
+        )
 
         return CreateBotConversationResponse(
             conversation_id=response.data[0]["id"],
