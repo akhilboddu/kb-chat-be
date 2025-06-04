@@ -65,7 +65,6 @@ async def send_mail(request: ChatRequest):
     userId = botData.data[0]["user_id"] 
     userData = supabase.auth.admin.get_user_by_id(userId)
     company_email = userData.user.email
-    print(company_email+"_____________________________________________________________")
 
     data = (
         response.data[0]
@@ -78,7 +77,7 @@ async def send_mail(request: ChatRequest):
             company_name,
             company_email,
             request.message,
-            request.conversation_id,
+            request.conversation_id,  
         )
         return {"message": "mail has been sent"}
 
@@ -650,9 +649,24 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     if conversation_repsonse.data and len(conversation_repsonse.data) > 0:
         status = conversation_repsonse.data[0]["status"]
         if status == "human":
-            return {
+            client = redisConnection.client
+            if client:
+                user_online = client.get(user_id)
+                print(user_online, "user_online")
+            if user_online is None:
+                notify_admin_on_user_message(
+                    conversation_repsonse.data[0]["customer_name"],
+                    conversation_repsonse.data[0]["customer_email"],
+                    request.message,
+                    bot_id,
+                )
+                return {
+                "content": "Seems like no one is online to help you at the moment. But our team has been notified and will get back to you as soon as possible.",
+                }
+            else:
+                return {
                 "content": "",
-            }
+                }
         # If conversation is closed, update it to "ai"
         if status == "closed":
             supabase.table("conversations").update({"status": "ai"}).eq(
@@ -683,6 +697,7 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
         client = redisConnection.client
         if client:
             user_online = client.get(user_id)
+            print(user_online, "user_online")
             if user_online is None:
                 notify_admin_on_user_message(
                     conversation_repsonse.data[0]["customer_name"],
