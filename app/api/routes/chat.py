@@ -59,12 +59,17 @@ async def send_mail(request: ChatRequest):
     print(response.data[0])
 
     botId = response.data[0]["bot_id"]
+    client_email = response.data[0]["customer_email"]
     botData = supabase.table("bots").select("company","user_id").eq("id", botId).execute()
     company_name = botData.data[0]["company"]
 
     userId = botData.data[0]["user_id"] 
     userData = supabase.auth.admin.get_user_by_id(userId)
     company_email = userData.user.email
+    
+
+    #get user email from conversation_id in supabase
+    
 
     data = (
         response.data[0]
@@ -78,6 +83,7 @@ async def send_mail(request: ChatRequest):
             company_email,
             request.message,
             request.conversation_id,  
+            client_email
         )
         return {"message": "mail has been sent"}
 
@@ -633,11 +639,19 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
         .execute()
     )
 
+  
+
     response = supabase.table("bots").select("*").eq("id", bot_id).execute()
     bots_data = response.data[0]
 
     user_id = bots_data["user_id"]
+    print(user_id, "user_id")
     kb_id = bots_data["kb_id"]
+
+    userData = supabase.auth.admin.get_user_by_id(user_id)
+    company_email = userData.user.email
+    print(userData, "user_data")
+    
 
     conversation_repsonse = (
         supabase.table("conversations")
@@ -659,6 +673,7 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
                     conversation_repsonse.data[0]["customer_email"],
                     request.message,
                     bot_id,
+                    company_email
                 )
                 return {
                 "content": "Seems like no one is online to help you at the moment. But our team has been notified and will get back to you as soon as possible.",

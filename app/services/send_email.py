@@ -9,7 +9,7 @@ SES_SECRET_ACCESS_KEY = os.getenv("SES_SECRET_ACCESS_KEY")
 SES_REGION = os.getenv("SES_REGION")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 VITE_BASE_URL = os.getenv("VITE_BASE_URL")
-SENDER_EMAIL = "asif@liorra.io"
+SENDER_EMAIL = "hello@deskforce.co.za"
 
 
 class EmailContent(BaseModel):
@@ -27,19 +27,22 @@ ses_client = boto3.client(
 
 
 def notify_client_message(
-     company_name: str, company_email: str, message: str, conversation_id: str
+     company_name: str, company_email: str, message: str, conversation_id: str, user_email: str
 ):
+    print("company_email------>", company_email)
+    print("user_email------>", user_email)
     ses_client = boto3.client(
         "ses",
         region_name=SES_REGION,
         aws_access_key_id=SES_ACCESS_KEY,
         aws_secret_access_key=SES_SECRET_ACCESS_KEY,
     )
+    
     converssationLink = f"{VITE_BASE_URL}/chat-convo/{conversation_id}"
     try:
         response = ses_client.send_templated_email(
             Source=SENDER_EMAIL,
-            Destination={"ToAddresses": [SENDER_EMAIL]},
+            Destination={"ToAddresses": [user_email]},
             Template="DeskforceClientMessageWithLink",
             TemplateData=json.dumps(
                 {
@@ -58,7 +61,7 @@ def notify_client_message(
 
 
 def notify_admin_on_user_message(
-    user_name: str, user_email: str, message: str, bot_id: str
+    user_name: str, user_email: str, message: str, bot_id: str, company_email: str
 ):
     conversation_link = f"{VITE_BASE_URL}/conversations/{bot_id}"
    
@@ -75,7 +78,7 @@ def notify_admin_on_user_message(
     try:
         response = ses_client.send_templated_email(
             Source="asif@liorra.io",
-            Destination={"ToAddresses": ["asif@liorra.io"]},
+            Destination={"ToAddresses": [company_email]},
             Template="DeskforceUserMessageWithLink",
             TemplateData=json.dumps(
                 {

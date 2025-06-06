@@ -642,13 +642,18 @@ async def whatsapp_webhook(request: Request):
                                             "conversation_id": conversation_id,
                                             "last_message_id": message_id
                                         }).execute()
+
+                                        #get user email from conversation_id in supabase
+                                        user_data = supabase.table("users").select("*").eq("id", conversation_result.data[0]["user_id"]).execute()
+                                        company_email = user_data.data[0]["email"]
                                         
                                         # Send notification to admin
                                         notify_admin_on_user_message(
                                             conversation_result.data[0]["customer_name"],
                                             conversation_result.data[0]["customer_email"],
                                             message_content,
-                                            bot_id
+                                            bot_id,
+                                            company_email
                                         )
                                                 
                                 else:
