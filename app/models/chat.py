@@ -8,6 +8,7 @@ class ChatRequest(BaseModel):
 
     message: str = Field(..., description="User message to the agent")
     conversation_id: str = Field(..., description="Conversation ID")
+    reply_to_message_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -87,6 +88,7 @@ class Message(BaseModel):
     content: str
     created_at: datetime.datetime
     role: Literal["bot", "user", "human"]
+    reply_to_message_id: Optional[str] = None
 
 
 class PaginatedListMessagesResponse(BaseModel):
