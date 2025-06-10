@@ -671,9 +671,10 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
         if status == "human":
             client = redisConnection.client
             if client:
-                user_online = client.get(user_id)
-                print(user_online, "user_online")
-            if user_online is None:
+                #check if the bot is online
+                bot_online = client.get(f"bot:{bot_id}")
+                print(bot_online, "bot_online----")
+            if bot_online is None:
                 notify_admin_on_user_message(
                     conversation_repsonse.data[0]["customer_name"],
                     conversation_repsonse.data[0]["customer_email"],
@@ -734,14 +735,15 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
         print("is a clean handoff------>", response)
         client = redisConnection.client
         if client:
-            user_online = client.get(user_id)
-            print(user_online, "user_online")
-            if user_online is None:
+            bot_online = client.get(f"bot:{bot_id}")
+            print(bot_online, "bot_online")
+            if bot_online is None:
                 notify_admin_on_user_message(
                     conversation_repsonse.data[0]["customer_name"],
                     conversation_repsonse.data[0]["customer_email"],
                     request.message,
                     bot_id,
+                    company_email
                 )
         supabase.table("handover_requests").insert(
             {
@@ -1228,11 +1230,74 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
                     result = await handle_human_chat(conversation_id, message, reply_to_message_id=reply_to_message_id)
                     broadcast_role = "human"
                     content = result['content']
+
+                    # --- NEW: Check if widget user is online, send email if not ---
+                    # Fetch conversation details
+                    conversation_details = (
+                        supabase.table("conversations")
+                        .select("customer_email, bot_id")
+                        .eq("id", conversation_id)
+                        .single()
+                        .execute()
+                    )
+                    if conversation_details.data:
+                        customer_email = conversation_details.data.get("customer_email")
+                        bot_id = conversation_details.data.get("bot_id")
+                        # Check user online status in Redis
+                        client = redisConnection.client
+                        user_online = None
+                        if client and customer_email and bot_id:
+                            user_online = client.get(f"user:{customer_email}:{bot_id}")
+                        if not user_online:
+                            # Fetch bot/company info
+                            bot_data = supabase.table("bots").select("company,user_id").eq("id", bot_id).single().execute()
+                            company_name = bot_data.data.get("company") if bot_data.data else ""
+                            user_id = bot_data.data.get("user_id") if bot_data.data else None
+                            company_email = None
+                            if user_id:
+                                user_data = supabase.auth.admin.get_user_by_id(user_id)
+                                company_email = getattr(user_data.user, "email", None)
+                            if company_name and company_email and customer_email:
+                                from app.services.send_email import notify_client_message
+                                notify_client_message(
+                                    company_name,
+                                    company_email,
+                                    message,
+                                    conversation_id,
+                                    customer_email
+                                )
+                    # --- END NEW ---
                 else:
                     # Message from user
                     result = await handle_user_chat(conversation_id, message, reply_to_message_id=reply_to_message_id)
                     broadcast_role = "user"
                     content = result['content']
+
+                    # Check if bot is online and send email notification if not
+                    client = redisConnection.client
+                    if client:
+                        bot_online = client.get(f"bot:{bot_id}")
+                        print(bot_online, "bot_online")
+                        if bot_online is None:
+                            # Get conversation details for email notification
+                            conversation_response = supabase.table("conversations").select("*").eq("id", conversation_id).execute()
+                            bot_data = supabase.table("bots").select("company,user_id").eq("id", bot_id).single().execute()
+                            
+                            company_name = bot_data.data.get("company") if bot_data.data else ""
+                            user_id = bot_data.data.get("user_id") if bot_data.data else None
+                            company_email = None
+                            if user_id:
+                                user_data = supabase.auth.admin.get_user_by_id(user_id)
+                                company_email = getattr(user_data.user, "email", None)
+                            if conversation_response.data:
+                                notify_admin_on_user_message(
+                                    conversation_response.data[0]["customer_name"],
+                                    conversation_response.data[0]["customer_email"],
+                                    message,
+                                    bot_id,
+                                    company_email
+                                )
+
                 # Broadcast to all clients
                 for ws in list(active_connections.get(conversation_id, [])):
                     try:

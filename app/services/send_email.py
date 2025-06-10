@@ -77,7 +77,7 @@ def notify_admin_on_user_message(
 
     try:
         response = ses_client.send_templated_email(
-            Source="asif@liorra.io",
+            Source=SENDER_EMAIL,
             Destination={"ToAddresses": [company_email]},
             Template="DeskforceUserMessageWithLink",
             TemplateData=json.dumps(
