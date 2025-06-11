@@ -1269,6 +1269,7 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
                     # --- END NEW ---
                 else:
                     # Message from user
+                    print("handling user chat------>", message)
                     result = await handle_user_chat(conversation_id, message, reply_to_message_id=reply_to_message_id)
                     broadcast_role = "user"
                     content = result['content']
@@ -1486,7 +1487,7 @@ async def get_conversation_status(conversation_id: str):
                 detail=f"Conversation with ID {conversation_id} not found"
             )
 
-        return {"status": response.data["status"]}
+        return {"status": response.data["status"],"customer_email": response.data["customer_email"]}
 
     except Exception as e:
         print(f"Error fetching conversation status: {e}")

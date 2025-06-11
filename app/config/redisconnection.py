@@ -4,8 +4,8 @@ import redis
 
 class RedisConnection:
     def __init__(self):
-        #self.redis_url = "redis://redis:6379/0"
-        self.redis_url = "redis://localhost:6379/0"
+        self.redis_url = "redis://redis:6379/0"
+        #self.redis_url = "redis://localhost:6379/0"
         self.client = None
 
     def connect(self):
