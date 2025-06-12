@@ -52,8 +52,8 @@ RUN groupadd -r appuser && \
 WORKDIR /app
 
 # Create necessary directories and set permissions
-RUN mkdir -p /app/chromadb_data /app/db /ms-playwright && \
-    chmod -R 777 /app/chromadb_data /app/db /ms-playwright
+RUN mkdir -p /app/db /ms-playwright && \
+    chmod -R 777 /app/db /ms-playwright
 
 # Copy requirements and install Python packages
 COPY requirements.txt .
@@ -63,8 +63,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy the rest of the application code with appropriate ownership
 COPY --chown=appuser:appuser . .
 
-# Pre-download SentenceTransformer model
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')" && \
+# Ensure cache directory exists with correct permissions
+RUN mkdir -p /app/.cache && \
     chown -R appuser:appuser /app/.cache
 
 # Switch to non-root user

@@ -10,11 +10,11 @@
 |----------|---------|----------|
 | `SUPABASE_URL` | Supabase project REST URL | ✅ |
 | `SUPABASE_SERVICE_ROLE_KEY` | Server-side key (bypasses RLS) | ✅ |
-| `OPENAI_API_KEY` | Generates context summaries / LLM responses | ⚙️ |
+| `OPENAI_API_KEY` | Generates context summaries / LLM responses | ✅ |
 | `COHERE_API_KEY` | Cohere **Embeddings** (primary) & optional reranker | ✅ |
 | `ANTHROPIC_API_KEY` | Anthropic Claude key for context generation (mandatory for Contextual Retrieval) | ✅ |
 
-> Keys marked ✅ are required. `COHERE_API_KEY` is optional—add it to enable the reranking enhancement.
+> All keys marked ✅ are required. Cohere is used for both embeddings and optional reranking.
 
 ---
 
@@ -36,7 +36,7 @@ CREATE TABLE knowledge_base_documents (
   document_id TEXT         NOT NULL,
   content     TEXT         NOT NULL,
   ctx_text    TEXT         NOT NULL,                -- contextualised chunk
-  embedding   vector(1536) NOT NULL,
+  embedding   vector(768)  NOT NULL,                -- Cohere embed-english-v3.0 produces 768 dimensions
   metadata    JSONB        DEFAULT '{}',
   created_at  TIMESTAMPTZ  DEFAULT now()
 );
@@ -70,6 +70,63 @@ from app.core.kb_manager_factory import kb_manager
 ## 3.  Hybrid Retrieval SQL Function
 
 Create RPC `hybrid_search` combining BM25 & vector similarity (see code appendix). Weight 0.55 vector / 0.45 BM25.
+
+```sql
+CREATE OR REPLACE FUNCTION hybrid_search(
+  kb_id_param TEXT,
+  query_text TEXT,
+  query_embedding vector(768),
+  match_count INT DEFAULT 10
+)
+RETURNS TABLE (
+  id UUID,
+  document_id TEXT,
+  content TEXT,
+  ctx_text TEXT,
+  score FLOAT
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RETURN QUERY
+  WITH semantic_search AS (
+    SELECT 
+      id,
+      document_id,
+      content,
+      ctx_text,
+      1 - (embedding <=> query_embedding) AS similarity_score
+    FROM knowledge_base_documents
+    WHERE kb_id = kb_id_param
+    ORDER BY embedding <=> query_embedding
+    LIMIT match_count * 2
+  ),
+  keyword_search AS (
+    SELECT 
+      id,
+      document_id,
+      content,
+      ctx_text,
+      ts_rank_cd(to_tsvector('english', ctx_text), plainto_tsquery('english', query_text)) AS rank_score
+    FROM knowledge_base_documents
+    WHERE kb_id = kb_id_param
+      AND to_tsvector('english', ctx_text) @@ plainto_tsquery('english', query_text)
+    ORDER BY rank_score DESC
+    LIMIT match_count * 2
+  )
+  SELECT 
+    COALESCE(s.id, k.id) AS id,
+    COALESCE(s.document_id, k.document_id) AS document_id,
+    COALESCE(s.content, k.content) AS content,
+    COALESCE(s.ctx_text, k.ctx_text) AS ctx_text,
+    (COALESCE(s.similarity_score, 0) * 0.55 + COALESCE(k.rank_score, 0) * 0.45) AS score
+  FROM semantic_search s
+  FULL OUTER JOIN keyword_search k ON s.id = k.id
+  ORDER BY score DESC
+  LIMIT match_count;
+END;
+$$;
+```
 
 ---
 

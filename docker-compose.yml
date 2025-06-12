@@ -19,7 +19,6 @@ services:
       - "8000:8000"
     volumes:
       - ./db:/app/db
-      - ./chromadb_data:/app/chromadb_data
       - huggingface_cache:/app/.cache
 
     environment:
