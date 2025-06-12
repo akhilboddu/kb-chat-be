@@ -301,4 +301,7 @@ def get_contextualizer() -> Contextualizer:
     global _contextualizer_instance
     if _contextualizer_instance is None:
         _contextualizer_instance = Contextualizer()
-    return _contextualizer_instance 
+    return _contextualizer_instance
+
+# Create singleton instance for import
+contextualizer = get_contextualizer() 

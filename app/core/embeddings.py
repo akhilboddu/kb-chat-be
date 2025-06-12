@@ -222,4 +222,7 @@ def get_embeddings() -> CohereEmbeddings:
     global _embeddings_instance
     if _embeddings_instance is None:
         _embeddings_instance = CohereEmbeddings()
-    return _embeddings_instance 
+    return _embeddings_instance
+
+# Create singleton instance for import
+embeddings_manager = get_embeddings() 
