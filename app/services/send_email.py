@@ -7,6 +7,12 @@ from pydantic import BaseModel
 SES_ACCESS_KEY = os.getenv("SES_ACCESS_KEY")
 SES_SECRET_ACCESS_KEY = os.getenv("SES_SECRET_ACCESS_KEY")
 SES_REGION = os.getenv("SES_REGION")
+# Sanitize the region in case someone adds an inline comment (e.g. "af-south-1  # my region")
+if SES_REGION is not None:
+    SES_REGION = SES_REGION.split("#", 1)[0].strip()
+# Fallback to a valid default region if none provided after sanitization
+if not SES_REGION:
+    SES_REGION = "af-south-1"
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 VITE_BASE_URL = os.getenv("VITE_BASE_URL")
 SENDER_EMAIL = "hello@deskforce.co.za"

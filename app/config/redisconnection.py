@@ -1,11 +1,12 @@
 import logging
+import os
 import redis
 
 
 class RedisConnection:
     def __init__(self):
-        self.redis_url = "redis://redis:6379/0"
-        #self.redis_url = "redis://localhost:6379/0"
+        # Prefer REDIS_URL from environment; fallback to docker-compose default (service name)
+        self.redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
         self.client = None
 
     def connect(self):

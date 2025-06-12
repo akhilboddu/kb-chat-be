@@ -3,8 +3,8 @@
 import time
 import json
 from app.core.config import llm, chroma_embedding_function  # Import LLM and the *wrapped* embedding function
-from data_processor import extract_text_from_json, chunk_text
-from kb_manager import kb_manager  # Import the singleton instance
+from app.core.data_processor import extract_text_from_json, chunk_text
+from app.core.kb_manager import kb_manager  # Import the singleton instance
 from app.core.tools import get_retriever_tool, get_knowledge_update_tool, get_answering_tool
 
 print("--- Starting Core Component Tests ---")
