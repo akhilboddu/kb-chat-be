@@ -120,7 +120,7 @@ dmypy.json
 /.venv/
 
 # Project Specific Ignores
-/chromadb_data/
+# /chromadb_data/  # Removed - using Supabase now
 /db/ # Ignore the local SQLite db directory
 *.sqlite3
 *.sqlite3-journal

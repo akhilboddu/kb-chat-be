@@ -35,7 +35,6 @@ async def health_check():
 @app.get("/env", status_code=status.HTTP_200_OK)
 async def environment():
     env_vars = {
-        "CHROMADB_PATH": os.getenv("CHROMADB_PATH", "Not set"),
         "SQLITE_DB_DIR": os.getenv("SQLITE_DB_DIR", "Not set"),
         "TRANSFORMERS_CACHE": os.getenv("TRANSFORMERS_CACHE", "Not set"),
         "HF_HOME": os.getenv("HF_HOME", "Not set"),

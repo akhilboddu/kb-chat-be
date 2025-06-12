@@ -5,17 +5,10 @@ from dotenv import load_dotenv
 from langchain_huggingface import HuggingFaceEmbeddings  # New import path
 from langchain_openai import ChatOpenAI  # Using OpenAI wrapper for DeepSeek
 from langchain_google_genai import ChatGoogleGenerativeAI  # Add Gemini import
-import chromadb
-from chromadb.api.types import (
-    EmbeddingFunction,
-    Documents,
-    Embeddings,
-)  # ChromaDB types
 
 load_dotenv()
 
 # --- Environment Variables ---
-CHROMADB_PATH = os.getenv("CHROMADB_PATH", "./chromadb_data")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPSEEK_API_BASE = os.getenv(
     "DEEPSEEK_API_BASE"
@@ -33,28 +26,11 @@ SQLITE_DB_PATH = os.path.join(
     SQLITE_DB_DIR, os.getenv("SQLITE_DB_FILENAME", "kb_metadata.sqlite")
 )
 
-# --- ChromaDB ---
-# Client is initialized in kb_manager.py
-
 # --- Embeddings ---
 # Initialize the original LangChain embedding function
 lc_embedding_function = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
-
-
-# Define a wrapper for ChromaDB compatibility
-class LangchainEmbeddingFunctionWrapper(EmbeddingFunction):
-    def __init__(self, lc_embedding_function):
-        self._lc_embedding_function = lc_embedding_function
-
-    def __call__(self, input: Documents) -> Embeddings:
-        # ChromaDB expects batch processing, LangChain embed_documents handles it
-        return self._lc_embedding_function.embed_documents(input)
-
-
-# Instantiate the wrapper
-chroma_embedding_function = LangchainEmbeddingFunctionWrapper(lc_embedding_function)
 
 # --- LLM Initialization ---
 llm = None
@@ -109,5 +85,4 @@ if llm is None:
 
 
 print("Configuration loaded.")
-print(f"ChromaDB Path: {CHROMADB_PATH}")
 print(f"SQLite DB Path: {SQLITE_DB_PATH}")  # Add log for SQLite path

@@ -2,7 +2,7 @@ import time
 import uuid
 import asyncio
 from typing import Dict, Any, List, Optional
-from chromadb.errors import NotFoundError
+# NotFoundError import removed - using Supabase now
 
 from app.core import db_manager, kb_manager, data_processor
 from app.models.agent import (
@@ -71,7 +71,7 @@ class AgentService:
                     f"Warning: Failed to store original JSON payload for KB {kb_id} in metadata DB. Proceeding with KB population."
                 )
 
-            # 3. Process JSON data for ChromaDB
+            # 3. Process JSON data for vector store
             print("Extracting text from JSON data...")
             extracted_text = data_processor.extract_text_from_json(json_data)
             if not extracted_text or not extracted_text.strip():
@@ -81,7 +81,7 @@ class AgentService:
                     message="KB exists, but no text content found in JSON to add.",
                 )
 
-            # 4. Add extracted text to the KB (ChromaDB)
+            # 4. Add extracted text to the KB (Supabase)
             print(f"Adding extracted text to KB {kb_id}...")
             success = kb_manager.add_to_kb(kb_id, extracted_text)
 
@@ -109,7 +109,7 @@ class AgentService:
     @staticmethod
     def delete_agent(kb_id: str) -> StatusResponse:
         """
-        Deletes an agent instance, its associated knowledge base (ChromaDB),
+        Deletes an agent instance, its associated knowledge base (Supabase),
         stored original JSON payloads (SQLite), and uploaded file records (SQLite).
         """
         print(f"Deleting agent KB and associated data: {kb_id}")
@@ -140,16 +140,16 @@ class AgentService:
                 f"Unexpected error during SQLite JSON payload deletion for KB {kb_id}: {e}"
             )
 
-        # --- Delete Knowledge Base (ChromaDB) ---
+        # --- Delete Knowledge Base (Supabase) ---
         kb_delete_success = False
         try:
             kb_delete_success = kb_manager.delete_kb(kb_id)
             if kb_delete_success:
-                print(f"ChromaDB deletion process completed for KB {kb_id}.")
+                print(f"Supabase KB deletion process completed for KB {kb_id}.")
             else:
-                print(f"ChromaDB deletion process failed internally for KB {kb_id}.")
+                print(f"Supabase KB deletion process failed internally for KB {kb_id}.")
         except Exception as e:
-            print(f"Unexpected error during ChromaDB deletion of KB {kb_id}: {e}")
+            print(f"Unexpected error during Supabase KB deletion of KB {kb_id}: {e}")
 
         # Determine overall status
         all_deleted = (
@@ -273,9 +273,6 @@ class AgentService:
                 kb_id=kb_id, deleted_count=deleted_count, message=message
             )
 
-        except NotFoundError:
-            print(f"Cleanup failed: Knowledge base {kb_id} not found.")
-            raise NotFoundError(f"Knowledge base {kb_id} not found.")
         except Exception as e:
             print(f"Error during duplicate cleanup for KB {kb_id}: {e}")
             import traceback

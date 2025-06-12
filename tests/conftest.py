@@ -16,7 +16,7 @@ def load_env():
         os.environ[key] = value
     
     # Check if essential test environment variables are loaded
-    assert os.environ.get("CHROMADB_PATH") == "./chromadb_data_test"
+    # ChromaDB removed - using Supabase now
 
 # Create a fresh test client for each test
 @pytest.fixture

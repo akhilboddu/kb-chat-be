@@ -12,7 +12,7 @@ setup(
         "langchain-core==0.1.0",
         "langchain-community==0.0.15",
         "langchain-openai==0.0.2",
-        "chromadb==0.4.18",
+        # "chromadb==0.4.18",  # Removed - using Supabase now
         "pymupdf==1.23.7",
         "pymupdf4llm==0.0.4",
         "pdfplumber==0.10.3",

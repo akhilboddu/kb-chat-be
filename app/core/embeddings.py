@@ -16,12 +16,12 @@ logger = logging.getLogger(__name__)
 class CohereEmbeddings:
     """
     Wrapper for Cohere embeddings API with batch processing support.
-    Uses embed-english-v3.0 model which produces 768-dimensional vectors.
+    Uses embed-english-v3.0 model which produces 1024-dimensional vectors.
     """
     
     BATCH_SIZE = 96  # Cohere's max texts per request
     MODEL = "embed-english-v3.0"
-    EMBEDDING_DIM = 768
+    EMBEDDING_DIM = 1024
     
     def __init__(self, api_key: Optional[str] = None):
         """
@@ -54,7 +54,7 @@ class CohereEmbeddings:
             retry_delay: Initial delay between retries (exponential backoff)
             
         Returns:
-            List of embedding vectors (each is 768 dimensions)
+            List of embedding vectors (each is 1024 dimensions)
         """
         if not texts:
             return []
@@ -105,7 +105,7 @@ class CohereEmbeddings:
             query: Search query text
             
         Returns:
-            768-dimensional embedding vector
+            1024-dimensional embedding vector
         """
         if not query or not query.strip():
             return [0.0] * self.EMBEDDING_DIM

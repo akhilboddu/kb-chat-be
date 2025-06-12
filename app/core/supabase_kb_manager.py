@@ -237,10 +237,10 @@ class KBManager:
                 print(f"No documents found for query in KB {kb_id}")
                 return []
             
-            # Format results to match ChromaDB interface
+            # Format results for backward compatibility
             doc_info = []
             for doc in result.data:
-                # Convert score to distance (1 - score for consistency with ChromaDB)
+                # Convert score to distance (1 - score for backward compatibility)
                 distance = 1.0 - doc['score']
                 doc_info.append({
                     'document': doc['content'],

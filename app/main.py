@@ -98,14 +98,13 @@ if not llm:
 if __name__ == "__main__":
     print("Starting Uvicorn server...")
     # Use reload=True for development to automatically reload on code changes
-    # Exclude the chromadb data directory from the reloader to prevent restarts during KB operations
+    # Exclude certain directories from the reloader
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
         port=8000,
         reload=True,
         reload_excludes=[
-            "./chromadb_data/*",
             "./db/*",
             "./venv/*",
             "./.git/*",

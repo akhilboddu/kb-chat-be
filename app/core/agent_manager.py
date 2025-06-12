@@ -285,26 +285,12 @@ def create_agent_executor(
 
 # Example Usage (Optional - for basic testing if needed)
 if __name__ == "__main__":
-    # This requires a KB to exist. Run the test_core_components.py first
-    # or ensure a KB like 'test_kb_...' exists in your ./chromadb_data
+    # This requires a KB to exist in Supabase
     print("Attempting to create agent executor for a test KB ID...")
-    # Find a recent test KB ID in the ChromaDB directory or use a known one
     try:
-        # Simple way to find one - replace with a known good ID if needed
-        db_path = os.path.join(".", "chromadb_data")
-        potential_kbs = [
-            d
-            for d in os.listdir(db_path)
-            if os.path.isdir(os.path.join(db_path, d)) and d.startswith("test_kb_")
-        ]
-        if not potential_kbs:
-            raise FileNotFoundError(
-                "No 'test_kb_*' directories found in ./chromadb_data. Run test script first."
-            )
-
-        # Use the most recent one based on timestamp in the name
-        test_kb_id = sorted(potential_kbs, reverse=True)[0]
-        print(f"Using existing test KB ID: {test_kb_id}")
+        # Use a specific KB ID for testing (replace with actual KB ID)
+        test_kb_id = "test_kb_example"
+        print(f"Using test KB ID: {test_kb_id}")
 
         executor = create_agent_executor(test_kb_id)
         print(f"Agent Executor created: {executor}")

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Body, HTTPException, Query, status
 from typing import Dict, Any, List, Optional
-from chromadb.errors import NotFoundError
+# NotFoundError import removed - using Supabase now
 
 from app.services.agent_service import AgentService
 from app.models.agent import (
@@ -47,11 +47,6 @@ async def populate_agent_from_json(kb_id: str, request: PopulateAgentJSONRequest
     """
     try:
         return AgentService.populate_agent_from_json(kb_id, request.json_data)
-    except NotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Knowledge base {kb_id} not found or inaccessible.",
-        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -64,7 +59,7 @@ async def populate_agent_from_json(kb_id: str, request: PopulateAgentJSONRequest
 )
 async def delete_agent(kb_id: str):
     """
-    Deletes an agent instance, its associated knowledge base (ChromaDB),
+    Deletes an agent instance, its associated knowledge base (Supabase),
     stored original JSON payloads (SQLite), and uploaded file records (SQLite).
     """
     try:
@@ -138,11 +133,6 @@ async def cleanup_kb_duplicates_endpoint(kb_id: str):
     """
     try:
         return await AgentService.cleanup_kb_duplicates(kb_id)
-    except NotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Knowledge base {kb_id} not found.",
-        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
