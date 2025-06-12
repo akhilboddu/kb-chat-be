@@ -1474,7 +1474,7 @@ async def get_conversation_status(conversation_id: str):
     try:
         response = (
             supabase.table("conversations")
-            .select("status")
+            .select("status, customer_email")
             .eq("id", conversation_id)
             .single()
             .execute()

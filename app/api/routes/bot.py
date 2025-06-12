@@ -23,7 +23,7 @@ class DemoBotRequest(BaseModel):
     url: HttpUrl
     name: Optional[str] = None
     description: Optional[str] = None
-    max_pages: Optional[int] = 5
+    max_pages: Optional[int] = 1
 
 
 @router.post("/{bot_id}/knowledge", response_model=StatusResponse)
