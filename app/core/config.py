@@ -111,3 +111,4 @@ if llm is None:
 print("Configuration loaded.")
 print(f"ChromaDB Path: {CHROMADB_PATH}")
 print(f"SQLite DB Path: {SQLITE_DB_PATH}")  # Add log for SQLite path
+

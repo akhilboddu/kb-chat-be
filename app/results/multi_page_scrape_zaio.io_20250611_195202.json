@@ -1,0 +1,17 @@
+{
+  "scrape_metadata": {
+    "url": "https://www.zaio.io/",
+    "base_domain": "zaio.io",
+    "pages_scraped": 0,
+    "pages_analyzed": 1,
+    "early_termination": false,
+    "scrape_time": "2025-06-11T19:52:02.018933",
+    "processing_time_seconds": 33.525026082992554
+  },
+  "raw_data": [
+    {
+      "error": "Error processing page: 'CrawlResult' object has no attribute 'content'",
+      "url": "https://www.zaio.io/"
+    }
+  ]
+}

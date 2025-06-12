@@ -1,28 +1,47 @@
 from typing import List, Dict, Any
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 def extract_text_from_json(data: Dict[str, Any]) -> str:
     """Recursively extracts all string values from a nested dictionary."""
+    if not data:
+        return ""
+        
     text_parts = []
     
     def recurse(item: Any):
-        if isinstance(item, dict):
-            for key, value in item.items():
-                # Optionally include keys, or just values
-                # text_parts.append(f"{key}: ") 
-                recurse(value)
-        elif isinstance(item, list):
-            for element in item:
-                recurse(element)
-        elif isinstance(item, str):
-            text_parts.append(item.strip()) 
-        # Add handling for other types if necessary (e.g., numbers)
-        # elif isinstance(item, (int, float)):
-        #     text_parts.append(str(item))
+        try:
+            if isinstance(item, dict):
+                # Only process structured content from business profile
+                if "structured_content" in item:
+                    content = item["structured_content"]
+                    if content and isinstance(content, str):
+                        text_parts.append(content.strip())
+                # Process any remaining fields
+                for key, value in item.items():
+                    if key != "structured_content":  # Skip other fields
+                        recurse(value)
+            elif isinstance(item, list):
+                for element in item:
+                    recurse(element)
+            elif isinstance(item, str):
+                text_parts.append(item.strip())
+            elif isinstance(item, (int, float)):
+                text_parts.append(str(item))
+        except Exception as e:
+            logger.error(f"Error processing item in extract_text_from_json: {str(e)}")
+            return
 
-    recurse(data)
-    return " ".join(filter(None, text_parts)) # Join non-empty parts
+    try:
+        recurse(data)
+        result = " ".join(filter(None, text_parts))  # Join non-empty parts
+        return result if result.strip() else ""
+    except Exception as e:
+        logger.error(f"Error in extract_text_from_json: {str(e)}")
+        return ""
 
 def chunk_text(text: str, chunk_size: int = 1000, chunk_overlap: int = 150) -> List[str]:
     """Chunks text using RecursiveCharacterTextSplitter."""

@@ -1,0 +1,177 @@
+{
+  "scrape_metadata": {
+    "url": "https://www.zaio.io/",
+    "base_domain": "zaio.io",
+    "pages_scraped": 1,
+    "pages_analyzed": 1,
+    "early_termination": false,
+    "scrape_time": "2025-06-11T20:09:28.043986",
+    "processing_time_seconds": 43.199455976486206
+  },
+  "analyzed_data": [
+    {
+      "business_name": "Zaio",
+      "tagline_slogan": null,
+      "short_description": "Zaio offers accredited bootcamps and micro-bootcamps designed to fast-track tech careers with real-world projects, expert support, and job placement assistance.",
+      "offerings": [
+        {
+          "type": "bootcamp",
+          "name": "Full Stack Web Development",
+          "description": "Learn HTML, CSS, JavaScript, React, Node.js, and more. Build dynamic websites and applications.",
+          "attributes": [
+            "NQF Level 5 certification",
+            "Beginner level",
+            "6 Months duration"
+          ],
+          "pricing": null
+        },
+        {
+          "type": "bootcamp",
+          "name": "Data Science",
+          "description": "Master Python, machine learning, data analysis, and SQL. Work on real-world data science projects.",
+          "attributes": [
+            "Microsoft certification",
+            "Beginner level",
+            "7 Months duration"
+          ],
+          "pricing": null
+        },
+        {
+          "type": "bootcamp",
+          "name": "Cybersecurity",
+          "description": "Master Cybersecurity fundamentals and best practices. Gain in-demand skills for a cybersecurity career.",
+          "attributes": [
+            "CompTIA A+ Security certification",
+            "Beginner level",
+            "7 Months duration"
+          ],
+          "pricing": null
+        },
+        {
+          "type": "micro bootcamp",
+          "name": "Web Development Fundamentals",
+          "description": null,
+          "attributes": [],
+          "pricing": null
+        },
+        {
+          "type": "micro bootcamp",
+          "name": "Front End coding with React.js",
+          "description": null,
+          "attributes": [],
+          "pricing": null
+        },
+        {
+          "type": "micro bootcamp",
+          "name": "Back End coding with Node.js",
+          "description": null,
+          "attributes": [],
+          "pricing": null
+        },
+        {
+          "type": "micro bootcamp",
+          "name": "Fundamentals of Python",
+          "description": null,
+          "attributes": [],
+          "pricing": null
+        },
+        {
+          "type": "micro bootcamp",
+          "name": "AI Essentials for Office Professionals",
+          "description": null,
+          "attributes": [],
+          "pricing": null
+        }
+      ],
+      "payment_information": {
+        "payment_methods": [
+          "Installments",
+          "Financing (Manati and Capitec)"
+        ],
+        "payment_plans": [
+          "Flexible payment plans",
+          "Pay upfront",
+          "Pay in installments"
+        ],
+        "pricing_tiers": [],
+        "free_offers": "Free Consultation"
+      },
+      "value_propositions": [
+        "Accredited bootcamps",
+        "Real-world projects",
+        "Expert support",
+        "Job placement support",
+        "Flexible payment options",
+        "24/7 Support",
+        "Guaranteed Placement Support",
+        "Flexible Learning Options"
+      ],
+      "target_audience": [
+        "Individuals seeking tech careers",
+        "Beginner learners"
+      ],
+      "support_channels": [
+        "Community",
+        "AI Tutor",
+        "Expert tutors"
+      ],
+      "contact_info": {
+        "email": null,
+        "phone": null,
+        "address": null,
+        "contact_form_mention": null
+      },
+      "faqs": [],
+      "page_topic": "Homepage",
+      "extracted_from_url": "https://www.zaio.io/",
+      "_url": "https://www.zaio.io/"
+    }
+  ],
+  "business_profile": {
+    "business_name": "Zaio",
+    "tagline": null,
+    "description": "Zaio offers accredited bootcamps and micro-bootcamps designed to fast-track tech careers with real-world projects, expert support, and job placement assistance.",
+    "products": [],
+    "services": [],
+    "payment_options": {
+      "methods": [
+        "Installments",
+        "Financing (Manati and Capitec)"
+      ],
+      "plans": [
+        "Flexible payment plans",
+        "Pay upfront",
+        "Pay in installments"
+      ],
+      "tiers": [],
+      "free_offers": "Free Consultation"
+    },
+    "faqs": [],
+    "value_props": [
+      "Accredited bootcamps",
+      "Real-world projects",
+      "Expert support",
+      "Job placement support",
+      "Flexible payment options",
+      "24/7 Support",
+      "Guaranteed Placement Support",
+      "Flexible Learning Options"
+    ],
+    "audience": [
+      "Individuals seeking tech careers",
+      "Beginner learners"
+    ],
+    "contact_info": {
+      "email": null,
+      "phone": null,
+      "address": null,
+      "contact_form": false
+    },
+    "social_links": {
+      "facebook": "https://www.facebook.com/zaionite",
+      "instagram": "https://www.instagram.com/zaiocodingschool/",
+      "twitter": "https://www.twitter.com/zaionite",
+      "linkedin": "https://www.linkedin.com/company/zaio-io/"
+    }
+  }
+}

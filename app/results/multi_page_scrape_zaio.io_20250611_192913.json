@@ -1,0 +1,33 @@
+{
+  "scrape_metadata": {
+    "url": "https://www.zaio.io/",
+    "base_domain": "zaio.io",
+    "pages_scraped": 1,
+    "pages_analyzed": 1,
+    "early_termination": false,
+    "scrape_time": "2025-06-11T19:29:13.902437",
+    "processing_time_seconds": 0.03384804725646973
+  },
+  "business_profile": {
+    "business_name": "Zaio",
+    "tagline": null,
+    "description": null,
+    "contact_info": {},
+    "offerings": [],
+    "value_props": [],
+    "audience": [],
+    "payment_options": {
+      "methods": [],
+      "plans": [],
+      "tiers": [],
+      "free_offer": null
+    },
+    "support": [],
+    "faqs": [],
+    "social_links": {},
+    "source_urls": [],
+    "base_domain": "zaio.io",
+    "business_type": null,
+    "course_prices": {}
+  }
+}

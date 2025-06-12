@@ -1,0 +1,40 @@
+{
+  "scrape_metadata": {
+    "url": "https://www.zaio.io",
+    "base_domain": "zaio.io",
+    "pages_scraped": 1,
+    "pages_analyzed": 1,
+    "early_termination": false,
+    "scrape_time": "2025-06-11T20:35:49.791855",
+    "processing_time_seconds": 60.03957986831665
+  },
+  "analyzed_data": [
+    {
+      "error": "Page fetch timeout",
+      "url": "https://www.zaio.io"
+    }
+  ],
+  "business_profile": {
+    "business_name": null,
+    "tagline": null,
+    "description": null,
+    "products": [],
+    "services": [],
+    "payment_options": {
+      "methods": [],
+      "plans": [],
+      "tiers": [],
+      "free_offers": null
+    },
+    "faqs": [],
+    "value_props": [],
+    "audience": [],
+    "contact_info": {
+      "email": null,
+      "phone": null,
+      "address": null,
+      "contact_form": false
+    },
+    "social_links": {}
+  }
+}

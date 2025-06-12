@@ -1,0 +1,17 @@
+{
+  "scrape_metadata": {
+    "url": "https://www.zaio.io/",
+    "base_domain": "zaio.io",
+    "pages_scraped": 0,
+    "pages_analyzed": 1,
+    "early_termination": false,
+    "scrape_time": "2025-06-11T19:48:25.595818",
+    "processing_time_seconds": 0.035681962966918945
+  },
+  "raw_data": [
+    {
+      "error": "Error processing page: 'Scraper' object has no attribute 'crawler_config'",
+      "url": "https://www.zaio.io/"
+    }
+  ]
+}
