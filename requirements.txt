@@ -102,7 +102,6 @@ packaging==24.2
 pdfminer.six==20250327
 pdfplumber==0.11.6
 pillow==11.2.1
-playwright==1.52.0
 pluggy==1.5.0
 postgrest==1.0.1
 posthog==4.0.1

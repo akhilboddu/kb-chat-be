@@ -6,6 +6,7 @@ from fastapi import UploadFile
 import pymupdf # ADDED base pymupdf import
 import docx # python-docx
 import openpyxl
+import pdfplumber  # Fallback PDF parser
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".csv", ".pdf", ".docx", ".xlsx"}
 
@@ -52,8 +53,18 @@ async def _parse_pdf(file: UploadFile) -> str:
         return "\n".join(text_content) # Join text from all pages
     except Exception as e:
         # Use a distinct error message for diagnosis
-        print(f"Error parsing PDF with base pymupdf page.get_text(): {e}")
-        return "" # Return empty string on error
+        print(f"Error parsing PDF with PyMuPDF: {e}. Falling back to pdfplumber…")
+        # Fallback to pdfplumber which sometimes succeeds on PDFs that PyMuPDF struggles with
+        try:
+            with pdfplumber.open(io.BytesIO(content_bytes)) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text() or ""
+                    if page_text:
+                        text_content.append(page_text)
+            return "\n".join(text_content)
+        except Exception as e2:
+            print(f"Error parsing PDF with pdfplumber: {e2}")
+            return ""  # Return empty string on error
 
 async def _parse_docx(file: UploadFile) -> str:
     """Parses text from DOCX files."""

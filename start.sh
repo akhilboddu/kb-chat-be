@@ -33,10 +33,9 @@ if [[ -z "${REDIS_URL}" ]]; then
   echo "REDIS_URL not set – defaulting to ${REDIS_URL}"
 fi
 
-echo "Starting FastAPI application with hot reload (tests excluded)…"
+echo "Starting FastAPI application..."
 ./venv/bin/python -m uvicorn app.main:app \
-  --reload \
-  --reload-exclude="tests/*" \
+  --workers 4 \
   --host "${API_HOST:-0.0.0.0}" \
   --port "${API_PORT:-8000}"
 

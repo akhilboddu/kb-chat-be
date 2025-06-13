@@ -308,6 +308,60 @@ def get_scrape_status(kb_id: str) -> Optional[dict]:
         return None
 
 
+# === FILE UPLOAD STATUS FUNCTIONS ===
+def update_file_upload_status(kb_id: str, status_data: dict) -> bool:
+    """Updates the file upload status for a KB."""
+    try:
+        # Convert progress dict to JSONB if present
+        if "progress" in status_data:
+            status_data["progress_data"] = status_data.pop("progress")
+        
+        # Always include kb_id
+        status_data['kb_id'] = kb_id
+        
+        print(f"Updating file upload status for KB {kb_id}: {status_data.get('status', 'unknown')} - {status_data.get('message', '')}")
+        
+        # Upsert the status and ensure it completes
+        result = supabase.table('file_upload_status').upsert(status_data).execute()
+        
+        # Verify the operation succeeded
+        if result and result.data:
+            print(f"Successfully updated file upload status for KB {kb_id}")
+            return True
+        else:
+            print(f"Warning: No data returned from upsert for KB {kb_id}")
+            return False
+            
+    except Exception as e:
+        print(f"Error updating file upload status for KB {kb_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def get_file_upload_status(kb_id: str) -> Optional[dict]:
+    """Retrieves the current file upload status for a KB."""
+    try:
+        result = (supabase.table('file_upload_status')
+                 .select('*')
+                 .eq('kb_id', kb_id)
+                 .execute())
+        
+        if not result.data:
+            return None
+        
+        status = result.data[0]
+        
+        # Convert progress_data back to progress
+        if status.get("progress_data"):
+            status["progress"] = status.pop("progress_data")
+            
+        return status
+    except Exception as e:
+        print(f"Error retrieving file upload status for KB {kb_id}: {e}")
+        return None
+
+
 # === POSTGRES FUNCTIONS (for compatibility) ===
 def get_postgres_db():
     """For compatibility - returns Supabase connection info."""
