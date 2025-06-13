@@ -1,4 +1,4 @@
-from app.core.db_manager import get_postgres_db
+from app.core.supabase_metadata_manager import get_postgres_db
 
 
 def post_message(conversation_id: str, message: str, role: str):

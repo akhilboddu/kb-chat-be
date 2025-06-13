@@ -22,8 +22,7 @@ RUN apt-get update && \
         && rm -rf /var/lib/apt/lists/*
 
 # Create necessary directories with correct permissions
-RUN mkdir -p /app/db && \
-    chown -R appuser:appuser /app
+RUN chown -R appuser:appuser /app
 
 # Copy only what's needed for the test app
 COPY --chown=appuser:appuser app/test_app.py /app/app/

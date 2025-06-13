@@ -7,7 +7,7 @@ from app.models.bot import (
     AddKnowledgeRequest,
 )
 from app.models.scrape import ScrapeStatusResponse
-from app.core import kb_manager, db_manager
+from app.core import kb_manager, supabase_metadata_manager as db_manager
 from app.core.supabase_client import supabase
 from fastapi import BackgroundTasks
 import os

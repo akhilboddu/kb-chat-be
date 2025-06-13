@@ -2,7 +2,8 @@ import asyncio
 import logging
 from typing import Optional
 
-from app.core import config, db_manager, kb_manager, scraper, data_processor
+from app.core import config, supabase_metadata_manager as db_manager, kb_manager, scraper, data_processor
+from app.core.supabase_client import supabase  # Add this import
 
 logger = logging.getLogger(__name__)
 
@@ -162,11 +163,37 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
         )
 
         # 4. Add text to Knowledge Base
-        add_success = kb_manager.add_to_kb(kb_id, text_to_add)
+        add_success = kb_manager.add_to_kb(kb_id, text_to_add, knowledge_source="website")
         if add_success:
             logger.info(
                 f"[Background Task] Successfully populated KB '{kb_id}' with scraped content from URL '{url}'."
             )
+            
+            # Update knowledge_sources table
+            try:
+                # Try to get bot_id from kb_id
+                bot_response = supabase.table("bots").select("id").eq("kb_id", kb_id).execute()
+                
+                if bot_response.data and len(bot_response.data) > 0:
+                    bot_id = bot_response.data[0]["id"]
+                    
+                    # Create knowledge source entry with scraped URL and summary
+                    knowledge_source_data = {
+                        "bot_id": bot_id,
+                        "source_type": "website",
+                        "content": f"Scraped from: {url} - {pages_scraped_count} pages processed"
+                    }
+                    
+                    # Insert into knowledge_sources table
+                    supabase.table("knowledge_sources").insert(knowledge_source_data).execute()
+                    logger.info(f"[Background Task] Updated knowledge_sources table for bot_id '{bot_id}'")
+                else:
+                    logger.warning(f"[Background Task] No bot found for kb_id '{kb_id}', skipping knowledge_sources update")
+                    
+            except Exception as e:
+                logger.error(f"[Background Task] Failed to update knowledge_sources table: {str(e)}")
+                # Don't fail the whole process if knowledge_sources update fails
+            
             current_status = "completed"
             db_manager.update_scrape_status(
                 kb_id,

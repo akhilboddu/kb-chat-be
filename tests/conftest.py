@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from dotenv import dotenv_values
 
 from app.main import create_app
-from app.core.db_manager import init_db
+from app.core.supabase_metadata_manager import init_db
 
 # Load test environment variables
 @pytest.fixture(scope="session", autouse=True)

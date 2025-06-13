@@ -19,12 +19,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL")
 
 # --- SQLite Metadata DB ---
-# For local development, use a local path
-# For Render deployment, we'd use /app/db via environment variable
-SQLITE_DB_DIR = os.getenv("SQLITE_DB_DIR", "./db")  # Default to local ./db directory
-SQLITE_DB_PATH = os.path.join(
-    SQLITE_DB_DIR, os.getenv("SQLITE_DB_FILENAME", "kb_metadata.sqlite")
-)
+# [REMOVED: SQLite configuration - now using Supabase for all metadata storage]
 
 # --- Embeddings ---
 # Initialize the original LangChain embedding function
@@ -85,4 +80,3 @@ if llm is None:
 
 
 print("Configuration loaded.")
-print(f"SQLite DB Path: {SQLITE_DB_PATH}")  # Add log for SQLite path

@@ -5,7 +5,7 @@ This package contains the core functionality of the application.
 
 # Import all modules to make them available via app.core
 from app.core.config import *
-from app.core.db_manager import *
+from app.core.supabase_metadata_manager import *
 from app.core.kb_manager_factory import kb_manager
 from app.core.file_parser import *
 from app.core.agent_manager import *

@@ -7,7 +7,7 @@ import requests
 import secrets
 from typing import Dict, Any, List
 from datetime import datetime
-from app.core import db_manager, kb_manager, agent_manager
+from app.core import supabase_metadata_manager as db_manager, kb_manager, agent_manager
 from app.models.chat import ChatRequest, ChatResponse
 from app.utils.text_processing import clean_agent_output
 from langchain.memory import ConversationBufferMemory

@@ -95,7 +95,7 @@ def get_knowledge_update_tool(kb_id: str) -> Tool:
     """
     def update_kb(text_to_add: str) -> str:
         """Update the knowledge base with new information."""
-        success = kb_manager.add_to_kb(kb_id, text_to_add)
+        success = kb_manager.add_to_kb(kb_id, text_to_add, knowledge_source="agent")
         if success:
             return f"Successfully updated knowledge base {kb_id}."
         else:

@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 from urllib.parse import urlparse
 from dotenv import load_dotenv
-import openai
+from app.core.config import llm
 
 # Configure logging
 logging.basicConfig(
@@ -35,10 +35,6 @@ class Scraper:
         self.api_key = os.getenv("FIRECRAWL_API_KEY")
         if not self.api_key:
             raise ValueError("FIRECRAWL_API_KEY environment variable is not set")
-        
-        self.openai_api_key = os.getenv("OPENAI_API_KEY")
-        if not self.openai_api_key:
-            raise ValueError("OPENAI_API_KEY environment variable is not set")
         
         self.api_base_url = "https://api.firecrawl.dev/v1"
         self.headers = {
@@ -99,7 +95,11 @@ class Scraper:
         return unique_paragraphs
 
     async def _process_with_llm(self, content: str) -> str:
-        """Process the content with OpenAI to structure and clean it."""
+        """Process the content with LLM to structure and clean it."""
+        if not llm:
+            logger.warning("No LLM configured, returning raw content")
+            return content
+            
         prompt = """Clean up and structure the following raw website content for use in a knowledge base. Remove duplicate or unnecessary elements like image links, repeated CTAs, and decorative text.
 
 Important instructions:
@@ -123,16 +123,23 @@ Here is the content to clean and structure:
 {content}"""
 
         try:
-            response = await openai.ChatCompletion.acreate(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that structures and cleans website content for knowledge bases. Your primary goal is to remove all duplicates and repetitions while maintaining the most complete and accurate information."},
-                    {"role": "user", "content": prompt.format(content=content)}
-                ],
-                temperature=0.3,  # Lower temperature for more consistent output
-                max_tokens=2000
-            )
-            return response.choices[0].message.content
+            # Use the configured LLM from config
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant that structures and cleans website content for knowledge bases. Your primary goal is to remove all duplicates and repetitions while maintaining the most complete and accurate information."},
+                {"role": "user", "content": prompt.format(content=content)}
+            ]
+            
+            # Convert to LangChain format and invoke
+            from langchain_core.messages import SystemMessage, HumanMessage
+            langchain_messages = [
+                SystemMessage(content=messages[0]["content"]),
+                HumanMessage(content=messages[1]["content"])
+            ]
+            
+            # Run synchronous LLM call in async context
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(None, llm.invoke, langchain_messages)
+            return response.content
         except Exception as e:
             logger.error(f"Error processing content with LLM: {str(e)}")
             return content

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks, status
 import logging
 
-from app.core import db_manager, config
+from app.core import supabase_metadata_manager as db_manager, config
 from app.models.scrape import (
     ScrapeURLRequest,
     ScrapeInitiatedResponse,

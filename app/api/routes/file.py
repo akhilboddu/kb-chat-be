@@ -2,7 +2,7 @@ import os
 from fastapi import APIRouter, HTTPException, UploadFile, File, status
 from typing import List
 
-from app.core import db_manager, kb_manager, file_parser, supabase_client
+from app.core import supabase_metadata_manager as db_manager, kb_manager, file_parser, supabase_client
 from app.models.base import StatusResponse
 from app.models.file import ListFilesResponse, UploadedFileInfo
 
@@ -84,7 +84,7 @@ async def upload_to_kb(kb_id: str, files: List[UploadFile] = File(...)):
             f"Adding parsed text from {file.filename} to KB {kb_id}..."
         )  # Simplified log
         try:
-            success = kb_manager.add_to_kb(kb_id, text_to_add)
+            success = kb_manager.add_to_kb(kb_id, text_to_add, knowledge_source="file")
             if success:
                 # Simplified message, as structuring is now part of parsing for PDFs
                 parsed_as = "Markdown" if file_extension == ".pdf" else "text"

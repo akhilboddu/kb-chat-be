@@ -18,7 +18,7 @@ from app.core.tools import (
     get_knowledge_update_tool,
     get_answering_tool,
 )
-from app.core import db_manager  # Import db_manager
+from app.core import supabase_metadata_manager as db_manager  # Import db_manager
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +201,7 @@ class EnhancedAgentExecutor:
 
 
 def create_agent_executor(
-    kb_id: str, memory: Optional[BaseMemory] = None
+    kb_id: str, memory: Optional[BaseMemory] = None, customer_context: Optional[Dict[str, Any]] = None
 ) -> Union[AgentExecutor, EnhancedAgentExecutor]:
     """
     Creates an AgentExecutor for a specific knowledge base, optionally with memory.
@@ -209,6 +209,7 @@ def create_agent_executor(
     Args:
         kb_id: The unique identifier for the knowledge base.
         memory: Optional LangChain memory object.
+        customer_context: Optional dictionary containing customer information (name, email, phone)
 
     Returns:
         An initialized AgentExecutor or EnhancedAgentExecutor instance.
@@ -221,8 +222,45 @@ def create_agent_executor(
     agent_config = db_manager.get_agent_config(kb_id)
     system_prompt_template = agent_config["system_prompt"]
     max_iterations_config = agent_config["max_iterations"]
-    # Fetch other config values as needed
-    # --- End Fetch ---
+    
+    # --- Format customer context into the prompt ---
+    if customer_context:
+        customer_name = customer_context.get("customer_name", "None")
+        customer_email = customer_context.get("customer_email", "None")
+        customer_phone = customer_context.get("customer_phone", "None")
+        bot_name = customer_context.get("bot_name", "Assistant")
+        company_name = customer_context.get("company_name", "our company")
+        
+        # Replace placeholders in the system prompt
+        system_prompt_template = system_prompt_template.format(
+            customer_name=customer_name,
+            customer_email=customer_email,
+            customer_phone=customer_phone,
+            bot_name=bot_name,
+            company_name=company_name,
+            tools="{tools}",  # Keep these placeholders for later formatting
+            tool_names="{tool_names}",
+            chat_history="{chat_history}",
+            input="{input}",
+            agent_scratchpad="{agent_scratchpad}"
+        )
+        
+        print(f"Customer context provided - Name: {customer_name}, Email: {customer_email}, Bot: {bot_name}, Company: {company_name}")
+    else:
+        # If no customer context, format with default values
+        system_prompt_template = system_prompt_template.format(
+            customer_name="None",
+            customer_email="None", 
+            customer_phone="None",
+            bot_name="Assistant",
+            company_name="our company",
+            tools="{tools}",
+            tool_names="{tool_names}",
+            chat_history="{chat_history}",
+            input="{input}",
+            agent_scratchpad="{agent_scratchpad}"
+        )
+    # --- End Format ---
 
     # 1. Get tools specific to this kb_id
     retriever_tool = get_retriever_tool(kb_id)

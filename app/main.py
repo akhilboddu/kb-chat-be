@@ -7,7 +7,6 @@ from fastapi.responses import JSONResponse
 import uvicorn
 from app.config.redisconnection import redisConnection
 from app.config.dbconnection import get_db_pool
-from app.core.db_manager import init_db
 from app.core.config import llm
 from app.api.routes import router
 
@@ -61,9 +60,6 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
         expose_headers=["content-type", "content-length"],
     )
-
-    # Initialize database
-    init_db()
 
     # Mount all routes from the router
     app.include_router(router)

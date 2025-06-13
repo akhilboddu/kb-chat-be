@@ -73,13 +73,14 @@ class KBManager:
         content_hash = hashlib.sha256(f"{kb_id}:{content}".encode()).hexdigest()[:16]
         return f"doc_{content_hash}"
     
-    def populate_kb(self, kb_collection: Dict[str, Any], text_chunks: List[str]) -> None:
+    def populate_kb(self, kb_collection: Dict[str, Any], text_chunks: List[str], knowledge_source: str = "manual") -> None:
         """
         Populates a knowledge base with text chunks using Contextual RAG.
         
         Args:
             kb_collection: KB info dict (from create_or_get_kb)
             text_chunks: List of text chunks to add
+            knowledge_source: Source of the knowledge (website, file, human conversation, manual)
         """
         kb_id = kb_collection['kb_id']
         
@@ -111,7 +112,8 @@ class KBManager:
                     'content': chunk,
                     'ctx_text': ctx_text,
                     'embedding': embedding,
-                    'metadata': json.dumps({'chunk_index': i})
+                    'metadata': json.dumps({'chunk_index': i}),
+                    'knowledge_source': knowledge_source
                 }
                 documents_to_insert.append(document_data)
         
@@ -124,11 +126,11 @@ class KBManager:
                     batch = documents_to_insert[i:i + batch_size]
                     self.supabase.table('knowledge_base_documents').insert(batch).execute()
                 
-                print(f"Added {len(documents_to_insert)} contextualized chunks to KB {kb_id}")
+                print(f"Added {len(documents_to_insert)} contextualized chunks to KB {kb_id} from source: {knowledge_source}")
             except Exception as e:
                 print(f"Error inserting documents to KB {kb_id}: {e}")
     
-    def add_to_kb(self, kb_id: str, text_to_add: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
+    def add_to_kb(self, kb_id: str, text_to_add: str, metadata: Optional[Dict[str, Any]] = None, knowledge_source: str = "manual") -> bool:
         """
         Adds text to a knowledge base with contextualization and optional metadata.
         
@@ -136,6 +138,7 @@ class KBManager:
             kb_id: ID of the knowledge base to update
             text_to_add: Text content to add
             metadata: Optional metadata dictionary
+            knowledge_source: Source of the knowledge (website, file, human conversation, manual)
             
         Returns:
             Success status
@@ -184,7 +187,8 @@ class KBManager:
                     'content': chunk,
                     'ctx_text': ctx_text,
                     'embedding': embedding,
-                    'metadata': json.dumps(doc_metadata)
+                    'metadata': json.dumps(doc_metadata),
+                    'knowledge_source': knowledge_source
                 }
                 documents_to_insert.append(document_data)
         
@@ -196,7 +200,7 @@ class KBManager:
                     batch = documents_to_insert[i:i + batch_size]
                     self.supabase.table('knowledge_base_documents').insert(batch).execute()
                 
-                print(f"Added {len(documents_to_insert)} new contextualized chunks to KB {kb_id}")
+                print(f"Added {len(documents_to_insert)} new contextualized chunks to KB {kb_id} from source: {knowledge_source}")
                 return True
             except Exception as e:
                 print(f"Error adding documents to KB {kb_id}: {e}")

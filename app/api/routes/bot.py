@@ -7,7 +7,7 @@ from app.models.bot import (
     AddKnowledgeRequest,
 )
 from app.models.scrape import ScrapeStatusResponse
-from app.core import kb_manager, db_manager
+from app.core import kb_manager, supabase_metadata_manager as db_manager
 from app.core.supabase_client import supabase
 from fastapi import BackgroundTasks
 from pydantic import BaseModel, HttpUrl
@@ -48,7 +48,7 @@ async def bot_knowledge_endpoint(bot_id: str, request: AddKnowledgeRequest):
         kb_id = bot_response.data[0]["kb_id"]
 
         # Add to knowledge base with metadata
-        success = kb_manager.add_to_kb(kb_id=kb_id, text_to_add=request.knowledge_text)
+        success = kb_manager.add_to_kb(kb_id=kb_id, text_to_add=request.knowledge_text, knowledge_source="human conversation")
 
         if not success:
             print(f"kb_manager.add_to_kb returned False for KB {kb_id}")

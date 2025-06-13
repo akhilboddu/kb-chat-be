@@ -1,11 +1,11 @@
 import asyncio
 import json
-from logging import Logger  # For timestamp handling
+import logging
 from fastapi import APIRouter, HTTPException, status, Body, Query, Depends, WebSocket, WebSocketDisconnect, Path
 from langchain.memory import ConversationBufferMemory
 from langchain_core.messages import HumanMessage, AIMessage
 import math
-from typing import Dict, Set
+from typing import Dict, Set, Optional, Any
 
 from datetime import datetime
 from app.config.redisconnection import redisConnection
@@ -32,12 +32,14 @@ from app.models.bot import (
 )
 from app.models.base import StatusResponse
 
-from app.core import db_manager, kb_manager, agent_manager
+from app.core import supabase_metadata_manager as db_manager, kb_manager, agent_manager
 from app.services.push_notifications import send_push_notification
 from app.services.send_email import notify_admin_on_user_message, notify_client_message
 from app.utils.text_processing import clean_agent_output
 from app.utils.verification import get_current_user
 from app.utils.crm_utils import ensure_crm_entry
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat"])
 
@@ -118,12 +120,14 @@ async def get_chat_history(conversation_id: str):
 
 
 @router.post("/agents/{kb_id}/chat", response_model=ChatResponse)
-async def chat_endpoint(kb_id: str, request: ChatRequest):
+async def chat_endpoint(kb_id: str, request: ChatRequest, customer_context: Optional[Dict[str, Any]] = None):
     """
     HTTP endpoint for stateful, non-streaming chat interactions with an agent,
     maintaining conversation history using the database.
     """
     print(f"Received HTTP chat request for kb_id: {kb_id}")
+    if customer_context:
+        print(f"Customer context provided: {customer_context}")
 
     user_message = request.message
     handoff_marker = "(needs help)"
@@ -157,7 +161,7 @@ async def chat_endpoint(kb_id: str, request: ChatRequest):
 
         # Instantiate the agent executor for this KB, passing the populated memory
         print(f"Creating agent executor with memory for kb_id: {kb_id}")
-        agent_executor = agent_manager.create_agent_executor(kb_id=kb_id, memory=memory)
+        agent_executor = agent_manager.create_agent_executor(kb_id=kb_id, memory=memory, customer_context=customer_context)
         print(f"Agent executor created successfully for kb_id: {kb_id}")
 
         # --- Format History for Prompt ---
@@ -330,6 +334,7 @@ async def human_response_endpoint(kb_id: str, request: HumanResponseRequest):
                     kb_id=kb_id,
                     text_to_add=text_for_kb,
                     metadata={"source": "human_verified"},
+                    knowledge_source="human conversation"
                 )
                 if success:
                     print(f"Successfully updated KB {kb_id} with human response.")
@@ -421,6 +426,7 @@ async def human_knowledge_endpoint(kb_id: str, request: HumanKnowledgeRequest):
             kb_id=kb_id,
             text_to_add=request.knowledge_text,
             metadata=metadata_dict,  # Pass the constructed dictionary
+            knowledge_source="human conversation"
         )
 
         if not success:
@@ -668,6 +674,14 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     print(f"status is {conversation_repsonse.data}")
     if conversation_repsonse.data and len(conversation_repsonse.data) > 0:
         status = conversation_repsonse.data[0]["status"]
+        # Extract customer context and bot info for the agent
+        customer_context = {
+            "customer_name": conversation_repsonse.data[0].get("customer_name"),
+            "customer_email": conversation_repsonse.data[0].get("customer_email"),
+            "customer_phone": conversation_repsonse.data[0].get("customer_phone"),
+            "bot_name": bots_data.get("name", "Assistant"),  # Use bot's name
+            "company_name": bots_data.get("company", "our company")  # Use bot's company
+        }
         if status == "human":
             client = redisConnection.client
             if client:
@@ -695,7 +709,7 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
                 "id", request.conversation_id
             ).execute()
     # now use all logic from /agents/{kb_id}/chat endpoint
-    response = await chat_endpoint(kb_id, request)
+    response = await chat_endpoint(kb_id, request, customer_context=customer_context if 'customer_context' in locals() else None)
 
     # save user's message and bot's response to supabase
     supabase.table("messages").insert(
@@ -1165,13 +1179,33 @@ async def handle_user_chat(conversation_id: str, message: str, user_id: str = No
 
 @router.websocket("/ws/{conversation_id}")
 async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str):
+    print(f"WebSocket connection attempt for conversation {conversation_id}")
     await websocket.accept()
+    print(f"WebSocket connection accepted for conversation {conversation_id}")
+    
     if conversation_id not in active_connections:
         active_connections[conversation_id] = set()
     active_connections[conversation_id].add(websocket)
     try:
         while True:
-            data = await websocket.receive_json()
+            try:
+                data = await websocket.receive_json()
+            except WebSocketDisconnect:
+                print(f"WebSocket disconnected for conversation {conversation_id}")
+                break
+            except RuntimeError as e:
+                if "WebSocket is not connected" in str(e):
+                    print(f"WebSocket connection lost for conversation {conversation_id}")
+                    break
+                raise
+            except Exception as e:
+                print(f"Error receiving WebSocket data for conversation {conversation_id}: {e}")
+                break
+            
+            # Handle ping/pong for keepalive
+            if data.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+                continue
             
             # Handle status change request
             if data.get("type") == "change_status" and data.get("status"):
@@ -1353,9 +1387,15 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
                         print(f"Error sending message to websocket: {e}")
                
     except WebSocketDisconnect:
-        active_connections[conversation_id].remove(websocket)
-        if not active_connections[conversation_id]:
-            del active_connections[conversation_id]
+        print(f"WebSocket disconnected for conversation {conversation_id}")
+    except Exception as e:
+        print(f"WebSocket error for conversation {conversation_id}: {e}")
+    finally:
+        # Always clean up the connection
+        if conversation_id in active_connections and websocket in active_connections[conversation_id]:
+            active_connections[conversation_id].remove(websocket)
+            if not active_connections[conversation_id]:
+                del active_connections[conversation_id]
 
 async def handle_human_chat(conversation_id: str, message: str, user_id: str = None, reply_to_message_id: str = None):
     """

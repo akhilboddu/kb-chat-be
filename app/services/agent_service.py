@@ -4,7 +4,7 @@ import asyncio
 from typing import Dict, Any, List, Optional
 # NotFoundError import removed - using Supabase now
 
-from app.core import db_manager, kb_manager, data_processor
+from app.core import supabase_metadata_manager as db_manager, kb_manager, data_processor
 from app.models.agent import (
     CreateAgentResponse,
     KBInfo,
@@ -83,7 +83,7 @@ class AgentService:
 
             # 4. Add extracted text to the KB (Supabase)
             print(f"Adding extracted text to KB {kb_id}...")
-            success = kb_manager.add_to_kb(kb_id, extracted_text)
+            success = kb_manager.add_to_kb(kb_id, extracted_text, knowledge_source="api")
 
             if success:
                 print(f"Successfully populated KB {kb_id} from JSON.")

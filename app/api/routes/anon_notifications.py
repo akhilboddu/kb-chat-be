@@ -2,7 +2,7 @@ import json
 from fastapi import APIRouter
 
 from app.core.supabase_client import supabase
-from app.core.db_manager import PushSub
+from app.core.supabase_metadata_manager import PushSub
 from app.models.base import StatusResponse
 
 

@@ -52,8 +52,8 @@ RUN groupadd -r appuser && \
 WORKDIR /app
 
 # Create necessary directories and set permissions
-RUN mkdir -p /app/db /ms-playwright && \
-    chmod -R 777 /app/db /ms-playwright
+RUN mkdir -p /ms-playwright && \
+    chmod -R 777 /ms-playwright
 
 # Copy requirements and install Python packages
 COPY requirements.txt .
