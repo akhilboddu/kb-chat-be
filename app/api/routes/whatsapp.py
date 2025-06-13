@@ -9,7 +9,7 @@ from typing import Dict, Any, List
 from datetime import datetime
 from app.core import supabase_metadata_manager as db_manager, kb_manager, agent_manager
 from app.models.chat import ChatRequest, ChatResponse
-from app.utils.text_processing import clean_agent_output
+from app.utils.text_processing import clean_agent_output, auto_add_handoff_if_needed
 from langchain.memory import ConversationBufferMemory
 from langchain_core.messages import HumanMessage, AIMessage
 import asyncio
@@ -585,6 +585,8 @@ async def whatsapp_webhook(request: Request):
                                 agent_output = response.get("output")
                                 if agent_output:
                                     cleaned_output = clean_agent_output(agent_output)
+                                    # Apply automatic handoff detection for insufficient answers
+                                    cleaned_output = auto_add_handoff_if_needed(cleaned_output)
                                     
                                     # Save messages to conversation history
                                     db_manager.add_conversation_message(kb_id, 'human', message_content)

@@ -35,7 +35,7 @@ from app.models.base import StatusResponse
 from app.core import supabase_metadata_manager as db_manager, kb_manager, agent_manager
 from app.services.push_notifications import send_push_notification
 from app.services.send_email import notify_admin_on_user_message, notify_client_message
-from app.utils.text_processing import clean_agent_output
+from app.utils.text_processing import clean_agent_output, auto_add_handoff_if_needed
 from app.utils.verification import get_current_user
 from app.utils.crm_utils import ensure_crm_entry
 
@@ -201,6 +201,9 @@ async def chat_endpoint(kb_id: str, request: ChatRequest, customer_context: Opti
 
             # --- Determine Final Response Content & Type (Success Path) ---
             if cleaned_output is not None and cleaned_output.strip():
+                # Apply automatic handoff detection for insufficient answers
+                cleaned_output = auto_add_handoff_if_needed(cleaned_output)
+                
                 final_content = cleaned_output  # Start with the agent's cleaned output
                 response_type = "answer"
 
@@ -1516,19 +1519,27 @@ async def get_conversation_status(conversation_id: str):
             supabase.table("conversations")
             .select("status, customer_email")
             .eq("id", conversation_id)
-            .single()
             .execute()
         )
-        print("response.data------>", response.data["status"])
-
-        if not response.data:
+        
+        # Check if any rows were returned
+        if not response.data or len(response.data) == 0:
             raise HTTPException(
                 status_code=404,
                 detail=f"Conversation with ID {conversation_id} not found"
             )
 
-        return {"status": response.data["status"],"customer_email": response.data["customer_email"]}
+        conversation_data = response.data[0]
+        print("conversation_data------>", conversation_data)
 
+        return {
+            "status": conversation_data["status"],
+            "customer_email": conversation_data["customer_email"]
+        }
+
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 404)
+        raise
     except Exception as e:
         print(f"Error fetching conversation status: {e}")
         import traceback
