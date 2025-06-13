@@ -120,7 +120,12 @@ async def get_chat_history(conversation_id: str):
 
 
 @router.post("/agents/{kb_id}/chat", response_model=ChatResponse)
-async def chat_endpoint(kb_id: str, request: ChatRequest, customer_context: Optional[Dict[str, Any]] = None):
+async def chat_endpoint(
+    kb_id: str,
+    request: ChatRequest,
+    store_history: bool = Query(True, description="When false, skip persisting messages"),
+    customer_context: Optional[Dict[str, Any]] = None,
+):
     """
     HTTP endpoint for stateful, non-streaming chat interactions with an agent,
     maintaining conversation history using the database.
@@ -235,14 +240,15 @@ async def chat_endpoint(kb_id: str, request: ChatRequest, customer_context: Opti
         # --- Save Interaction to DB ---
         print(f"DEBUG: Attempting to save interaction for {kb_id}...")
         # Always save user message
-        save_user_success = db_manager.add_conversation_message(
-            kb_id, "human", user_message
-        )
-        if not save_user_success:
-            print(f"Warning: Failed to save user message to DB for kb_id: {kb_id}")
+        if store_history:
+            save_user_success = db_manager.add_conversation_message(
+                kb_id, "human", user_message
+            )
+            if not save_user_success:
+                print(f"Warning: Failed to save user message to DB for kb_id: {kb_id}")
 
         # Save AI message based on response_type and content
-        if response_type != "error":
+        if store_history and response_type != "error":
             # Determine content to save: use cleaned_output if it exists (it will contain the marker on handoff)
             # Otherwise, use final_content (which might be the generic error if cleaning failed)
             content_to_save = (
@@ -1253,7 +1259,7 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
                 .eq("id", conversation_id)
                 .execute()
             )
-            status = conversation_response.data[0]["status"] if conversation_response.data else "ai"
+            status = conversation_response.data[0]["status"]
             bot_id = conversation_response.data[0]["bot_id"] if conversation_response.data else None
 
             print("status------>", status)

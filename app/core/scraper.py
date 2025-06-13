@@ -278,11 +278,31 @@ Here is the content to clean and structure:
                 response = requests.post(
                     f"{self.api_base_url}/crawl",
                     json=payload,
-                    headers=self.headers
+                    headers=self.headers,
+                    timeout=30  # Add timeout
                 )
                 response.raise_for_status()
                 crawl_result = response.json()
                 logger.info(f"Crawl request response: {crawl_result}")
+            except requests.exceptions.HTTPError as e:
+                if response.status_code == 502:
+                    error_msg = "Firecrawl service is temporarily unavailable (502 Bad Gateway). Please try again later."
+                elif response.status_code == 503:
+                    error_msg = "Firecrawl service is temporarily down for maintenance (503 Service Unavailable). Please try again later."
+                elif response.status_code == 429:
+                    error_msg = "Rate limit exceeded. Please wait before trying again."
+                else:
+                    error_msg = f"HTTP error {response.status_code}: {str(e)}"
+                logger.error(f"HTTP error during crawl initiation: {error_msg}")
+                raise Exception(error_msg)
+            except requests.exceptions.Timeout:
+                error_msg = "Request to Firecrawl service timed out. The service may be experiencing high load."
+                logger.error(error_msg)
+                raise Exception(error_msg)
+            except requests.exceptions.ConnectionError:
+                error_msg = "Unable to connect to Firecrawl service. Please check your internet connection and try again."
+                logger.error(error_msg)
+                raise Exception(error_msg)
             except Exception as e:
                 logger.error(f"Failed to initiate crawl: {str(e)}")
                 raise
@@ -299,11 +319,29 @@ Here is the content to clean and structure:
                     logger.info("Checking crawl status...")
                     response = requests.get(
                         f"{self.api_base_url}/crawl/{crawl_id}",
-                        headers=self.headers
+                        headers=self.headers,
+                        timeout=30
                     )
                     response.raise_for_status()
                     crawl_status = response.json()
                     logger.info(f"Crawl status: {crawl_status.get('status')}")
+                except requests.exceptions.HTTPError as e:
+                    if response.status_code == 502:
+                        error_msg = "Firecrawl service is temporarily unavailable (502 Bad Gateway). Please try again later."
+                    elif response.status_code == 503:
+                        error_msg = "Firecrawl service is temporarily down for maintenance (503 Service Unavailable). Please try again later."
+                    else:
+                        error_msg = f"HTTP error {response.status_code} while checking crawl status: {str(e)}"
+                    logger.error(error_msg)
+                    raise Exception(error_msg)
+                except requests.exceptions.Timeout:
+                    error_msg = "Request to check crawl status timed out. The service may be experiencing high load."
+                    logger.error(error_msg)
+                    raise Exception(error_msg)
+                except requests.exceptions.ConnectionError:
+                    error_msg = "Unable to connect to Firecrawl service while checking status. Please check your internet connection."
+                    logger.error(error_msg)
+                    raise Exception(error_msg)
                 except Exception as e:
                     logger.error(f"Failed to check crawl status: {str(e)}")
                     raise

@@ -225,41 +225,34 @@ def create_agent_executor(
     
     # --- Format customer context into the prompt ---
     if customer_context:
-        customer_name = customer_context.get("customer_name", "None")
-        customer_email = customer_context.get("customer_email", "None")
-        customer_phone = customer_context.get("customer_phone", "None")
-        bot_name = customer_context.get("bot_name", "Assistant")
-        company_name = customer_context.get("company_name", "our company")
+        customer_name = customer_context.get("customer_name") or "None"
+        customer_email = customer_context.get("customer_email") or "None"
+        customer_phone = customer_context.get("customer_phone") or "None"
+        bot_name = customer_context.get("bot_name") or "Assistant"
+        company_name = customer_context.get("company_name") or "our company"
         
-        # Replace placeholders in the system prompt
-        system_prompt_template = system_prompt_template.format(
-            customer_name=customer_name,
-            customer_email=customer_email,
-            customer_phone=customer_phone,
-            bot_name=bot_name,
-            company_name=company_name,
-            tools="{tools}",  # Keep these placeholders for later formatting
-            tool_names="{tool_names}",
-            chat_history="{chat_history}",
-            input="{input}",
-            agent_scratchpad="{agent_scratchpad}"
-        )
+        # Ensure all values are strings to avoid TypeError in replace()
+        customer_name = str(customer_name) if customer_name is not None else "None"
+        customer_email = str(customer_email) if customer_email is not None else "None"
+        customer_phone = str(customer_phone) if customer_phone is not None else "None"
+        bot_name = str(bot_name) if bot_name is not None else "Assistant"
+        company_name = str(company_name) if company_name is not None else "our company"
+        
+        # Replace only the customer context placeholders, keep ReAct template placeholders intact
+        system_prompt_template = system_prompt_template.replace("{customer_name}", customer_name)
+        system_prompt_template = system_prompt_template.replace("{customer_email}", customer_email)
+        system_prompt_template = system_prompt_template.replace("{customer_phone}", customer_phone)
+        system_prompt_template = system_prompt_template.replace("{bot_name}", bot_name)
+        system_prompt_template = system_prompt_template.replace("{company_name}", company_name)
         
         print(f"Customer context provided - Name: {customer_name}, Email: {customer_email}, Bot: {bot_name}, Company: {company_name}")
     else:
-        # If no customer context, format with default values
-        system_prompt_template = system_prompt_template.format(
-            customer_name="None",
-            customer_email="None", 
-            customer_phone="None",
-            bot_name="Assistant",
-            company_name="our company",
-            tools="{tools}",
-            tool_names="{tool_names}",
-            chat_history="{chat_history}",
-            input="{input}",
-            agent_scratchpad="{agent_scratchpad}"
-        )
+        # If no customer context, replace with default values
+        system_prompt_template = system_prompt_template.replace("{customer_name}", "None")
+        system_prompt_template = system_prompt_template.replace("{customer_email}", "None")
+        system_prompt_template = system_prompt_template.replace("{customer_phone}", "None")
+        system_prompt_template = system_prompt_template.replace("{bot_name}", "Assistant")
+        system_prompt_template = system_prompt_template.replace("{company_name}", "our company")
     # --- End Format ---
 
     # 1. Get tools specific to this kb_id
@@ -274,11 +267,31 @@ def create_agent_executor(
     # Get tool names
     tool_names = [tool.name for tool in tools_list]
 
-    # 2. Create the prompt using the fetched template
-    # Ensure the prompt includes the memory placeholder
-    prompt = ChatPromptTemplate.from_template(
-        system_prompt_template
-    )  # Use fetched template
+    # 2. Create the ReAct-compatible prompt template
+    # Ensure the prompt includes all required ReAct variables
+    react_template = f"""{system_prompt_template}
+
+You have access to the following tools:
+
+{{tools}}
+
+Use the following format:
+
+Question: the input question you must answer
+Thought: you should always think about what to do
+Action: the action to take, should be one of [{{tool_names}}]
+Action Input: the input to the action
+Observation: the result of the action
+... (this Thought/Action/Action Input/Observation can repeat N times)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question
+
+Begin!
+
+Question: {{input}}
+Thought:{{agent_scratchpad}}"""
+
+    prompt = ChatPromptTemplate.from_template(react_template)
 
     # Ensure memory is initialized if not provided (remains necessary for prompt population)
     if memory is None:
