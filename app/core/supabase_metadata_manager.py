@@ -127,57 +127,115 @@ def delete_uploaded_files(kb_id: str) -> bool:
 
 
 # === CONVERSATION HISTORY FUNCTIONS ===
-def add_conversation_message(kb_id: str, message_type: str, content: str) -> bool:
-    """Adds a message to the conversation history for a given kb_id."""
+def add_conversation_message(conversation_id: str, message_type: str, content: str) -> bool:
+    """Adds a message to the conversation history for a given conversation_id.
+    
+    Args:
+        conversation_id: The unique conversation ID
+        message_type: Type of message - 'human', 'ai', or 'human_agent'
+        content: The message content
+    """
     if message_type not in ("human", "ai", "human_agent"):
         print(f"Error: Invalid message_type '{message_type}'. Must be 'human', 'ai', or 'human_agent'.")
         return False
     
     if not content or not content.strip():
-        print(f"Error: Cannot add empty content to conversation history for {kb_id}.")
+        print(f"Error: Cannot add empty content to conversation history for conversation {conversation_id}.")
         return False
 
+    # Map old message types to new roles for messages table
+    role_mapping = {
+        "human": "user",
+        "ai": "bot",
+        "human_agent": "human"
+    }
+    
     try:
-        supabase.table('conversation_history').insert({
-            'kb_id': kb_id,
-            'message_type': message_type,
+        supabase.table('messages').insert({
+            'conversation_id': conversation_id,
+            'role': role_mapping[message_type],
             'content': content
         }).execute()
         return True
     except Exception as e:
-        print(f"Error adding conversation message for {kb_id}: {e}")
+        print(f"Error adding conversation message for conversation {conversation_id}: {e}")
         return False
 
 
-def get_conversation_history(kb_id: str) -> List[Dict[str, Any]]:
-    """Retrieves conversation history for a given kb_id, ordered by timestamp."""
+def get_conversation_history(conversation_id: str) -> List[Dict[str, Any]]:
+    """Retrieves conversation history for a specific conversation_id, ordered by timestamp.
+    
+    Args:
+        conversation_id: The unique conversation ID
+        
+    Returns:
+        List of messages with role (mapped back to message_type), content, and timestamp
+    """
+    try:
+        result = (supabase.table('messages')
+                 .select('role, content, created_at')
+                 .eq('conversation_id', conversation_id)
+                 .order('created_at')  # ASC for chronological order
+                 .execute())
+        
+        # Map new roles back to old message types for backward compatibility
+        role_to_type_mapping = {
+            "user": "human",
+            "bot": "ai", 
+            "human": "human_agent"
+        }
+        
+        messages = []
+        for msg in (result.data if result.data else []):
+            messages.append({
+                'message_type': role_to_type_mapping.get(msg['role'], msg['role']),
+                'content': msg['content'],
+                'timestamp': msg['created_at']
+            })
+        
+        return messages
+    except Exception as e:
+        print(f"Error retrieving conversation history for conversation {conversation_id}: {e}")
+        return []
+
+
+def delete_conversation_history(conversation_id: str) -> bool:
+    """Deletes all messages associated with a specific conversation_id.
+    
+    Args:
+        conversation_id: The unique conversation ID
+    """
+    try:
+        result = (supabase.table('messages')
+                 .delete()
+                 .eq('conversation_id', conversation_id)
+                 .execute())
+        
+        rows_deleted = len(result.data) if result.data else 0
+        print(f"Deleted {rows_deleted} messages for conversation: {conversation_id}")
+        return True
+    except Exception as e:
+        print(f"Error deleting conversation history for conversation {conversation_id}: {e}")
+        return False
+
+
+# === LEGACY KB-BASED CONVERSATION FUNCTIONS (For backward compatibility) ===
+def get_conversation_history_by_kb(kb_id: str) -> List[Dict[str, Any]]:
+    """DEPRECATED: Legacy function that retrieves ALL conversations for a kb_id.
+    DO NOT USE - This mixes conversations from different users!
+    """
+    print(f"WARNING: get_conversation_history_by_kb is deprecated and causes privacy issues!")
     try:
         result = (supabase.table('conversation_history')
                  .select('message_type, content, timestamp')
                  .eq('kb_id', kb_id)
-                 .order('timestamp')  # ASC for chronological order
+                 .order('timestamp')
                  .execute())
         
         return result.data if result.data else []
     except Exception as e:
-        print(f"Error retrieving conversation history for {kb_id}: {e}")
+        print(f"Error in deprecated function get_conversation_history_by_kb: {e}")
         return []
-
-
-def delete_conversation_history(kb_id: str) -> bool:
-    """Deletes all conversation history messages associated with a specific kb_id."""
-    try:
-        result = (supabase.table('conversation_history')
-                 .delete()
-                 .eq('kb_id', kb_id)
-                 .execute())
-        
-        rows_deleted = len(result.data) if result.data else 0
-        print(f"Deleted {rows_deleted} conversation history records for KB: {kb_id}")
-        return True
-    except Exception as e:
-        print(f"Error deleting conversation history for {kb_id}: {e}")
-        return False
 
 
 # === KB UPDATE LOG FUNCTIONS ===

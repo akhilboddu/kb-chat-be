@@ -5,10 +5,14 @@ Handles batch processing and error handling for Cohere's embed-english-v3.0 mode
 
 import os
 import time
+import logging
 from typing import List, Optional, Dict, Any
 import cohere
 from cohere.errors import TooManyRequestsError, BadRequestError
-import logging
+from dotenv import load_dotenv
+
+# Load environment variables at module import time
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 

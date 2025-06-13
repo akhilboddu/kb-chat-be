@@ -21,6 +21,7 @@ class ChatResponse(BaseModel):
 class HumanResponseRequest(BaseModel):
     """Request body for submitting human response and potentially updating KB."""
 
+    conversation_id: str = Field(..., description="The conversation ID")
     human_response: str
     update_kb: bool = False  # Flag to indicate if KB should be updated
     kb_update_text: Optional[str] = None  # Optional text specifically for KB update
@@ -29,6 +30,7 @@ class HumanResponseRequest(BaseModel):
 class HumanChatRequest(BaseModel):
     """Request body for human agent chat response."""
 
+    conversation_id: str = Field(..., description="The conversation ID")
     message: str = Field(..., description="The human agent's response message")
 
 
@@ -54,7 +56,7 @@ class HistoryMessage(BaseModel):
 class ChatHistoryResponse(BaseModel):
     """Response model for retrieving conversation history."""
 
-    kb_id: str
+    conversation_id: str
     history: List[HistoryMessage]
 
 

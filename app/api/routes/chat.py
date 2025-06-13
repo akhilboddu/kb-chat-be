@@ -143,9 +143,10 @@ async def chat_endpoint(
 
     try:
         # --- Memory Management (Load from DB) ---
-        print(f"Loading conversation history for kb_id: {kb_id} from DB...")
-        db_history = db_manager.get_conversation_history(kb_id)
-        print(f"DB history: {db_history}")
+        print(f"Loading conversation history for conversation_id: {request.conversation_id} from DB...")
+        # Use conversation_id instead of kb_id to get conversation-specific history
+        db_history = db_manager.get_conversation_history(request.conversation_id)
+        print(f"DB history for conversation {request.conversation_id}: {db_history}")
 
         # Create a new memory instance for this request
         memory = ConversationBufferMemory(
@@ -238,14 +239,14 @@ async def chat_endpoint(
             cleaned_output = None  # Ensure it's treated as error for DB saving
 
         # --- Save Interaction to DB ---
-        print(f"DEBUG: Attempting to save interaction for {kb_id}...")
+        print(f"DEBUG: Attempting to save interaction for conversation {request.conversation_id}...")
         # Always save user message
         if store_history:
             save_user_success = db_manager.add_conversation_message(
-                kb_id, "human", user_message
+                request.conversation_id, "human", user_message
             )
             if not save_user_success:
-                print(f"Warning: Failed to save user message to DB for kb_id: {kb_id}")
+                print(f"Warning: Failed to save user message to DB for conversation: {request.conversation_id}")
 
         # Save AI message based on response_type and content
         if store_history and response_type != "error":
@@ -258,10 +259,10 @@ async def chat_endpoint(
                 f"DEBUG: Saving AI message. Type='{response_type}', Saved Content='{content_to_save}'"
             )
             save_ai_success = db_manager.add_conversation_message(
-                kb_id, "ai", content_to_save
+                request.conversation_id, "ai", content_to_save
             )
             if not save_ai_success:
-                print(f"Warning: Failed to save AI message to DB for kb_id: {kb_id}")
+                print(f"Warning: Failed to save AI message to DB for conversation: {request.conversation_id}")
         else:  # If response_type IS error
             print(
                 f"DEBUG: Skipping save for AI message due to response_type='{response_type}'."
@@ -288,31 +289,31 @@ async def chat_endpoint(
         )
 
 
-@router.post("/agents/{kb_id}/human_response", response_model=StatusResponse)
-async def human_response_endpoint(kb_id: str, request: HumanResponseRequest):
+@router.post("/conversations/human_response", response_model=StatusResponse)
+async def human_response_endpoint(request: HumanResponseRequest):
     """
     Receives a human response after a handoff, adds it to the conversation history,
     and optionally updates the KB.
     """
-    print(f"Received human response for kb_id: {kb_id}. Update KB: {request.update_kb}")
+    print(f"Received human response for conversation: {request.conversation_id}. Update KB: {request.update_kb}")
 
     # --- Add Human Agent response to conversation history FIRST ---
     # We do this regardless of whether KB is updated, to keep the chat flow intact.
     if request.human_response and request.human_response.strip():
-        print(f"Adding human agent response to history for KB {kb_id}...")
+        print(f"Adding human agent response to history for conversation {request.conversation_id}...")
         history_save_success = db_manager.add_conversation_message(
-            kb_id=kb_id,
+            conversation_id=request.conversation_id,
             message_type="human_agent",  # Differentiate from end-user ('human')
             content=request.human_response,
         )
         if not history_save_success:
             # Log a warning but don't necessarily fail the whole request
             print(
-                f"Warning: Failed to save human agent response to conversation history for KB {kb_id}. Continuing..."
+                f"Warning: Failed to save human agent response to conversation history for conversation {request.conversation_id}. Continuing..."
             )
     else:
         print(
-            f"No human agent response content provided to add to history for KB {kb_id}."
+            f"No human agent response content provided to add to history for conversation {request.conversation_id}."
         )
         # Decide if this should be an error or just proceed.
         # For now, proceed, but the frontend should ideally validate this.
@@ -320,6 +321,23 @@ async def human_response_endpoint(kb_id: str, request: HumanResponseRequest):
     # --- Handle KB Update (Optional) ---
     kb_update_message = "Knowledge base not updated."
     if request.update_kb:
+        # Get kb_id from the conversation
+        conversation_response = (
+            supabase.table("conversations")
+            .select("bot_id")
+            .eq("id", request.conversation_id)
+            .execute()
+        )
+        if not conversation_response.data:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        bot_id = conversation_response.data[0]["bot_id"]
+        bot_response = supabase.table("bots").select("kb_id").eq("id", bot_id).execute()
+        if not bot_response.data:
+            raise HTTPException(status_code=404, detail="Bot not found")
+        
+        kb_id = bot_response.data[0]["kb_id"]
+        
         print(f"Attempting to update KB {kb_id} with human-provided text...")
         try:
             # Determine which text to use for KB update
@@ -381,7 +399,7 @@ async def human_response_endpoint(kb_id: str, request: HumanResponseRequest):
     else:
         # If update_kb is false
         print(
-            f"Human response received for kb_id: {kb_id}. KB not updated (update_kb={request.update_kb})."
+            f"Human response received for conversation: {request.conversation_id}. KB not updated (update_kb={request.update_kb})."
         )
         # kb_update_message remains "Knowledge base not updated."
 
@@ -390,20 +408,20 @@ async def human_response_endpoint(kb_id: str, request: HumanResponseRequest):
     return StatusResponse(status="success", message=final_message)
 
 
-@router.post("/agents/{kb_id}/human-chat", response_model=StatusResponse)
-async def human_chat_endpoint(kb_id: str, request: HumanChatRequest):
+@router.post("/conversations/human-chat", response_model=StatusResponse)
+async def human_chat_endpoint(request: HumanChatRequest):
     """
     Endpoint for human agents to respond to conversations.
     This only adds the response to the chat history.
     """
-    print(f"Received human chat response for kb_id: {kb_id}")
+    print(f"Received human chat response for conversation: {request.conversation_id}")
 
     if not request.message or not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     # Add message to conversation history
     history_save_success = db_manager.add_conversation_message(
-        kb_id=kb_id, message_type="human_agent", content=request.message
+        conversation_id=request.conversation_id, message_type="human_agent", content=request.message
     )
 
     if not history_save_success:
@@ -485,16 +503,16 @@ async def human_knowledge_endpoint(kb_id: str, request: HumanKnowledgeRequest):
             )
 
 
-@router.get("/agents/{kb_id}/history", response_model=ChatHistoryResponse)
-async def get_chat_history_endpoint(kb_id: str):
+@router.get("/conversations/{conversation_id}/history", response_model=ChatHistoryResponse)
+async def get_chat_history_endpoint(conversation_id: str):
     """
-    Retrieves the conversation history for a specific agent/KB.
+    Retrieves the conversation history for a specific conversation.
     History is returned ordered by timestamp (oldest first).
     """
-    print(f"Received request to get conversation history for KB: {kb_id}")
+    print(f"Received request to get conversation history for conversation: {conversation_id}")
     try:
         # Retrieve history from the database manager
-        db_history_raw = db_manager.get_conversation_history(kb_id)
+        db_history_raw = db_manager.get_conversation_history(conversation_id)
 
         # Convert raw DB results (list of dicts) into HistoryMessage objects
         history_messages = [
@@ -506,16 +524,16 @@ async def get_chat_history_endpoint(kb_id: str):
             for msg in db_history_raw
         ]
 
-        print(f"Retrieved {len(history_messages)} messages for KB {kb_id} history.")
+        print(f"Retrieved {len(history_messages)} messages for conversation {conversation_id} history.")
 
-        return ChatHistoryResponse(kb_id=kb_id, history=history_messages)
+        return ChatHistoryResponse(conversation_id=conversation_id, history=history_messages)
 
     except Exception as e:
-        print(f"Error retrieving conversation history for KB {kb_id}: {e}")
+        print(f"Error retrieving conversation history for conversation {conversation_id}: {e}")
         import traceback
 
         traceback.print_exc()
-        # Consider if a 404 is more appropriate if kb_id potentially doesn't exist
+        # Consider if a 404 is more appropriate if conversation_id potentially doesn't exist
         # For now, assuming any error is a 500
         raise HTTPException(
             status_code=500, detail=f"Failed to retrieve conversation history: {str(e)}"
@@ -523,35 +541,35 @@ async def get_chat_history_endpoint(kb_id: str):
 
 
 @router.delete(
-    "/agents/{kb_id}/history",
+    "/conversations/{conversation_id}/history",
     response_model=StatusResponse,
     status_code=status.HTTP_200_OK,
 )
-async def delete_chat_history_endpoint(kb_id: str):
+async def delete_chat_history_endpoint(conversation_id: str):
     """
-    Deletes all stored conversation history for a specific agent/KB.
+    Deletes all stored conversation history for a specific conversation.
     """
-    print(f"Received request to DELETE conversation history for KB: {kb_id}")
+    print(f"Received request to DELETE conversation history for conversation: {conversation_id}")
     try:
         # Call the database manager function to delete history
-        success = db_manager.delete_conversation_history(kb_id)
+        success = db_manager.delete_conversation_history(conversation_id)
 
         if success:
             # Return a success status
             return StatusResponse(
                 status="success",
-                message=f"Conversation history for KB {kb_id} deleted successfully.",
+                message=f"Conversation history for conversation {conversation_id} deleted successfully.",
             )
         else:
             # If the DB function returns False, it indicates an internal error
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to delete conversation history for KB {kb_id} due to an internal error.",
+                detail=f"Failed to delete conversation history for conversation {conversation_id} due to an internal error.",
             )
 
     except Exception as e:
         # Catch any other unexpected errors
-        print(f"Unexpected error during history deletion for KB {kb_id}: {e}")
+        print(f"Unexpected error during history deletion for conversation {conversation_id}: {e}")
         import traceback
 
         traceback.print_exc()
@@ -569,70 +587,92 @@ async def list_conversations_endpoint():
     """
     print("Received request to list all conversations with handoff status")
     try:
-        # Get all available KBs
-        kb_info_list = kb_manager.list_kbs()
-
+        # Get all conversations from the database
+        conversations_response = supabase.table("conversations").select("*, bots(kb_id, name)").execute()
+        
         # Initialize response list
         conversations_list = []
-
-        # For each KB, fetch the conversation history and determine handoff status
-        for kb_info in kb_info_list:
-            kb_id = kb_info.get("kb_id")
-            kb_name = kb_info.get("name")
-
-            # Get conversation history for this KB
-            history = db_manager.get_conversation_history(kb_id)
-
+        
+        # Group conversations by kb_id
+        kb_conversations = {}
+        
+        for conv in conversations_response.data:
+            if not conv.get("bots") or not conv["bots"].get("kb_id"):
+                continue
+                
+            kb_id = conv["bots"]["kb_id"]
+            kb_name = conv["bots"].get("name", "Unknown KB")
+            
+            # Get conversation history for this specific conversation
+            history = db_manager.get_conversation_history(conv["id"])
+            
             # Skip if no history exists
             if not history or len(history) == 0:
                 continue
-
+            
             # Count total messages
             message_count = len(history)
-
+            
             # Get the last message for preview
             last_message = history[-1]
             last_message_timestamp = last_message.get(
                 "timestamp", datetime.datetime.now()
             )
             last_message_content = last_message.get("content", "")
-
+            
             # Create a short preview (first 50 chars)
             preview = (
                 last_message_content[:50] + "..."
                 if len(last_message_content) > 50
                 else last_message_content
             )
-
+            
             # Determine if handoff is needed
-            # Logic: If the last message is from the AI and contains handoff marker
             needs_attention = False
-            if last_message.get("message_type") == "ai":
+            if conv.get("status") == "human":
+                needs_attention = True
+            elif last_message.get("message_type") == "ai":
                 content = last_message.get("content", "")
                 if "(needs help)" in content:
                     needs_attention = True
-
-            # Create the conversation preview
+            
+            # Create conversation preview for this specific conversation
             conversation_preview = ConversationPreview(
                 last_message_timestamp=last_message_timestamp,
                 last_message_preview=preview,
                 message_count=message_count,
                 needs_human_attention=needs_attention,
             )
-
-            # Add to the response list
-            conversations_list.append(
-                KBConversationGroup(
-                    kb_id=kb_id, name=kb_name, conversation=conversation_preview
+            
+            # Group by kb_id for the response
+            if kb_id not in kb_conversations:
+                kb_conversations[kb_id] = {
+                    "kb_id": kb_id,
+                    "name": kb_name,
+                    "conversations": []
+                }
+            
+            kb_conversations[kb_id]["conversations"].append(conversation_preview)
+        
+        # Convert to response format (for now, just take the latest conversation per KB)
+        for kb_data in kb_conversations.values():
+            if kb_data["conversations"]:
+                # Sort by timestamp and get the most recent
+                latest_conv = max(kb_data["conversations"], key=lambda x: x.last_message_timestamp)
+                conversations_list.append(
+                    KBConversationGroup(
+                        kb_id=kb_data["kb_id"],
+                        name=kb_data["name"],
+                        conversation=latest_conv
+                    )
                 )
-            )
-
+        
         return ListConversationsResponse(conversations=conversations_list)
-
+        
     except Exception as e:
         print(f"Error listing conversations: {e}")
         import traceback
-
+        
         traceback.print_exc()
         raise HTTPException(
             status_code=500, detail=f"Failed to list conversations: {str(e)}"

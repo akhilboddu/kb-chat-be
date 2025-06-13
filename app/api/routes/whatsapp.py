@@ -544,8 +544,8 @@ async def whatsapp_webhook(request: Request):
                                     conversation_id=message_id
                                 )
 
-                                # Get conversation history
-                                db_history = db_manager.get_conversation_history(kb_id)
+                                # Get conversation history using conversation_id
+                                db_history = db_manager.get_conversation_history(conversation_id)
                                 
                                 # Create memory instance
                                 memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
@@ -589,8 +589,8 @@ async def whatsapp_webhook(request: Request):
                                     cleaned_output = auto_add_handoff_if_needed(cleaned_output)
                                     
                                     # Save messages to conversation history
-                                    db_manager.add_conversation_message(kb_id, 'human', message_content)
-                                    db_manager.add_conversation_message(kb_id, 'ai', cleaned_output)
+                                    db_manager.add_conversation_message(conversation_id, 'human', message_content)
+                                    db_manager.add_conversation_message(conversation_id, 'ai', cleaned_output)
 
                                     # Store the AI response message
                                     supabase.table("messages").insert({
