@@ -15,6 +15,7 @@ from typing import List, Optional
 from app.models.crm import CRMEntry, PaginatedCRMResponse
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
+from dateutil.parser import isoparse  # more tolerant ISO-8601 parser
 
 router = APIRouter(prefix="/bots", tags=["bots"])
 
@@ -145,7 +146,12 @@ async def create_demo_bot(
         
         if existing_bot.data:
             bot = existing_bot.data[0]
-            created_at = datetime.fromisoformat(bot['created_at'].replace('Z', '+00:00'))
+            try:
+                # Supabase may return timestamps with varying micro-second precision; use dateutil for robustness
+                created_at = isoparse(bot['created_at'])
+            except Exception:
+                # Fallback to naive isoformat parsing
+                created_at = datetime.fromisoformat(bot['created_at'].replace('Z', '+00:00'))
             one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
             
             if created_at < one_week_ago:
@@ -259,4 +265,148 @@ async def create_demo_bot(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to create demo bot: {str(e)}"
+        )
+
+
+@router.delete("/{bot_id}", response_model=StatusResponse)
+async def delete_bot(bot_id: str):
+    """
+    Delete a bot and all its associated knowledge base data.
+    
+    This endpoint will:
+    1. Get the bot's kb_id from the bots table
+    2. Delete all knowledge_base_documents for that kb_id
+    3. Delete the knowledge_bases entry for that kb_id
+    4. Delete the bot record itself
+    5. Clean up related data (conversations, messages, CRM entries, etc.)
+    """
+    try:
+        print(f"Starting deletion process for bot_id: {bot_id}")
+        
+        # First, get the bot and its kb_id
+        bot_response = supabase.table("bots").select("kb_id, name").eq("id", bot_id).execute()
+        
+        if not bot_response.data or len(bot_response.data) == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Bot with ID {bot_id} not found"
+            )
+        
+        kb_id = bot_response.data[0]["kb_id"]
+        bot_name = bot_response.data[0].get("name", "Unknown")
+        
+        print(f"Found bot '{bot_name}' with kb_id: {kb_id}")
+        
+        # Delete knowledge base using kb_manager (this handles both tables)
+        try:
+            kb_deleted = kb_manager.delete_kb(kb_id)
+            if kb_deleted:
+                print(f"Successfully deleted knowledge base: {kb_id}")
+            else:
+                print(f"Warning: kb_manager.delete_kb returned False for {kb_id}")
+        except Exception as kb_error:
+            print(f"Error deleting knowledge base {kb_id}: {str(kb_error)}")
+            # Continue with other deletions even if KB deletion fails
+        
+        # Delete related data from other tables
+        deleted_items = {}
+        
+        # Delete conversations and their messages
+        try:
+            conversations_response = supabase.table("conversations").select("id").eq("bot_id", bot_id).execute()
+            conversation_ids = [conv["id"] for conv in conversations_response.data or []]
+            
+            if conversation_ids:
+                # Delete messages for these conversations
+                for conv_id in conversation_ids:
+                    messages_delete = supabase.table("messages").delete().eq("conversation_id", conv_id).execute()
+                    deleted_items["messages"] = deleted_items.get("messages", 0) + len(messages_delete.data or [])
+                
+                # Delete conversations
+                conversations_delete = supabase.table("conversations").delete().eq("bot_id", bot_id).execute()
+                deleted_items["conversations"] = len(conversations_delete.data or [])
+            
+        except Exception as conv_error:
+            print(f"Error deleting conversations: {str(conv_error)}")
+        
+        # Delete CRM entries
+        try:
+            crm_delete = supabase.table("bot_crms").delete().eq("bot_id", bot_id).execute()
+            deleted_items["crm_entries"] = len(crm_delete.data or [])
+        except Exception as crm_error:
+            print(f"Error deleting CRM entries: {str(crm_error)}")
+        
+        # Delete knowledge sources
+        try:
+            knowledge_sources_delete = supabase.table("knowledge_sources").delete().eq("bot_id", bot_id).execute()
+            deleted_items["knowledge_sources"] = len(knowledge_sources_delete.data or [])
+        except Exception as ks_error:
+            print(f"Error deleting knowledge sources: {str(ks_error)}")
+        
+        # Delete WhatsApp configurations
+        try:
+            whatsapp_delete = supabase.table("whatsapp_configs").delete().eq("bot_id", bot_id).execute()
+            deleted_items["whatsapp_configs"] = len(whatsapp_delete.data or [])
+        except Exception as wa_error:
+            print(f"Error deleting WhatsApp configs: {str(wa_error)}")
+        
+        # Delete handover requests (via conversations)
+        try:
+            if conversation_ids:
+                for conv_id in conversation_ids:
+                    handover_delete = supabase.table("handover_requests").delete().eq("conversation_id", conv_id).execute()
+                    deleted_items["handover_requests"] = deleted_items.get("handover_requests", 0) + len(handover_delete.data or [])
+        except Exception as ho_error:
+            print(f"Error deleting handover requests: {str(ho_error)}")
+        
+        # Finally, delete the bot itself
+        try:
+            bot_delete = supabase.table("bots").delete().eq("id", bot_id).execute()
+            if not bot_delete.data:
+                raise Exception("Bot deletion returned no data")
+            deleted_items["bot"] = 1
+        except Exception as bot_error:
+            print(f"Error deleting bot: {str(bot_error)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to delete bot record: {str(bot_error)}"
+            )
+        
+        # Clean up SQLite metadata if it exists
+        try:
+            # This might not exist in the new system, but try anyway
+            db_manager.clear_conversation_history(kb_id)
+            print(f"Cleared SQLite conversation history for kb_id: {kb_id}")
+        except Exception as sqlite_error:
+            print(f"Note: SQLite cleanup failed (this may be expected): {str(sqlite_error)}")
+        
+        # Create summary message
+        summary_parts = [f"Bot '{bot_name}' and knowledge base '{kb_id}' deleted successfully"]
+        if deleted_items:
+            details = []
+            for item_type, count in deleted_items.items():
+                if count > 0:
+                    details.append(f"{count} {item_type}")
+            if details:
+                summary_parts.append(f"Also removed: {', '.join(details)}")
+        
+        summary_message = ". ".join(summary_parts) + "."
+        
+        print(f"Deletion completed: {summary_message}")
+        
+        return StatusResponse(
+            status="success",
+            message=summary_message
+        )
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        print(f"Error during bot deletion: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete bot: {str(e)}"
         )

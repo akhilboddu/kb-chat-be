@@ -51,18 +51,18 @@ The system is actively migrating from ChromaDB to Supabase Vector DB with Contex
 **Completed ✅**
 - Dependencies updated (removed ChromaDB, added Cohere + Anthropic)
 - Docker configurations updated
-- Supabase vector schema with 768-dim vectors (Cohere)
+- Supabase vector schema with 1024-dim vectors (Cohere)
 - Hybrid search function (55% vector + 45% BM25)
 - Cohere embeddings wrapper with batch processing
 - Contextualizer with Anthropic Claude + OpenAI fallback
+- Supabase KB Manager implementation
+- Factory module for backward compatibility (`kb_manager_factory.py`)
 
 **In Progress 🔄**
-- Supabase KB Manager implementation
-- Factory module for backward compatibility
+- Remove all legacy ChromaDB code paths
+- Data migration script to backfill historical Chroma collections into Supabase
 
 **Remaining 📋**
-- Remove all ChromaDB code paths
-- Data migration script
 - End-to-end testing
 - Documentation updates
 
@@ -74,7 +74,7 @@ The system is actively migrating from ChromaDB to Supabase Vector DB with Contex
 
 **Key Features**:
 - **Multi-tenant Collections**: Each agent gets its own ~~ChromaDB collection~~ **Supabase namespace** identified by `kb_id`
-- **Embedding-based Storage**: ~~Uses HuggingFace Sentence Transformers (`all-MiniLM-L6-v2`)~~ **Now uses Cohere `embed-english-v3.0`** for text embeddings (768 dimensions)
+- **Embedding-based Storage**: ~~Uses HuggingFace Sentence Transformers (`all-MiniLM-L6-v2`)~~ **Now uses Cohere `embed-english-v3.0`** for text embeddings (1024 dimensions)
 - **Contextual RAG**: Implements Anthropic's Contextual Retrieval approach for 40% better retrieval accuracy
 - **Hybrid Search**: Combines vector similarity (55%) with BM25 keyword search (45%) for optimal results
 - **Text Chunking**: Automatically chunks large text into manageable pieces for better retrieval
@@ -92,7 +92,7 @@ cleanup_duplicates(kb_id)  # Remove duplicate documents
 ```
 
 **New Dependencies**:
-- **Cohere**: For embeddings (768-dim) and optional reranking
+- **Cohere**: For embeddings (1024-dim) and optional reranking
 - **Anthropic**: For context generation (Claude 3 Haiku)
 - **Supabase**: Vector storage with pgvector extension
 
@@ -325,7 +325,7 @@ messages {
 -- Bot and integration management
 bots {
   id: uuid (primary key)
-  kb_id: text (links to ChromaDB)
+  kb_id: text (foreign key to knowledge_bases)
   name: text
   company: text
   user_id: uuid
@@ -418,7 +418,7 @@ knowledge_base_documents {
   document_id: text
   content: text  -- original chunk
   ctx_text: text  -- contextualized chunk
-  embedding: vector(768)  -- Cohere embeddings
+  embedding: vector(1024)  -- Cohere embeddings
   metadata: jsonb
   created_at: timestamptz
 }
