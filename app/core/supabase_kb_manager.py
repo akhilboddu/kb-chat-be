@@ -73,7 +73,10 @@ class KBManager:
         content_hash = hashlib.sha256(f"{kb_id}:{content}".encode()).hexdigest()[:16]
         return f"doc_{content_hash}"
     
-    def populate_kb(self, kb_collection: Dict[str, Any], text_chunks: List[str], knowledge_source: str = "manual") -> None:
+    def populate_kb(self, kb_collection: Dict[str, Any], text_chunks: List[str], 
+                    knowledge_source: str = "manual",
+                    source_name: Optional[str] = None,
+                    source_url: Optional[str] = None) -> None:
         """
         Populates a knowledge base with text chunks using Contextual RAG.
         
@@ -81,6 +84,8 @@ class KBManager:
             kb_collection: KB info dict (from create_or_get_kb)
             text_chunks: List of text chunks to add
             knowledge_source: Source of the knowledge (website, file, human conversation, manual)
+            source_name: Optional name of the source (e.g., filename, website title)
+            source_url: Optional URL of the source
         """
         kb_id = kb_collection['kb_id']
         
@@ -96,6 +101,7 @@ class KBManager:
         
         # Process chunks in batches
         documents_to_insert = []
+        timestamp = int(time.time() * 1000)
         
         for i, chunk in enumerate(valid_chunks):
             # Generate context for this chunk
@@ -113,7 +119,10 @@ class KBManager:
                     'ctx_text': ctx_text,
                     'embedding': embedding,
                     'metadata': json.dumps({'chunk_index': i}),
-                    'knowledge_source': knowledge_source
+                    'knowledge_source': knowledge_source,
+                    'source_type': knowledge_source,
+                    'source_name': source_name or f"{knowledge_source}_{timestamp}",
+                    'source_url': source_url
                 }
                 documents_to_insert.append(document_data)
         
@@ -130,7 +139,11 @@ class KBManager:
             except Exception as e:
                 print(f"Error inserting documents to KB {kb_id}: {e}")
     
-    def add_to_kb(self, kb_id: str, text_to_add: str, metadata: Optional[Dict[str, Any]] = None, knowledge_source: str = "manual") -> bool:
+    def add_to_kb(self, kb_id: str, text_to_add: str, 
+                  metadata: Optional[Dict[str, Any]] = None, 
+                  knowledge_source: str = "manual",
+                  source_name: Optional[str] = None,
+                  source_url: Optional[str] = None) -> bool:
         """
         Adds text to a knowledge base with contextualization and optional metadata.
         
@@ -139,6 +152,8 @@ class KBManager:
             text_to_add: Text content to add
             metadata: Optional metadata dictionary
             knowledge_source: Source of the knowledge (website, file, human conversation, manual)
+            source_name: Optional name of the source (e.g., filename, website title)
+            source_url: Optional URL of the source
             
         Returns:
             Success status
@@ -188,7 +203,10 @@ class KBManager:
                     'ctx_text': ctx_text,
                     'embedding': embedding,
                     'metadata': json.dumps(doc_metadata),
-                    'knowledge_source': knowledge_source
+                    'knowledge_source': knowledge_source,
+                    'source_type': knowledge_source,
+                    'source_name': source_name or f"{knowledge_source}_{timestamp}",
+                    'source_url': source_url
                 }
                 documents_to_insert.append(document_data)
         

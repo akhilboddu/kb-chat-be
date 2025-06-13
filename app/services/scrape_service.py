@@ -163,7 +163,19 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
         )
 
         # 4. Add text to Knowledge Base
-        add_success = kb_manager.add_to_kb(kb_id, text_to_add, knowledge_source="website")
+        # Extract domain name for source_name
+        from urllib.parse import urlparse
+        parsed_url = urlparse(url)
+        source_name = f"{parsed_url.netloc} - {pages_scraped_count} pages"
+        
+        add_success = kb_manager.add_to_kb(
+            kb_id, 
+            text_to_add, 
+            knowledge_source="website",
+            source_name=source_name,
+            source_url=url,
+            metadata={"pages_scraped": pages_scraped_count}
+        )
         if add_success:
             logger.info(
                 f"[Background Task] Successfully populated KB '{kb_id}' with scraped content from URL '{url}'."

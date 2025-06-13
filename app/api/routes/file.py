@@ -84,7 +84,13 @@ async def upload_to_kb(kb_id: str, files: List[UploadFile] = File(...)):
             f"Adding parsed text from {file.filename} to KB {kb_id}..."
         )  # Simplified log
         try:
-            success = kb_manager.add_to_kb(kb_id, text_to_add, knowledge_source="file")
+            success = kb_manager.add_to_kb(
+                kb_id, 
+                text_to_add, 
+                knowledge_source="file",
+                source_name=file.filename,
+                metadata={"file_size": file_size, "content_type": file.content_type}
+            )
             if success:
                 # Simplified message, as structuring is now part of parsing for PDFs
                 parsed_as = "Markdown" if file_extension == ".pdf" else "text"

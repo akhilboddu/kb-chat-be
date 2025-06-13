@@ -339,11 +339,14 @@ async def human_response_endpoint(kb_id: str, request: HumanResponseRequest):
                 # Note: We still return success below because the response *was* received and added to history.
             else:
                 # Use the existing KBManager function to add the response, passing metadata
+                from datetime import datetime
+                source_name = f"Human response - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
                 success = kb_manager.add_to_kb(
                     kb_id=kb_id,
                     text_to_add=text_for_kb,
                     metadata={"source": "human_verified"},
-                    knowledge_source="human conversation"
+                    knowledge_source="human conversation",
+                    source_name=source_name
                 )
                 if success:
                     print(f"Successfully updated KB {kb_id} with human response.")
@@ -431,11 +434,14 @@ async def human_knowledge_endpoint(kb_id: str, request: HumanKnowledgeRequest):
             metadata_dict["conversation_id"] = request.source_conversation_id
 
         # Add to knowledge base with potentially filtered metadata
+        from datetime import datetime
+        source_name = f"Chat verification - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         success = kb_manager.add_to_kb(
             kb_id=kb_id,
             text_to_add=request.knowledge_text,
             metadata=metadata_dict,  # Pass the constructed dictionary
-            knowledge_source="human conversation"
+            knowledge_source="human conversation",
+            source_name=source_name
         )
 
         if not success:

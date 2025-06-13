@@ -49,7 +49,14 @@ async def bot_knowledge_endpoint(bot_id: str, request: AddKnowledgeRequest):
         kb_id = bot_response.data[0]["kb_id"]
 
         # Add to knowledge base with metadata
-        success = kb_manager.add_to_kb(kb_id=kb_id, text_to_add=request.knowledge_text, knowledge_source="human conversation")
+        from datetime import datetime
+        source_name = f"Human input - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        success = kb_manager.add_to_kb(
+            kb_id=kb_id, 
+            text_to_add=request.knowledge_text, 
+            knowledge_source="human conversation",
+            source_name=source_name
+        )
 
         if not success:
             print(f"kb_manager.add_to_kb returned False for KB {kb_id}")
