@@ -8,6 +8,7 @@ celery_app = Celery(
     "kb_tasks",
     broker=os.getenv("CELERY_BROKER_URL", os.getenv("REDIS_URL")),
     backend=os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/1"),
+    include=['app.tasks.scrape', 'app.tasks.upload', 'app.tasks.optimize']
 )
 
 # Enhanced configuration with timeouts and memory limits
@@ -24,6 +25,7 @@ celery_app.conf.update(
     task_queues=(
         Queue('scrape', routing_key='scrape'),
         Queue('upload', routing_key='upload'),
+        Queue('optimize', routing_key='optimize'),
     ),
     # Minimal concurrency to prevent connection exhaustion
     worker_concurrency=1,  # Only 1 concurrent task per worker (reduced from 2)

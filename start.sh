@@ -133,6 +133,16 @@ if [[ "${START_CELERY:-false}" == "true" ]]; then
         echo "Upload worker started with PID: $UPLOAD_WORKER_PID"
     fi
     
+    if is_running "celery.*worker.*-Q optimize"; then
+        echo "Optimize worker is already running, skipping..."
+    else
+        # Start optimize worker in background
+        echo "Starting optimize worker..."
+        ./venv/bin/celery -A app.worker.celery_app worker -Q optimize --loglevel=info -n optimize@%h --concurrency=1 &
+        OPTIMIZE_WORKER_PID=$!
+        echo "Optimize worker started with PID: $OPTIMIZE_WORKER_PID"
+    fi
+    
     # Optionally start Flower for monitoring
     if [[ "${START_FLOWER:-false}" == "true" ]]; then
         echo "🌸 Starting Flower monitoring dashboard..."
@@ -144,6 +154,7 @@ if [[ "${START_CELERY:-false}" == "true" ]]; then
     # Store PIDs for cleanup
     [[ -n "$SCRAPE_WORKER_PID" ]] && echo "$SCRAPE_WORKER_PID" > .celery_scrape_worker.pid
     [[ -n "$UPLOAD_WORKER_PID" ]] && echo "$UPLOAD_WORKER_PID" > .celery_upload_worker.pid
+    [[ -n "$OPTIMIZE_WORKER_PID" ]] && echo "$OPTIMIZE_WORKER_PID" > .celery_optimize_worker.pid
     [[ -n "$FLOWER_PID" ]] && echo "$FLOWER_PID" > .celery_flower.pid
     
     # Function to cleanup workers on exit
@@ -151,6 +162,7 @@ if [[ "${START_CELERY:-false}" == "true" ]]; then
         echo "🧹 Cleaning up background processes..."
         [[ -n "$SCRAPE_WORKER_PID" ]] && kill $SCRAPE_WORKER_PID 2>/dev/null || true
         [[ -n "$UPLOAD_WORKER_PID" ]] && kill $UPLOAD_WORKER_PID 2>/dev/null || true
+        [[ -n "$OPTIMIZE_WORKER_PID" ]] && kill $OPTIMIZE_WORKER_PID 2>/dev/null || true
         [[ -n "$FLOWER_PID" ]] && kill $FLOWER_PID 2>/dev/null || true
         rm -f .celery_*.pid
     }

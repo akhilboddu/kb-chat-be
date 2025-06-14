@@ -12,6 +12,8 @@ from datetime import datetime
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 import asyncio
+from uuid import uuid4
+from celery.result import AsyncResult
 
 router = APIRouter(prefix="/agents", tags=["knowledge_base"])
 
@@ -179,9 +181,8 @@ async def delete_source(agent_id: str, source_name: str):
         "chunks_removed": chunks_removed
     }
 
-@router.post("/{agent_id}/optimize")
-async def optimize_knowledge_base(agent_id: str):
-    """AI-powered knowledge base optimization to remove duplicates, merge similar content, and improve conciseness"""
+# NOTE: Internal heavy optimiser used by Celery – **do not expose as HTTP route**
+async def _optimize_kb_internal(agent_id: str):
     try:
         # agent_id is the kb_id
         kb_id = agent_id
@@ -475,4 +476,53 @@ IMPORTANT: Focus on creating one comprehensive chunk that captures all the essen
         print(f"Error in AI merging: {str(e)}")
     
     # If AI merging fails, return the first document
-    return docs[0] 
+    return docs[0]
+
+# ---------------------------------------------------------------------------
+# New asynchronous endpoint that merely enqueues the Celery job and returns a
+# task identifier that the front-end can poll.  This prevents long-running
+# optimisation from blocking the API worker.
+# ---------------------------------------------------------------------------
+
+@router.post("/{agent_id}/optimize")
+async def optimize_knowledge_base(agent_id: str, body: Dict[str, Any] = Body(None)):
+    """Enqueue optimisation job and return task metadata."""
+
+    similarity_threshold = body.get("similarity_threshold", 0.85) if body else 0.85
+
+    # Create DB job row (if table exists)
+    task_id = str(uuid4())
+    try:
+        supabase.table("kb_optimization_jobs").insert({
+            "id": task_id,
+            "kb_id": agent_id,
+            "status": "queued",
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }).execute()
+    except Exception as exc:
+        # Table might not exist yet – continue without DB persistence
+        print(f"Warning: could not insert optimisation job row: {exc}")
+
+    # Send Celery task (import lazily to avoid circular import)
+    from app.tasks.optimize import run_optimize_task  # noqa: WPS433
+    run_optimize_task.apply_async(args=[agent_id], kwargs={"threshold": similarity_threshold}, task_id=task_id, routing_key="optimize")
+
+    return {
+        "status": "queued",
+        "task_id": task_id,
+        "message": "Optimisation started – polling status via /optimize/status/{task_id}"
+    }
+
+@router.get("/{agent_id}/optimize/status/{task_id}")
+async def get_optimize_status(agent_id: str, task_id: str):
+    """Return optimisation job status and, if completed, statistics."""
+    try:
+        row = supabase.table("kb_optimization_jobs").select("*").eq("id", task_id).single().execute()
+        if row.data:
+            return row.data
+    except Exception:
+        pass  # Table might not yet exist – fallback to Celery result backend
+
+    result = AsyncResult(task_id)
+    return {"status": result.status.lower(), "task_id": task_id} 
