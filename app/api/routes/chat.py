@@ -111,7 +111,14 @@ async def get_chat_history(conversation_id: str):
         data = conversation_response.data
         response = []
         for dat in data:
-            response.append({"id": dat["id"], "role": dat["role"], "message": dat["content"], "reply_to_message_id": dat["reply_to_message_id"], "created_at": dat["created_at"]})
+            response.append({
+                "id": dat["id"], 
+                "role": dat["role"], 
+                "message": dat["content"], 
+                "reply_to_message_id": dat["reply_to_message_id"], 
+                "timestamp": dat["created_at"],  # Use timestamp instead of created_at for consistency
+                "status": dat.get("status")  # Include status field for handoff indicators
+            })
           
         return response
     except Exception as e:
@@ -701,12 +708,27 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
                 "conversation_id": request.conversation_id,
                 "role": "user",
                 "content": request.message,
+                "reply_to_message_id": request.reply_to_message_id,
             }
         )
         .execute()
     )
 
-  
+    # Broadcast the user message to all connected clients
+    if request.conversation_id in active_connections and add_user_message_response.data:
+        user_message_id = add_user_message_response.data[0]["id"]
+        for connection in active_connections[request.conversation_id]:
+            try:
+                await connection.send_json({
+                    "type": "message",
+                    "id": user_message_id,
+                    "content": request.message,
+                    "role": "user",
+                    "reply_to_message_id": request.reply_to_message_id,
+                    "timestamp": datetime.now().isoformat()
+                })
+            except Exception as e:
+                print(f"Error sending user message to websocket: {e}")
 
     response = supabase.table("bots").select("*").eq("id", bot_id).execute()
     bots_data = response.data[0]
@@ -764,10 +786,15 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
                 "id", request.conversation_id
             ).execute()
     # now use all logic from /agents/{kb_id}/chat endpoint
-    response = await chat_endpoint(kb_id, request, customer_context=customer_context if 'customer_context' in locals() else None)
+    response = await chat_endpoint(
+        kb_id,
+        request,
+        store_history=False,  # Prevent duplicate DB insert – we already saved the user row above
+        customer_context=customer_context if 'customer_context' in locals() else None,
+    )
 
     # save user's message and bot's response to supabase
-    supabase.table("messages").insert(
+    bot_message_response = supabase.table("messages").insert(
         {
             "conversation_id": request.conversation_id,
             "role": "bot",
@@ -779,10 +806,12 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     if request.conversation_id in active_connections:
         print(f"Broadcasting to {len(active_connections[request.conversation_id])} connections for conversation_id {request.conversation_id}")
         content = response["content"] if isinstance(response, dict) else getattr(response, "content", "")
+        message_id = bot_message_response.data[0]["id"] if bot_message_response.data else None
         for connection in active_connections[request.conversation_id]:
             try:
                 await connection.send_json({
                     "type": "message",
+                    "id": message_id,  # Add the DB id for dedupe
                     "content": content,
                     "role": "bot",
                     "timestamp": datetime.now().isoformat()
@@ -1315,10 +1344,26 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
 
             if status == "human":
                 if role == "human":
-                    # Message from agent
+                    # Message from agent - handle_human_chat will save to DB
                     result = await handle_human_chat(conversation_id, message, reply_to_message_id=reply_to_message_id)
-                    broadcast_role = "human"
-                    content = result['content']
+                    
+                    # Broadcast the human message manually since handle_human_chat doesn't do it
+                    message_id = result.get('id')
+                    for ws in list(active_connections.get(conversation_id, [])):
+                        try:
+                            await ws.send_json({
+                                "type": "message",
+                                "id": message_id,
+                                "content": message,
+                                "role": "human",
+                                "reply_to_message_id": reply_to_message_id,
+                                "timestamp": datetime.utcnow().isoformat()
+                            })
+                        except Exception as e:
+                            print(f"Error sending human message to websocket: {e}")
+                            active_connections[conversation_id].remove(ws)
+                            if not active_connections[conversation_id]:
+                                del active_connections[conversation_id]
 
                     # --- NEW: Check if widget user is online, send email if not ---
                     # Fetch conversation details
@@ -1357,11 +1402,27 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
                                 )
                     # --- END NEW ---
                 else:
-                    # Message from user
+                    # Message from user - handle_user_chat will save to DB
                     print("handling user chat------>", message)
                     result = await handle_user_chat(conversation_id, message, reply_to_message_id=reply_to_message_id)
-                    broadcast_role = "user"
-                    content = result['content']
+                    
+                    # Broadcast the user message manually since handle_user_chat doesn't do it
+                    message_id = result.get('id')
+                    for ws in list(active_connections.get(conversation_id, [])):
+                        try:
+                            await ws.send_json({
+                                "type": "message",
+                                "id": message_id,
+                                "content": message,
+                                "role": "user",
+                                "reply_to_message_id": reply_to_message_id,
+                                "timestamp": datetime.utcnow().isoformat()
+                            })
+                        except Exception as e:
+                            print(f"Error sending user message to websocket: {e}")
+                            active_connections[conversation_id].remove(ws)
+                            if not active_connections[conversation_id]:
+                                del active_connections[conversation_id]
 
                     # Check if bot is online and send email notification if not
                     client = redisConnection.client
@@ -1388,58 +1449,18 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
                                     company_email
                                 )
 
-                # Broadcast to all clients
-                for ws in list(active_connections.get(conversation_id, [])):
-                    try:
-                        await ws.send_json({
-                            "type": "message",
-                            "content": content,
-                            "role": broadcast_role,
-                            "reply_to_message_id": reply_to_message_id,
-                            "timestamp": datetime.utcnow().isoformat()
-                        })
-                    except Exception as e:
-                        print(f"Error sending message to websocket: {e}")
-                        active_connections[conversation_id].remove(ws)
-                        if not active_connections[conversation_id]:
-                            del active_connections[conversation_id]
+                # Note: bot_chat_endpoint will handle broadcasting both user and bot messages with proper IDs
             else:
                 # Handle as AI message
                 from app.models.chat import ChatRequest
-                # Save the user's message and broadcast it to all clients
-                #user_message_data = await handle_user_chat(conversation_id, message, reply_to_message_id=reply_to_message_id)
-                for ws in list(active_connections.get(conversation_id, [])):
-                    try:
-                        await ws.send_json({
-                            "type": "message",
-                            "content": message,
-                            "role": "user",
-                            "reply_to_message_id": reply_to_message_id,
-                            "timestamp": datetime.utcnow().isoformat()
-                        })
-                    except Exception as e:
-                        print(f"Error sending user message to websocket: {e}")
-                        active_connections[conversation_id].remove(ws)
-                        if not active_connections[conversation_id]:
-                            del active_connections[conversation_id]
+                # bot_chat_endpoint will handle saving the user message and broadcasting bot response
                 chat_request = ChatRequest(
                     conversation_id=conversation_id,
-                    message=message
+                    message=message,
+                    reply_to_message_id=reply_to_message_id
                 )
                 print("chat_request------>", chat_request)
-                response = await bot_chat_endpoint(bot_id, chat_request)
-                # Broadcast to all clients (including sender)
-                for ws in list(active_connections.get(conversation_id, [])):
-                    try:
-                        print("sending message to websocket------>", response.content)
-                        await ws.send_json({
-                            "type": "message",
-                            "content": response.content,
-                            "role": "bot",
-                            "reply_to_message_id": reply_to_message_id
-                        })
-                    except Exception as e:
-                        print(f"Error sending message to websocket: {e}")
+                response = await bot_chat_endpoint(bot_id, chat_request)  # bot_chat_endpoint already uses store_history=False internally
                
     except WebSocketDisconnect:
         print(f"WebSocket disconnected for conversation {conversation_id}")
