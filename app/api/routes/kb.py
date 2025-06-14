@@ -136,16 +136,47 @@ async def delete_source(agent_id: str, source_name: str):
     """Delete all chunks from a specific source"""
     kb_id = agent_id
     
+    # Delete documents from knowledge_base_documents
     result = supabase.table("knowledge_base_documents")\
         .delete()\
         .eq("kb_id", kb_id)\
         .eq("source_name", source_name)\
         .execute()
     
+    chunks_removed = len(result.data or [])
+    
+    # Also clean up the knowledge_sources table
+    # First, find the bot_id from the kb_id
+    try:
+        bot_response = supabase.table("bots").select("id").eq("kb_id", kb_id).execute()
+        if bot_response.data and len(bot_response.data) > 0:
+            bot_id = bot_response.data[0]["id"]
+            
+            # Delete from knowledge_sources table
+            # The knowledge_sources table stores source info differently, so we need to match by content pattern
+            sources_response = supabase.table("knowledge_sources")\
+                .select("*")\
+                .eq("bot_id", bot_id)\
+                .execute()
+            
+            if sources_response.data:
+                for source in sources_response.data:
+                    # Check if this source entry matches our deleted source
+                    content = source.get("content", "")
+                    if source_name in content:
+                        supabase.table("knowledge_sources")\
+                            .delete()\
+                            .eq("id", source["id"])\
+                            .execute()
+                        print(f"Cleaned up knowledge_sources entry for {source_name}")
+    except Exception as e:
+        print(f"Warning: Failed to clean up knowledge_sources table: {str(e)}")
+        # Don't fail the whole operation if knowledge_sources cleanup fails
+    
     return {
         "status": "deleted", 
         "source_name": source_name,
-        "chunks_removed": len(result.data or [])
+        "chunks_removed": chunks_removed
     }
 
 @router.post("/{agent_id}/optimize")

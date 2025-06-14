@@ -9,6 +9,16 @@
 
 set -e
 
+# Load environment variables from .env file if it exists
+if [[ -f .env ]]; then
+  echo "Loading environment variables from .env file..."
+  set -a  # automatically export all variables
+  source .env
+  set +a  # stop automatically exporting
+else
+  echo "No .env file found, using system environment variables"
+fi
+
 # By default we spin up redis using docker-compose. Set SKIP_REDIS=true to skip.
 if [[ "${SKIP_REDIS:-false}" != "true" ]]; then
   # Only attempt if docker-compose is available
