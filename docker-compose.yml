@@ -39,6 +39,66 @@ services:
 
     networks:
       - chatwise_net
+
+  celery-worker-scrape:
+    build: .
+    image: chatwise-api
+    command: celery -A app.worker.celery_app worker -Q scrape -c 4 --loglevel=info
+    environment:
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: 
+      - chatwise_net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  celery-worker-upload:
+    build: .
+    image: chatwise-api
+    command: celery -A app.worker.celery_app worker -Q upload -c 4 --loglevel=info
+    environment:
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: 
+      - chatwise_net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # Optional: Flower for monitoring
+  flower:
+    build: .
+    image: chatwise-api
+    command: celery -A app.worker.celery_app flower --port=5555
+    ports:
+      - "5555:5555"
+    environment:
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    networks: 
+      - chatwise_net
+
 volumes:
   huggingface_cache:
     name: huggingface_cache

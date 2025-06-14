@@ -8,6 +8,7 @@ from app.core import supabase_metadata_manager as db_manager, kb_manager, file_p
 from app.models.base import StatusResponse
 from app.models.file import ListFilesResponse, UploadedFileInfo, FileUploadStatusResponse
 from app.services.file_upload_service import process_files_background
+from app.tasks.upload import run_upload_task
 
 router = APIRouter(tags=["files"])
 
@@ -68,6 +69,18 @@ async def upload_to_kb(
     
     print(f"Initializing upload status for KB {kb_id} with {len(file_data_list)} files")
     
+    # Check if we should use Celery
+    use_celery = os.getenv("USE_CELERY", "true").lower() == "true"
+    
+    if use_celery:
+        # Queue task with Celery
+        result = run_upload_task.apply_async(
+            args=[kb_id, file_data_list, failed_files]
+        )
+        # Add Celery task ID to status
+        initial_status["celery_id"] = result.id
+        print(f"Queued upload task with Celery ID: {result.id}")
+    
     # Update initial status and ensure it succeeds
     status_updated = db_manager.update_file_upload_status(kb_id, initial_status)
     if not status_updated:
@@ -79,20 +92,23 @@ async def upload_to_kb(
     
     print(f"Successfully initialized upload status for KB {kb_id}")
     
-    # Run the background processing in a separate thread to avoid blocking the event loop
-    async def _run_in_thread():
-        await asyncio.to_thread(
-            lambda: asyncio.run(
-                process_files_background(
-                    kb_id=kb_id,
-                    file_data_list=file_data_list,
-                    initial_failed_files=failed_files
+    # If not using Celery, use asyncio as fallback
+    if not use_celery:
+        # Run the background processing in a separate thread to avoid blocking the event loop
+        async def _run_in_thread():
+            await asyncio.to_thread(
+                lambda: asyncio.run(
+                    process_files_background(
+                        kb_id=kb_id,
+                        file_data_list=file_data_list,
+                        initial_failed_files=failed_files
+                    )
                 )
             )
-        )
 
-    # Fire and forget using asyncio (non-blocking)
-    asyncio.create_task(_run_in_thread())
+        # Fire and forget using asyncio (non-blocking)
+        asyncio.create_task(_run_in_thread())
+        print("Using asyncio for file processing (Celery disabled)")
     
     return StatusResponse(
         status="processing",

@@ -20,14 +20,23 @@ This is a sophisticated multi-tenant AI sales agent backend built with FastAPI t
 │  │ (Supabase)  │ │(Supabase+SQL│ │ (LangChain) │ │(Playwright)│ │ Chat Server │ │Status│ │
 │  └─────────────┘ └─────────────┘ └─────────────┘ └───────────┘ └─────────────┘ └──────┘ │
 ├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                             Background Task Processing                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────────────┐   │
+│  │ Celery Workers                                                                   │   │
+│  │ ┌──────────────┐ ┌──────────────┐    Redis Message Broker                      │   │
+│  │ │ Scrape Queue │ │ Upload Queue │ ← ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─                   │   │
+│  │ │ (4 workers)  │ │ (4 workers)  │    Task Results Backend                      │   │
+│  │ └──────────────┘ └──────────────┘                                              │   │
+│  └─────────────────────────────────────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
 │                                Data Storage                                             │
 │  ┌─────────────┐ ┌─────────────┐ ┌─────────────────────────────┐ ┌─────────────┐        │
 │  │ Supabase    │ │  Supabase   │ │        SQLite               │ │   Redis     │        │
 │  │ Vector DB   │ │• Conversations│ │ • Agent config             │ │• Bot Status │        │
 │  │• Embeddings │ │• Messages    │ │ • Local metadata           │ │• User Status│        │
 │  │• Contextual │ │• User Auth   │ │ • Development data         │ │• Sessions   │        │
-│  │  RAG        │ │• CRM Data    │ │                            │ │             │        │
-│  │• Hybrid     │ │• Integrations│ │                            │ │             │        │
+│  │  RAG        │ │• CRM Data    │ │                            │ │• Task Queue │        │
+│  │• Hybrid     │ │• Integrations│ │                            │ │• Task Results│       │
 │  │  Search     │ │              │ │                            │ │             │        │
 │  └─────────────┘ └─────────────┘ └─────────────────────────────┘ └─────────────┘        │
 ├─────────────────────────────────────────────────────────────────────────────────────────┤
@@ -215,6 +224,131 @@ set_bot_online(bot_id)  # Mark bot as online
 get_bot_status(bot_id)  # Check if bot is online
 set_user_online(user_email, bot_id)  # Mark user as online
 get_user_status(user_email, bot_id)  # Check user status
+```
+
+### 8. Celery Worker System (`app/worker/`)
+
+**Purpose**: Handles CPU-intensive background tasks asynchronously to keep the API responsive.
+
+**Architecture**:
+- **Message Broker**: Redis-based task queue (channel 0)
+- **Result Backend**: Redis-based result storage (channel 1)
+- **Worker Queues**: Separate queues for scraping and file upload tasks
+- **Concurrency**: 4 workers per queue for parallel processing
+- **Memory Limits**: 500MB per worker with automatic recycling
+- **Task Retries**: Exponential backoff with jitter for failed tasks
+
+**Key Components**:
+
+#### Worker Configuration (`celery_app.py`)
+```python
+celery_app = Celery(
+    "kb_tasks",
+    broker=CELERY_BROKER_URL,  # redis://redis:6379/0
+    backend=CELERY_RESULT_BACKEND,  # redis://redis:6379/1
+)
+
+# Worker settings
+task_soft_time_limit=300  # 5 min soft limit
+task_time_limit=600       # 10 min hard limit
+worker_max_tasks_per_child=50  # Recycle after 50 tasks
+worker_max_memory_per_child=512000  # 500MB limit
+```
+
+#### Celery Tasks (`app/tasks/`)
+- **`scrape.py`**: Web scraping tasks
+  - `run_scrape_task(kb_id, url, max_pages)` - Scrapes websites and populates KB
+  - Runs async code in sync context using `asyncio.run()`
+  - Includes correlation ID tracking for debugging
+
+- **`upload.py`**: File upload processing ✅
+  - `run_upload_task(kb_id, file_data_list, initial_failed_files)` - Processes uploaded files
+  - Handles PDF, DOCX, CSV, TXT, MD, XLSX processing in background
+  - Batch processing for multiple files with progress tracking
+  - Runs async code in sync context using `asyncio.run()`
+
+#### Production Features
+- **Health Monitoring**: `/health/workers` endpoint for worker status
+- **Structured Logging**: JSON logs with correlation IDs
+- **Memory Monitoring**: Tracks worker memory usage
+- **Graceful Shutdown**: Handles SIGTERM for clean container restarts
+- **Task Tracking**: Celery task IDs stored in database for status checks
+- **Flower Dashboard**: Optional monitoring UI on port 5555
+
+**Deployment**:
+```yaml
+# docker-compose.yml
+celery-worker-scrape:
+  image: chatwise-api
+  command: celery -A app.worker.celery_app worker -Q scrape -c 4
+  deploy:
+    resources:
+      limits:
+        memory: 512M
+
+celery-worker-upload:
+  image: chatwise-api  
+  command: celery -A app.worker.celery_app worker -Q upload -c 4
+  deploy:
+    resources:
+      limits:
+        memory: 512M
+```
+
+**Usage**:
+```python
+# Enqueue a scraping task
+from app.tasks.scrape import run_scrape_task
+result = run_scrape_task.apply_async(args=[kb_id, url, max_pages])
+task_id = result.id  # Track task progress
+
+# Feature flag for backward compatibility
+USE_CELERY=true  # Enable Celery (default)
+USE_CELERY=false # Fallback to BackgroundTasks
+```
+
+**Frontend Integration (Phase 4 ✅ COMPLETED)**:
+- **Smooth Progress Animation**: Frontend now uses `useAnimatedNumber` hook for fluid progress updates
+- **Enhanced User Experience**: Progress bars animate smoothly between Celery's ~1Hz updates
+- **Visual Polish**: Combined requestAnimationFrame animations with CSS transitions
+- **Perfect Synergy**: Backend's throttled updates work seamlessly with frontend interpolation
+
+## Progress Tracking System
+
+### Progress Model (`app/utils/progress.py`)
+
+**Purpose**: Provides granular progress tracking for long-running tasks with throttled updates.
+
+**Key Features**:
+- **Throttled Updates**: Minimum 0.5s between updates to prevent database spam
+- **Unit-based Tracking**: Track progress by completed units instead of arbitrary percentages
+- **Stage Tracking**: Different stages of processing (e.g., "scraping", "parsing", "embedding")
+- **Automatic Percentage**: Calculates percentage from completed/total units
+- **Type Support**: Works for both scrape and upload operations
+
+**Usage**:
+```python
+# Initialize progress tracker
+prog = Progress(kb_id="test-kb", total_units=100, update_type="scrape")
+
+# Update progress
+prog.step("Downloaded page 1", units=1, stage="downloading")
+prog.step("Parsing content", units=1, stage="parsing")
+
+# Force immediate update
+prog.step("Critical milestone", force=True)
+
+# Complete the progress
+prog.complete(status="completed", message="Successfully processed 100 units")
+```
+
+**Database Schema Enhancement**:
+```sql
+-- New columns added to status tables
+ALTER TABLE scraping_status ADD COLUMN completed_units INTEGER DEFAULT 0;
+ALTER TABLE scraping_status ADD COLUMN total_units INTEGER;
+ALTER TABLE file_upload_status ADD COLUMN completed_units INTEGER DEFAULT 0;
+ALTER TABLE file_upload_status ADD COLUMN total_units INTEGER;
 ```
 
 ## Data Storage Architecture

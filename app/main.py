@@ -9,6 +9,8 @@ from app.config.redisconnection import redisConnection
 from app.config.dbconnection import get_db_pool
 from app.core.config import llm
 from app.api.routes import router
+from app.worker.celery_app import celery_app
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(
@@ -70,6 +72,29 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=status.HTTP_200_OK, content={"status": "healthy"}
         )
+
+    @app.get("/health/workers", status_code=status.HTTP_200_OK, tags=["Health"])
+    async def check_worker_health():
+        try:
+            # Check if workers are responsive
+            i = celery_app.control.inspect()
+            stats = i.stats()
+            active = i.active()
+            
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content={
+                    "status": "healthy" if stats else "unhealthy",
+                    "workers": len(stats) if stats else 0,
+                    "active_tasks": sum(len(tasks) for tasks in (active or {}).values()),
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+            )
+        except Exception as e:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"status": "error", "detail": str(e)}
+            )
 
     @app.on_event("startup")
     def init_db_pool():

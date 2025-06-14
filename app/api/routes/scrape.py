@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks, status
 import logging
+import os
 
 from app.core import supabase_metadata_manager as db_manager, config
 from app.models.scrape import (
@@ -8,6 +9,7 @@ from app.models.scrape import (
     ScrapeStatusResponse,
 )
 from app.services.scrape_service import run_scrape_and_populate
+from app.tasks.scrape import run_scrape_task
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["scraping"])
@@ -38,19 +40,33 @@ async def scrape_url_and_populate_kb(
         }
         print(initial_status)
 
+        # Check if we should use Celery
+        use_celery = os.getenv("USE_CELERY", "true").lower() == "true"
+        
+        if use_celery:
+            # Queue task with Celery
+            result = run_scrape_task.apply_async(
+                args=[kb_id, str(request.url), request.max_pages]
+            )
+            # Add Celery task ID to status
+            initial_status["celery_id"] = result.id
+            logger.info(f"Queued scrape task with Celery ID: {result.id}")
+
         # Update initial status
         if not db_manager.update_scrape_status(kb_id, initial_status):
             raise HTTPException(
                 status_code=500, detail="Failed to initialize scraping status"
             )
 
-        # Add the background task
-        background_tasks.add_task(
-            run_scrape_and_populate,
-            kb_id=kb_id,
-            url=str(request.url),
-            max_pages=request.max_pages,
-        )
+        # If not using Celery, use BackgroundTasks as fallback
+        if not use_celery:
+            background_tasks.add_task(
+                run_scrape_and_populate,
+                kb_id=kb_id,
+                url=str(request.url),
+                max_pages=request.max_pages,
+            )
+            logger.info("Using BackgroundTasks for scraping (Celery disabled)")
 
         return ScrapeInitiatedResponse(
             kb_id=kb_id,
