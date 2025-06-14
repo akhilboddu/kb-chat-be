@@ -16,21 +16,42 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
     current_status = "processing"  # Keep track of the current status
 
     # Initialize scraping status
+    total_pages = max_pages if max_pages else config.get("MAX_INTERNAL_PAGES", 15)
     db_manager.update_scrape_status(
         kb_id,
         {
             "status": current_status,
             "submitted_url": url,
             "pages_scraped": 0,
-            "total_pages": max_pages
-            if max_pages
-            else config.get("MAX_INTERNAL_PAGES", 15),
-            "progress": {"stage": "starting", "details": "Initializing scraper"},
+            "total_pages": total_pages,
+            "progress": {
+                "stage": "starting", 
+                "details": "🌐 Starting web scraping process",
+                "percent": 5  # Starting at 5%
+            },
         },
     )
 
     try:
         # 1. Run the scraper
+        logger.info(f"[Background Task] Starting scrape for {url}")
+        
+        # Update progress for scraping start
+        db_manager.update_scrape_status(
+            kb_id,
+            {
+                "status": current_status,
+                "submitted_url": url,
+                "pages_scraped": 0,
+                "total_pages": total_pages,
+                "progress": {
+                    "stage": "scraping_pages", 
+                    "details": "🔍 Analyzing web pages for content",
+                    "percent": 15
+                },
+            },
+        )
+        
         scrape_result = await scraper.scrape_website(
             url, max_pages=max_pages
         )  # Pass max_pages override
@@ -55,6 +76,7 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
                     "progress": {
                         "stage": "failed",
                         "details": f"Scraping failed: {error_detail}",
+                        "percent": 0
                     },
                 },
             )
@@ -75,12 +97,30 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
                     "pages_scraped": pages_scraped_count,
                     "progress": {
                         "stage": "scraping_complete",
-                        "details": f"Scraped {pages_scraped_count} pages",
+                        "details": f"✅ Collected {pages_scraped_count} pages successfully",
+                        "percent": 35
                     },
                 },
             )
 
         # 2. Extract the business profile
+        logger.info(f"[Background Task] Extracting business profile from scraped content")
+        
+        # Update progress for profile extraction
+        db_manager.update_scrape_status(
+            kb_id,
+            {
+                "status": current_status,
+                "submitted_url": url,
+                "pages_scraped": pages_scraped_count,
+                "progress": {
+                    "stage": "extracting_profile",
+                    "details": "📊 Extracting key information from content",
+                    "percent": 50
+                },
+            },
+        )
+        
         business_profile = scrape_result.get("business_profile")
         if not business_profile or "error" in business_profile:
             error_detail = (
@@ -101,6 +141,7 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
                     "progress": {
                         "stage": "failed",
                         "details": f"Profile compilation failed: {error_detail}",
+                        "percent": 0
                     },
                 },
             )
@@ -110,7 +151,7 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
             f"[Background Task] Scrape successful for KB '{kb_id}', URL '{url}'. Profile keys: {list(business_profile.keys())}"
         )
 
-        # Update status before processing
+        # Update status before processing text
         db_manager.update_scrape_status(
             kb_id,
             {
@@ -118,8 +159,9 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
                 "submitted_url": url,
                 "pages_scraped": pages_scraped_count,  # Include potentially updated count
                 "progress": {
-                    "stage": "processing_profile",
-                    "details": "Extracting text from profile",
+                    "stage": "processing_content",
+                    "details": "📝 Processing content for AI understanding",
+                    "percent": 65
                 },
             },
         )
@@ -140,6 +182,7 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
                     "progress": {
                         "stage": "failed",
                         "details": "No text extracted from profile",
+                        "percent": 0
                     },
                 },
             )
@@ -149,15 +192,17 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
             f"[Background Task] Extracted {len(text_to_add)} characters from profile for KB '{kb_id}'."
         )
 
-        # Update status before adding to KB
+        # Update status before creating embeddings
         db_manager.update_scrape_status(
             kb_id,
             {
                 "status": current_status,  # Still 'processing'
                 "submitted_url": url,
+                "pages_scraped": pages_scraped_count,
                 "progress": {
-                    "stage": "populating_kb",
-                    "details": "Adding extracted text to knowledge base",
+                    "stage": "creating_embeddings",
+                    "details": "🧠 Building AI brain with vector embeddings",
+                    "percent": 80
                 },
             },
         )
@@ -167,6 +212,21 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
         from urllib.parse import urlparse
         parsed_url = urlparse(url)
         source_name = f"{parsed_url.netloc} - {pages_scraped_count} pages"
+        
+        # Update status when finalizing
+        db_manager.update_scrape_status(
+            kb_id,
+            {
+                "status": current_status,  # Still 'processing'
+                "submitted_url": url,
+                "pages_scraped": pages_scraped_count,
+                "progress": {
+                    "stage": "finalizing_kb",
+                    "details": "🔗 Connecting knowledge for easy retrieval",
+                    "percent": 90
+                },
+            },
+        )
         
         add_success = kb_manager.add_to_kb(
             kb_id, 
@@ -215,9 +275,10 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
                     "pages_scraped": pages_scraped_count,  # Final count
                     "progress": {
                         "stage": "completed",
-                        "details": "Successfully added content to knowledge base",
+                        "details": "🚀 AI agent ready! Knowledge base created successfully",
                         "chars_added": len(text_to_add),
                         "profile_keys": list(business_profile.keys()),
+                        "percent": 100
                     },
                 },
             )
@@ -235,6 +296,7 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
                     "progress": {
                         "stage": "failed",
                         "details": "Failed to add content to KB",
+                        "percent": 0
                     },
                 },
             )
@@ -254,6 +316,7 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
                 "progress": {
                     "stage": "failed",
                     "details": f"Unhandled exception: {str(e)}",
+                    "percent": 0
                 },
             },
         )

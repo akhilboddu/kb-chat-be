@@ -10,36 +10,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TRANSFORMERS_CACHE=/app/.cache/transformers \
     HF_HOME=/app/.cache/huggingface \
     PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
-    HOME=/home/appuser \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    HOME=/home/appuser
 
-# Install system dependencies required for Playwright browsers
+# Install system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         wget \
         curl \
         gcc \
         libpq-dev \
-        ca-certificates \
-        fonts-liberation \
-        libappindicator3-1 \
-        libasound2 \
-        libatk-bridge2.0-0 \
-        libatk1.0-0 \
-        libcups2 \
-        libdbus-1-3 \
-        libdrm2 \
-        libgbm1 \
-        libgtk-3-0 \
-        libnspr4 \
-        libnss3 \
-        libx11-6 \
-        libxcomposite1 \
-        libxdamage1 \
-        libxrandr2 \
-        xdg-utils \
-        libu2f-udev \
-        libvulkan1 && \
+        ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user with a home directory and set the correct permissions
@@ -50,10 +30,6 @@ RUN groupadd -r appuser && \
 
 # Set the working directory in the container
 WORKDIR /app
-
-# Create necessary directories and set permissions
-RUN mkdir -p /ms-playwright && \
-    chmod -R 777 /ms-playwright
 
 # Copy requirements and install Python packages
 COPY requirements.txt .
@@ -69,9 +45,6 @@ RUN mkdir -p /app/.cache && \
 
 # Switch to non-root user
 USER appuser
-
-# Install Playwright browser binaries for the correct user
-RUN playwright install
 
 # Expose app port
 EXPOSE 8000

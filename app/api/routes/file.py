@@ -1,131 +1,145 @@
 import os
-from fastapi import APIRouter, HTTPException, UploadFile, File, status
-from typing import List
+from fastapi import APIRouter, HTTPException, UploadFile, File, status, BackgroundTasks
+from typing import List, Dict, Any
+import io
+import asyncio
 
 from app.core import supabase_metadata_manager as db_manager, kb_manager, file_parser, supabase_client
 from app.models.base import StatusResponse
-from app.models.file import ListFilesResponse, UploadedFileInfo
+from app.models.file import ListFilesResponse, UploadedFileInfo, FileUploadStatusResponse
+from app.services.file_upload_service import process_files_background
 
 router = APIRouter(tags=["files"])
 
 
 @router.post("/agents/{kb_id}/upload", response_model=StatusResponse)
-async def upload_to_kb(kb_id: str, files: List[UploadFile] = File(...)):
+async def upload_to_kb(
+    kb_id: str, 
+    files: List[UploadFile] = File(...),
+    background_tasks: BackgroundTasks = None
+):
     """
-    Accepts multiple file uploads, parses their content, stores file metadata,
-    and adds the extracted text to the specified knowledge base.
+    Accepts multiple file uploads and processes them in the background.
+    Returns immediately with a processing status.
     """
     if not files or len(files) == 0:
         raise HTTPException(status_code=400, detail="No files provided for upload.")
 
-    processed_files = 0
+    # Read file contents immediately to avoid issues with closed file handles in background tasks
+    file_data_list = []
     failed_files = 0
-    no_content_files = 0
-
+    
     for file in files:
-        print(
-            f"Processing file for kb_id: {kb_id}. Filename: {file.filename}, Content-Type: {file.content_type}"
-        )
-
-        if not file.filename:
-            print(f"Skipping file with no filename in request")
-            failed_files += 1
-            continue
-
-        # --- Store File Metadata ---
-        # Get file size (requires reading the file or seeking)
-        file.file.seek(0, os.SEEK_END)
-        file_size = file.file.tell()
-        file.file.seek(0)  # Reset file pointer for parsing
-        print(f"Storing file record for '{file.filename}' ({file_size} bytes)... ")
-        record_success = db_manager.add_uploaded_file_record(
-            kb_id=kb_id,
-            filename=file.filename,
-            file_size=file_size,
-            content_type=file.content_type,
-        )
-        if not record_success:
-            print(
-                f"Error: Failed to store file metadata record for '{file.filename}' in KB {kb_id}. Skipping this file."
-            )
-            failed_files += 1
-            continue
-
-        # --- Parse File Content ---
-        raw_extracted_text: str = None
         try:
-            raw_extracted_text = await file_parser.parse_file(file)
-        except Exception as e:
-            print(f"Error during file parsing for {file.filename}: {e}")
-            import traceback
-
-            traceback.print_exc()
-            failed_files += 1
-            continue
-
-        if raw_extracted_text is None:
-            print(f"Unsupported file type or failed to parse file: {file.filename}")
-            failed_files += 1
-            continue
-
-        if not raw_extracted_text.strip():
-            print(
-                f"File {file.filename} parsed successfully but contained no text content."
-            )
-            no_content_files += 1
-            continue
-
-        # PDF parsing now happens directly into Markdown via pymupdf4llm in file_parser.py
-        text_to_add = raw_extracted_text
-        file_extension = file_parser.get_file_extension(file.filename)
-
-        # --- Add to Knowledge Base ---
-        print(
-            f"Adding parsed text from {file.filename} to KB {kb_id}..."
-        )  # Simplified log
-        try:
-            success = kb_manager.add_to_kb(
-                kb_id, 
-                text_to_add, 
-                knowledge_source="file",
-                source_name=file.filename,
-                metadata={"file_size": file_size, "content_type": file.content_type}
-            )
-            if success:
-                # Simplified message, as structuring is now part of parsing for PDFs
-                parsed_as = "Markdown" if file_extension == ".pdf" else "text"
-                print(
-                    f"Successfully added content (parsed as {parsed_as}) from {file.filename} to KB {kb_id}."
-                )
-                processed_files += 1
-            else:
-                print(
-                    f"Failed to add content from {file.filename} to KB {kb_id} (add_to_kb returned False)."
-                )
+            if not file.filename:
                 failed_files += 1
+                continue
+                
+            # Read the file content into memory
+            content = await file.read()
+            file_data = {
+                "filename": file.filename,
+                "content": content,
+                "content_type": file.content_type,
+                "size": len(content)
+            }
+            file_data_list.append(file_data)
         except Exception as e:
-            print(
-                f"Error adding parsed content from {file.filename} to KB {kb_id}: {e}"
-            )
+            print(f"Error reading file {file.filename}: {e}")
             failed_files += 1
+            continue
 
-    # Generate a summary message based on processing results
-    message = f"Processed {processed_files} file(s) successfully"
-    if no_content_files > 0:
-        message += f", {no_content_files} file(s) had no text content"
-    if failed_files > 0:
-        message += f", {failed_files} file(s) failed to process"
+    if not file_data_list:
+        raise HTTPException(status_code=400, detail="All files failed to read.")
 
-    if processed_files == 0 and (failed_files > 0 or no_content_files > 0):
-        # If we processed nothing but had failures, return a 207 (Multi-Status)
-        # or could use 422 Unprocessable Entity or 500 Internal Server Error
-        if failed_files > 0:
-            raise HTTPException(status_code=422, detail=message)
-        else:
-            # All files were processed but had no content
-            return StatusResponse(status="warning", message=message)
+    # Initialize the status
+    initial_status = {
+        "status": "processing",
+        "total_files": len(file_data_list),
+        "processed_files": 0,
+        "failed_files": failed_files,
+        "message": f"Upload initiated for {len(file_data_list)} file(s)" + (f" ({failed_files} failed to read)" if failed_files > 0 else ""),
+        "progress": {
+            "stage": "initialized",
+            "details": "🪄 Starting upload",
+            "percent": 0
+        }
+    }
+    
+    print(f"Initializing upload status for KB {kb_id} with {len(file_data_list)} files")
+    
+    # Update initial status and ensure it succeeds
+    status_updated = db_manager.update_file_upload_status(kb_id, initial_status)
+    if not status_updated:
+        print(f"Failed to initialize upload status for KB {kb_id}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Failed to initialize file upload status"
+        )
+    
+    print(f"Successfully initialized upload status for KB {kb_id}")
+    
+    # Run the background processing in a separate thread to avoid blocking the event loop
+    async def _run_in_thread():
+        await asyncio.to_thread(
+            lambda: asyncio.run(
+                process_files_background(
+                    kb_id=kb_id,
+                    file_data_list=file_data_list,
+                    initial_failed_files=failed_files
+                )
+            )
+        )
 
-    return StatusResponse(status="success", message=message)
+    # Fire and forget using asyncio (non-blocking)
+    asyncio.create_task(_run_in_thread())
+    
+    return StatusResponse(
+        status="processing",
+        message=f"File upload initiated in background for {len(file_data_list)} file(s)"
+    )
+
+
+@router.get("/agents/{kb_id}/upload-status", response_model=FileUploadStatusResponse)
+async def get_upload_status(kb_id: str):
+    """
+    Get the current status of a file upload operation for a specific KB.
+    """
+    print(f"Getting upload status for KB: {kb_id}")
+    try:
+        status = db_manager.get_file_upload_status(kb_id)
+        if not status:
+            print(f"No upload status found for KB: {kb_id}")
+            # Return a "not_found" status instead of 404 to match the scrape status behavior
+            return FileUploadStatusResponse(
+                kb_id=kb_id,
+                status="not_found",
+                message="No file upload operation found",
+                total_files=0,
+                processed_files=0,
+                failed_files=0
+            )
+        
+        print(f"Found upload status for KB {kb_id}: {status.get('status', 'unknown')} - {status.get('message', '')}")
+        
+        # Ensure all required fields are present
+        return FileUploadStatusResponse(
+            kb_id=kb_id,
+            status=status.get("status", "unknown"),
+            message=status.get("message", ""),
+            total_files=status.get("total_files", 0),
+            processed_files=status.get("processed_files", 0),
+            failed_files=status.get("failed_files", 0),
+            progress=status.get("progress", {})
+        )
+    except Exception as e:
+        print(f"Error retrieving upload status for KB {kb_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to retrieve upload status: {str(e)}"
+        )
 
 
 @router.get("/agents/{kb_id}/files", response_model=ListFilesResponse)
@@ -156,41 +170,30 @@ async def list_uploaded_files_endpoint(kb_id: str):
         )
 
 
-@router.post("/bots/{bot_id}/upload", response_model=StatusResponse)
-async def bot_upload_endpoint(bot_id: str, files: List[UploadFile] = File(...)):
+@router.post("/bots/{bot_id}/upload", response_model=StatusResponse, deprecated=True)
+async def bot_upload_endpoint(
+    bot_id: str, 
+    files: List[UploadFile] = File(...),
+    background_tasks: BackgroundTasks = None
+):
     """
-    Upload files to a bot's knowledge base.
+    [DEPRECATED] Upload files to a bot's knowledge base.
+    This endpoint is deprecated in favor of /agents/{kb_id}/upload.
+    It will be removed in a future version.
     """
-    print(f"Received upload request for bot_id: {bot_id}")
+    print(f"[DEPRECATED] Received upload request for bot_id: {bot_id}")
     print(f"Files: {files}")
-    # also add to knowledge_sources table under supabase
-    for file in files:
-        fileContent = ""
-        fileExtension = file.filename.split(".")[-1]
-
-        # Read file size
-        file.file.seek(0, os.SEEK_END)
-        file_size = file.file.tell()
-        file.file.seek(0)  # Reset file pointer
-
-        # Format with Python's f-string formatting for floating point (:.1f for 1 decimal place)
-        fileContent = f"File: {file.filename} ({file.content_type or f'{fileExtension} file'}) - Size: {file_size / 1024:.1f} KB"
-
-        sourceData = {"bot_id": bot_id, "source_type": "file", "content": fileContent}
-        response = (
-            supabase_client.supabase.table("knowledge_sources")
-            .insert(sourceData)
-            .execute()
-        )
-        print(f"Knowledge source added: {response}")
-
+    
+    # Get the kb_id from bot_id
     response = (
         supabase_client.supabase.table("bots").select("*").eq("id", bot_id).execute()
     )
-    print(f"Bot response: {response}")
-
+    
+    if not response.data:
+        raise HTTPException(status_code=404, detail=f"Bot {bot_id} not found")
+    
     kb_id = response.data[0]["kb_id"]
-
-    # now use all logic from /agents/{kb_id}/upload endpoint
-    return await upload_to_kb(kb_id, files)
+    
+    # Call the new upload endpoint
+    return await upload_to_kb(kb_id, files, background_tasks)
 

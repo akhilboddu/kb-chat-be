@@ -969,6 +969,240 @@ This section provides a file-by-file map to accelerate onboarding and code navig
 - **Webhook Verification**: WhatsApp webhook signature validation
 - **Payment Security**: Secure PayStack integration
 
+## ✅ Recent Implementations & Enhancements
+
+### Background Task Processing System ✅ COMPLETED
+
+#### File Upload Pipeline Enhancement
+**Problem Solved**: Eliminated "I/O operation on closed file" errors that occurred when FastAPI UploadFile objects were passed to background tasks.
+
+**Solution Implemented**:
+- **Immediate File Processing**: Modified `file.py` route to read file contents into memory before starting background tasks
+- **File Data Dictionaries**: Created structured file data objects instead of passing UploadFile instances
+- **Thread-based Processing**: Implemented `asyncio.to_thread()` for non-blocking file processing
+- **Enhanced Progress Tracking**: Added granular progress updates (0% → 10% → 30% → 50% → 70% → 90% → 100%)
+
+**Key Changes**:
+```python
+# app/api/routes/file.py
+async def upload_files():
+    # Read file contents immediately
+    file_data_list = []
+    for file in files:
+        content = await file.read()
+        file_data_list.append({
+            "filename": file.filename,
+            "content": content,
+            "content_type": file.content_type,
+            "size": file.size
+        })
+    
+    # Start background processing with file data
+    asyncio.create_task(
+        asyncio.to_thread(process_files_background, kb_id, file_data_list)
+    )
+```
+
+**Status Tracking Enhancement**:
+- Added `file_upload_status` table in Supabase for persistent progress tracking
+- Implemented race condition handling with initial delays and retry logic
+- Enhanced error reporting and validation throughout the pipeline
+
+#### Web Scraping Progress Enhancement ✅ COMPLETED
+**Enhanced Progress Messages**: Updated scraping service with engaging, user-friendly progress messages:
+
+**8-Stage Progress System**:
+```python
+# app/services/scrape_service.py
+progress_stages = {
+    5: "🌐 Starting web scraping process",
+    15: "🔍 Analyzing web pages for content", 
+    35: "✅ Collected {pages_scraped} pages successfully",
+    50: "📊 Extracting key information from content",
+    65: "📝 Processing content for AI understanding",
+    80: "🧠 Building AI brain with vector embeddings",
+    90: "🔗 Connecting knowledge for easy retrieval",
+    100: "🚀 AI agent ready! Knowledge base created successfully"
+}
+```
+
+**Features**:
+- **Incremental Updates**: Granular progress reporting every 10-15%
+- **User-Friendly Language**: Simple, engaging terminology without technical jargon
+- **Page Count Tracking**: Dynamic page count updates during scraping
+- **Emoji Integration**: Visual progress indicators for better UX
+
+#### Server Concurrency Enhancement ✅ COMPLETED  
+**Problem Solved**: Server was blocking concurrent requests when background tasks were running, causing multiple upload-status requests to queue up and resolve simultaneously.
+
+**Solution Implemented**:
+- **Multi-Worker Configuration**: Modified `start.sh` to use `--workers 4` instead of `--reload`
+- **Thread-based Background Tasks**: Replaced FastAPI `BackgroundTasks` with `asyncio.to_thread()` 
+- **Concurrent Request Handling**: Enabled proper handling of multiple simultaneous requests
+
+**Performance Improvements**:
+- **Real-time Progress**: Status endpoint now responds immediately without blocking
+- **Concurrent Uploads**: Multiple file uploads can be processed simultaneously
+- **Scalable Architecture**: Better foundation for handling increased load
+
+#### Enhanced File Processing ✅ COMPLETED
+**PDF Parsing Robustness**: Added fallback mechanisms for better file processing reliability:
+
+```python
+# app/core/file_parser.py  
+def extract_pdf_text(file_path):
+    try:
+        # Primary: PyMuPDF
+        return extract_with_pymupdf(file_path)
+    except Exception:
+        # Fallback: pdfplumber
+        return extract_with_pdfplumber(file_path)
+```
+
+**Multi-format Support**:
+- **PDF**: PyMuPDF with pdfplumber fallback
+- **DOCX**: Microsoft Word document parsing
+- **TXT/MD**: Plain text and Markdown files  
+- **CSV/XLSX**: Spreadsheet data processing
+- **Error Handling**: Graceful failure with detailed error reporting
+
+### Database & Status Management Enhancements ✅ COMPLETED
+
+#### Supabase File Upload Status Table
+**New Table Schema**:
+```sql
+file_upload_status {
+  kb_id: text (primary key)
+  status: text  -- processing | completed | completed_with_errors | failed  
+  total_files: int
+  processed_files: int
+  failed_files: int
+  message: text
+  progress_data: jsonb  -- { stage, details, percent }
+  updated_at: timestamptz
+}
+```
+
+**Status Management Functions**:
+```python
+# app/core/supabase_metadata_manager.py
+update_file_upload_status(kb_id, status, progress, message)
+get_file_upload_status(kb_id) 
+cleanup_old_upload_status(kb_id)
+```
+
+#### Enhanced Database Operations
+**Improved Status Tracking**:
+- **Write Verification**: Added database write confirmation and logging
+- **Error Handling**: Comprehensive error reporting for status updates
+- **Cleanup Logic**: Automatic removal of stale status records
+- **Concurrent Safety**: Thread-safe status update operations
+
+#### Redis Connection Management
+**Status Tracking System**:
+- **Bot Online Status**: Track if bots are actively managed
+- **User Presence**: Monitor user activity per bot
+- **TTL Management**: Automatic cleanup of expired status data
+- **Connection Resilience**: Graceful handling of Redis connection issues
+
+### API Endpoint Enhancements ✅ COMPLETED
+
+#### File Upload Endpoints
+**Enhanced `/agents/{kb_id}/upload`**:
+- **Background Processing**: Non-blocking file upload handling
+- **Immediate Response**: Returns status immediately while processing in background
+- **Progress Tracking**: Real-time progress updates via status endpoint
+- **Error Handling**: Comprehensive error reporting and recovery
+
+**New `/agents/{kb_id}/upload-status`**:
+- **Real-time Status**: Live progress tracking for file uploads
+- **Detailed Information**: File counts, progress percentage, current stage
+- **Error Reporting**: Detailed error messages for debugging
+- **Race Condition Handling**: Robust handling of rapid status requests
+
+#### Backward Compatibility
+**Deprecated `/bots/{bot_id}/upload`**:
+- **Compatibility Shim**: Maintains backward compatibility during transition
+- **Internal Routing**: Resolves `kb_id` and calls new upload endpoint
+- **Graceful Migration**: Supports existing clients during rollout period
+
+### Development & Deployment Improvements ✅ COMPLETED
+
+#### Server Configuration Enhancement
+**Production-Ready Setup**:
+```bash
+# start.sh improvements
+uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
+# Removed --reload for production-style concurrent processing
+```
+
+**Benefits**:
+- **Concurrent Processing**: Multiple workers handle requests simultaneously
+- **Background Task Support**: Non-blocking background operations
+- **Scalable Architecture**: Foundation for horizontal scaling
+
+#### Error Handling & Logging
+**Enhanced Debugging**:
+- **Comprehensive Logging**: Detailed logs for database operations and file processing
+- **Error Context**: Rich error messages with context for troubleshooting
+- **Status Validation**: Verification of database writes and status updates
+- **Performance Monitoring**: Timing and performance tracking for key operations
+
+#### Code Quality Improvements
+**Architecture Enhancements**:
+- **Separation of Concerns**: Clear separation between HTTP handling and background processing
+- **Type Safety**: Enhanced TypeScript/Python type definitions
+- **Error Boundaries**: Robust error handling at all system boundaries
+- **Resource Management**: Proper cleanup of file handles and database connections
+
+### Testing & Validation Enhancements ✅ COMPLETED
+
+#### Background Task Testing
+**Validation Scenarios**:
+- **File Upload Flow**: End-to-end file processing with progress tracking
+- **Concurrent Uploads**: Multiple simultaneous file uploads
+- **Error Recovery**: Graceful handling of processing failures
+- **Status Persistence**: Progress tracking across server restarts
+
+#### Integration Testing
+**System Validation**:
+- **Race Condition Testing**: Verified rapid status polling doesn't cause issues
+- **Concurrency Testing**: Multiple users uploading files simultaneously
+- **Error Path Testing**: Proper error handling and user feedback
+- **Performance Testing**: Response times under load
+
+### User Experience Improvements ✅ COMPLETED
+
+#### Progress Communication Enhancement
+**Engaging User Feedback**:
+- **Playful Messaging**: Fun, emoji-rich progress messages
+- **Technical Accuracy**: Correct information while remaining user-friendly
+- **Clear Progression**: Logical flow from start to completion
+- **Success Celebration**: Positive completion messages
+
+#### Real-time Updates
+**Live Progress Tracking**:
+- **2-Second Polling**: Optimal balance between responsiveness and server load
+- **Smooth Transitions**: Progressive updates without jarring jumps
+- **Error Recovery**: Automatic retry on temporary failures
+- **Completion Handling**: Proper cleanup when tasks complete
+
+### Performance & Scalability Improvements ✅ COMPLETED
+
+#### Concurrent Processing
+**Multi-threaded Architecture**:
+- **Non-blocking Operations**: Background tasks don't block API responses
+- **Worker Scaling**: Multiple uvicorn workers for concurrent request handling
+- **Resource Optimization**: Efficient memory and CPU usage
+- **Load Distribution**: Better handling of multiple simultaneous operations
+
+#### Database Optimization
+**Enhanced Data Management**:
+- **Connection Pooling**: Efficient database connection management
+- **Query Optimization**: Optimized status queries and updates
+- **Index Usage**: Proper indexing for fast status lookups
+- **Cleanup Procedures**: Automatic cleanup of old status records
+
 ## Future Enhancements
 
 ### Implemented Features ✅
