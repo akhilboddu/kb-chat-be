@@ -328,18 +328,74 @@ def upsert_agent_config(kb_id: str, config_data: Dict[str, Any]) -> bool:
 def update_scrape_status(kb_id: str, status_data: dict) -> bool:
     """Updates the scraping status for a KB."""
     try:
+        # ------------------------------------------------------------------
+        # Ensure required NOT NULL columns are always present.
+        # We first fetch the existing record, then back-fill any missing
+        # fields from the stored row so the UPSERT never violates NOT-NULL
+        # constraints (e.g. `submitted_url`).
+        # ------------------------------------------------------------------
+        mandatory_fields = [
+            "submitted_url",  # NOT NULL in DB
+            "pages_scraped",  # Some columns might be NOT NULL depending on migration
+            "total_pages",    # Ditto – keep existing value if caller omitted it
+        ]
+
+        # Only hit the DB if at least one mandatory field is missing
+        if any(f not in status_data for f in mandatory_fields):
+            try:
+                existing_row_resp = (
+                    supabase
+                    .table("scraping_status")
+                    .select(",".join(mandatory_fields))
+                    .eq("kb_id", kb_id)
+                    .single()
+                    .execute()
+                )
+                existing_row = existing_row_resp.data if existing_row_resp else None
+                if existing_row:
+                    for field in mandatory_fields:
+                        if field not in status_data and existing_row.get(field) is not None:
+                            status_data[field] = existing_row[field]
+            except Exception as fetch_err:
+                # If we fail to fetch, log but continue – the UPSERT may still work
+                print(f"[SCRAPE STATUS UPDATE] WARNING: Could not fetch existing row for KB {kb_id}: {fetch_err}")
+
+        # Always include kb_id (primary key)
+        status_data['kb_id'] = kb_id
+
         # Convert progress dict to JSONB if present
         if "progress" in status_data:
             status_data["progress_data"] = status_data.pop("progress")
         
-        # Always include kb_id
-        status_data['kb_id'] = kb_id
+        # Enhanced logging for debugging
+        status = status_data.get('status', 'unknown')
+        percent = status_data.get('progress_data', {}).get('percent', 'unknown')
+        stage = status_data.get('progress_data', {}).get('stage', 'unknown')
         
-        # Upsert the status
-        supabase.table('scraping_status').upsert(status_data).execute()
-        return True
+        print(f"[SCRAPE STATUS UPDATE] KB {kb_id}: {status} - {percent}% - Stage: {stage}")
+        print(f"[SCRAPE STATUS UPDATE] Full data: {status_data}")
+        
+        # Upsert the status and ensure it completes
+        result = supabase.table('scraping_status').upsert(status_data).execute()
+        
+        # Verify the operation succeeded
+        if result and result.data:
+            print(f"[SCRAPE STATUS UPDATE] SUCCESS: Updated scraping status for KB {kb_id}")
+            # Additional verification - read back the data
+            verify_result = supabase.table('scraping_status').select('*').eq('kb_id', kb_id).execute()
+            if verify_result.data:
+                actual_status = verify_result.data[0].get('status', 'unknown')
+                actual_percent = verify_result.data[0].get('progress_data', {}).get('percent', 'unknown')
+                print(f"[SCRAPE STATUS VERIFY] KB {kb_id}: Actual status in DB: {actual_status} - {actual_percent}%")
+            return True
+        else:
+            print(f"[SCRAPE STATUS UPDATE] WARNING: No data returned from upsert for KB {kb_id}")
+            return False
+            
     except Exception as e:
-        print(f"Error updating scrape status for KB {kb_id}: {e}")
+        print(f"[SCRAPE STATUS UPDATE] ERROR: Failed to update scraping status for KB {kb_id}: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 

@@ -239,7 +239,7 @@ Here is the content to clean and structure:
 
         return profile
 
-    async def scrape(self, url: str, max_pages: Optional[int] = None) -> Dict[str, Any]:
+    async def scrape(self, url: str, max_pages: Optional[int] = None, progress_callback=None) -> Dict[str, Any]:
         """Scrape a website starting from the URL and return analyzed data."""
         self.start_time = time.time()
         
@@ -271,6 +271,10 @@ Here is the content to clean and structure:
                 }
             }
             logger.info(f"Configured crawl payload: {payload}")
+
+            # Report initial progress
+            if progress_callback:
+                progress_callback(20, "🚀 Initiating crawl request...")
 
             # Start the crawl
             logger.info("Initiating crawl request...")
@@ -313,7 +317,14 @@ Here is the content to clean and structure:
             crawl_id = crawl_result.get("id")
             logger.info(f"Crawl started with ID: {crawl_id}")
 
-            # Poll for results
+            # Report crawl started
+            if progress_callback:
+                progress_callback(25, "📡 Crawl started, discovering pages...")
+
+            # Poll for results with incremental progress
+            poll_count = 0
+            max_polls = 60  # Maximum 5 minutes of polling (60 * 5 seconds)
+            
             while True:
                 try:
                     logger.info("Checking crawl status...")
@@ -325,6 +336,35 @@ Here is the content to clean and structure:
                     response.raise_for_status()
                     crawl_status = response.json()
                     logger.info(f"Crawl status: {crawl_status.get('status')}")
+                    
+                    # Calculate progress based on polling time and any partial results
+                    poll_count += 1
+                    base_progress = 25
+                    polling_progress = min(10, (poll_count / max_polls) * 10)  # Up to 10% for polling time
+                    
+                    # Check if we have partial results to show more specific progress
+                    partial_data = crawl_status.get("data", [])
+                    if partial_data:
+                        pages_found = len(partial_data)
+                        expected_pages = max_pages if max_pages else 10
+                        page_progress = min(15, (pages_found / expected_pages) * 15)  # Up to 15% for pages found
+                        current_progress = base_progress + page_progress
+                        
+                        if progress_callback:
+                            progress_callback(
+                                current_progress, 
+                                f"🔍 Found {pages_found} pages, still crawling...",
+                                pages_found  # Pass pages found to callback
+                            )
+                    else:
+                        current_progress = base_progress + polling_progress
+                        if progress_callback:
+                            progress_callback(
+                                current_progress, 
+                                f"🔍 Crawling in progress... ({poll_count * 5}s elapsed)",
+                                0  # No pages found yet
+                            )
+                    
                 except requests.exceptions.HTTPError as e:
                     if response.status_code == 502:
                         error_msg = "Firecrawl service is temporarily unavailable (502 Bad Gateway). Please try again later."
@@ -350,9 +390,18 @@ Here is the content to clean and structure:
                     raise Exception(f"Failed to check crawl status: {crawl_status.get('error', 'Unknown error')}")
 
                 if crawl_status.get("status") == "completed":
+                    if progress_callback:
+                        # Get final page count for the completion callback
+                        final_data = crawl_status.get("data", [])
+                        final_pages_found = len(final_data)
+                        progress_callback(50, "✅ Crawling completed, processing results...", final_pages_found)
                     break
                 elif crawl_status.get("status") == "failed":
                     raise Exception(f"Crawl failed: {crawl_status.get('error', 'Unknown error')}")
+                
+                # Check for timeout
+                if poll_count >= max_polls:
+                    raise Exception("Crawl timed out after 5 minutes")
                 
                 # Wait before next poll
                 await asyncio.sleep(5)
@@ -362,8 +411,14 @@ Here is the content to clean and structure:
             self.page_results = results
             logger.info(f"Received {len(results)} pages of results")
 
+            if progress_callback:
+                progress_callback(60, f"📄 Processing {len(results)} pages of content...")
+
             # Extract social links from results
             self._extract_social_links(results)
+
+            if progress_callback:
+                progress_callback(70, "🔗 Extracting social links and metadata...")
 
             # Compile results
             result = {
@@ -378,6 +433,9 @@ Here is the content to clean and structure:
                 "business_profile": await self._compile_flexible_business_profile()
             }
 
+            if progress_callback:
+                progress_callback(80, "💾 Saving results...")
+
             # Save results
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             safe_base_domain = re.sub(r"[^\w\-.]", "_", base_domain)
@@ -389,6 +447,10 @@ Here is the content to clean and structure:
             logger.info(f"Results saved to {filepath}")
 
             result["scrape_metadata"]["filename"] = filename
+            
+            if progress_callback:
+                progress_callback(90, "🎉 Scraping completed successfully!")
+                
             return result
 
         except Exception as e:
@@ -396,11 +458,11 @@ Here is the content to clean and structure:
             return {"error": f"Scrape failed: {str(e)}"}
 
 # Helper function to run the scraper
-async def scrape_website(url: str, max_pages: Optional[int] = None) -> Dict[str, Any]:
+async def scrape_website(url: str, max_pages: Optional[int] = None, progress_callback=None) -> Dict[str, Any]:
     """Helper function to create and run a scraper instance."""
     scraper = Scraper()
     try:
-        return await scraper.scrape(url, max_pages=max_pages)
+        return await scraper.scrape(url, max_pages=max_pages, progress_callback=progress_callback)
     except Exception as e:
         logger.error(f"Error during scrape: {str(e)}")
         return {"error": f"Scrape failed: {str(e)}"}

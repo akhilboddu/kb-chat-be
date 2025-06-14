@@ -1,135 +1,183 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
-# Development bootstrap script -------------------------------------------------
-# 1. Optionally start the Redis service (via docker-compose) so the API can
-#    connect locally without manual setup.
-# 2. Optionally start Celery workers if START_CELERY=true
-# 3. Launch FastAPI with hot-reload, excluding the tests directory.
-# -----------------------------------------------------------------------------
+# KB Chat Backend Startup Script
+# Supports both development and production environments
 
-set -e
+set -e  # Exit on any error
 
-# Load environment variables from .env file if it exists
+echo "🚀 Starting KB Chat Backend..."
+
+# ------------------------------------------------------------------
+# Load environment variables from .env if present so users don't need
+# to `export` them manually every time.
+# ------------------------------------------------------------------
 if [[ -f .env ]]; then
-  echo "Loading environment variables from .env file..."
-  set -a  # automatically export all variables
-  source .env
-  set +a  # stop automatically exporting
-else
-  echo "No .env file found, using system environment variables"
+    echo "🔑 Loading environment variables from .env"
+    # shellcheck disable=SC2163
+    export $(grep -v '^#' .env | xargs)
 fi
 
-# By default we spin up redis using docker-compose. Set SKIP_REDIS=true to skip.
-if [[ "${SKIP_REDIS:-false}" != "true" ]]; then
-  # Only attempt if docker-compose is available
-  if command -v docker compose &>/dev/null; then
-    echo "Ensuring Redis service is running …"
-    # 'docker compose ps' returns non-zero if the service is not created yet
-    if ! docker compose ps redis &>/dev/null; then
-      docker compose up -d redis
-    else
-      # If the container exists but is stopped, start it
-      docker compose start redis &>/dev/null || true
+# Function to check if a process is running
+is_running() {
+    pgrep -f "$1" > /dev/null
+}
+
+# Function to stop existing processes
+stop_existing() {
+    echo "🔄 Stopping existing processes..."
+    
+    # Stop existing FastAPI server
+    if is_running "uvicorn.*main:app"; then
+        echo "Stopping existing FastAPI server..."
+        pkill -f "uvicorn.*main:app" || true
     fi
-  else
-    echo "docker compose not found; skipping automatic Redis startup." >&2
-  fi
+    
+    # Stop existing Celery workers
+    if is_running "celery.*worker"; then
+        echo "Stopping existing Celery workers..."
+        pkill -f "celery.*worker" || true
+    fi
+    
+    # Stop existing Flower
+    if is_running "celery.*flower"; then
+        echo "Stopping existing Flower..."
+        pkill -f "celery.*flower" || true
+    fi
+    
+    sleep 2
+}
+
+# Check if virtual environment exists
+if [[ ! -d "venv" ]]; then
+    echo "❌ Virtual environment not found. Creating one..."
+    python3 -m venv venv
 fi
 
-# If no REDIS_URL is set, default to localhost (works with the redis container
-# started above).  This affects only the current shell invocation, not your
-# global environment.
+# Activate virtual environment
+echo "📦 Activating virtual environment..."
+source venv/bin/activate
+
+# Install/update dependencies
+if [[ ! -f "venv/.deps_installed" ]] || [[ requirements.txt -nt venv/.deps_installed ]]; then
+    echo "📚 Installing/updating dependencies..."
+    pip install -r requirements.txt
+    touch venv/.deps_installed
+fi
+
+# Set default environment variables
+export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+
+# Check for required environment variables
+if [[ -z "${SUPABASE_URL}" ]]; then
+    echo "⚠️  SUPABASE_URL not set in environment"
+fi
+
 if [[ -z "${REDIS_URL}" ]]; then
-  export REDIS_URL="redis://localhost:6379/0"
-  echo "REDIS_URL not set – defaulting to ${REDIS_URL}"
+    export REDIS_URL="redis://localhost:6379/0"
+    echo "REDIS_URL not set – defaulting to ${REDIS_URL}"
 fi
 
-# Set Celery environment variables if not already set
 if [[ -z "${CELERY_BROKER_URL}" ]]; then
-  export CELERY_BROKER_URL="${REDIS_URL}"
-  echo "CELERY_BROKER_URL not set – defaulting to ${CELERY_BROKER_URL}"
+    export CELERY_BROKER_URL="${REDIS_URL}"
+    echo "CELERY_BROKER_URL not set – defaulting to ${CELERY_BROKER_URL}"
 fi
 
 if [[ -z "${CELERY_RESULT_BACKEND}" ]]; then
-  export CELERY_RESULT_BACKEND="redis://localhost:6379/1"
-  echo "CELERY_RESULT_BACKEND not set – defaulting to ${CELERY_RESULT_BACKEND}"
+    export CELERY_RESULT_BACKEND="redis://localhost:6379/1"
+    echo "CELERY_RESULT_BACKEND not set – defaulting to ${CELERY_RESULT_BACKEND}"
+fi
+
+# Stop existing processes
+stop_existing
+
+# Check if Redis is running
+if ! redis-cli ping >/dev/null 2>&1; then
+    echo "⚠️  Redis is not running. Starting Redis..."
+    if command -v brew >/dev/null 2>&1; then
+        # macOS with Homebrew
+        brew services start redis
+    elif command -v systemctl >/dev/null 2>&1; then
+        # Linux with systemd
+        sudo systemctl start redis
+    else
+        echo "❌ Please start Redis manually: redis-server"
+        exit 1
+    fi
+    
+    # Wait for Redis to start
+    sleep 2
 fi
 
 # Optionally start Celery workers
 if [[ "${START_CELERY:-false}" == "true" ]]; then
-  if [[ "${CELERY_MODE:-docker}" == "docker" ]]; then
-    # Start Celery workers via Docker Compose
-    if command -v docker compose &>/dev/null; then
-      echo "Starting Celery workers via Docker Compose..."
-      docker compose up -d celery-worker-scrape celery-worker-upload
-      
-      # Optionally start Flower for monitoring
-      if [[ "${START_FLOWER:-false}" == "true" ]]; then
-        echo "Starting Flower monitoring dashboard..."
-        docker compose up -d flower
-      fi
+    echo "🔧 Starting Celery workers..."
+    
+    # Check if workers are already running
+    if is_running "celery.*worker.*-Q scrape"; then
+        echo "Scrape worker is already running, skipping..."
     else
-      echo "docker compose not found; skipping Docker Celery worker startup." >&2
+        # Start scrape worker in background
+        echo "Starting scrape worker..."
+        ./venv/bin/celery -A app.worker.celery_app worker -Q scrape --loglevel=info -n scrape@%h --concurrency=1 &
+        SCRAPE_WORKER_PID=$!
+        echo "Scrape worker started with PID: $SCRAPE_WORKER_PID"
     fi
-  else
-    # Start Celery workers directly
-    echo "Starting Celery workers directly..."
     
-    # Start scrape worker in background
-    echo "Starting scrape worker..."
-    ./venv/bin/celery -A app.worker.celery_app worker -Q scrape --loglevel=info &
-    SCRAPE_WORKER_PID=$!
-    echo "Scrape worker started with PID: $SCRAPE_WORKER_PID"
-    
-    # Start upload worker in background  
-    echo "Starting upload worker..."
-    ./venv/bin/celery -A app.worker.celery_app worker -Q upload --loglevel=info &
-    UPLOAD_WORKER_PID=$!
-    echo "Upload worker started with PID: $UPLOAD_WORKER_PID"
+    if is_running "celery.*worker.*-Q upload"; then
+        echo "Upload worker is already running, skipping..."
+    else
+        # Start upload worker in background
+        echo "Starting upload worker..."
+        ./venv/bin/celery -A app.worker.celery_app worker -Q upload --loglevel=info -n upload@%h --concurrency=1 &
+        UPLOAD_WORKER_PID=$!
+        echo "Upload worker started with PID: $UPLOAD_WORKER_PID"
+    fi
     
     # Optionally start Flower for monitoring
     if [[ "${START_FLOWER:-false}" == "true" ]]; then
-      echo "Starting Flower monitoring dashboard..."
-      ./venv/bin/celery -A app.worker.celery_app flower --port=5555 &
-      FLOWER_PID=$!
-      echo "Flower started with PID: $FLOWER_PID at http://localhost:5555"
+        echo "🌸 Starting Flower monitoring dashboard..."
+        ./venv/bin/celery -A app.worker.celery_app flower --port=5555 &
+        FLOWER_PID=$!
+        echo "Flower started with PID: $FLOWER_PID at http://localhost:5555"
     fi
     
     # Store PIDs for cleanup
-    echo "$SCRAPE_WORKER_PID" > .celery_scrape_worker.pid
-    echo "$UPLOAD_WORKER_PID" > .celery_upload_worker.pid
+    [[ -n "$SCRAPE_WORKER_PID" ]] && echo "$SCRAPE_WORKER_PID" > .celery_scrape_worker.pid
+    [[ -n "$UPLOAD_WORKER_PID" ]] && echo "$UPLOAD_WORKER_PID" > .celery_upload_worker.pid
     [[ -n "$FLOWER_PID" ]] && echo "$FLOWER_PID" > .celery_flower.pid
     
     # Function to cleanup workers on exit
-    cleanup_workers() {
-      echo "Stopping Celery workers..."
-      [[ -f .celery_scrape_worker.pid ]] && kill $(cat .celery_scrape_worker.pid) 2>/dev/null || true
-      [[ -f .celery_upload_worker.pid ]] && kill $(cat .celery_upload_worker.pid) 2>/dev/null || true  
-      [[ -f .celery_flower.pid ]] && kill $(cat .celery_flower.pid) 2>/dev/null || true
-      rm -f .celery_*.pid
+    cleanup() {
+        echo "🧹 Cleaning up background processes..."
+        [[ -n "$SCRAPE_WORKER_PID" ]] && kill $SCRAPE_WORKER_PID 2>/dev/null || true
+        [[ -n "$UPLOAD_WORKER_PID" ]] && kill $UPLOAD_WORKER_PID 2>/dev/null || true
+        [[ -n "$FLOWER_PID" ]] && kill $FLOWER_PID 2>/dev/null || true
+        rm -f .celery_*.pid
     }
     
-    # Setup cleanup on script exit
-    trap cleanup_workers EXIT
-  fi
+    # Set trap to cleanup on script exit
+    trap cleanup EXIT
+    
+    echo "✅ Celery workers started successfully"
+    echo "📊 Monitor at: http://localhost:5555 (if Flower is enabled)"
 fi
 
-# Auto-tune Uvicorn workers if not overridden
-if [[ -z "${UVICORN_WORKERS}" ]]; then
-  CPU_CORES=$(./venv/bin/python - <<'PY'
-import multiprocessing, os, math
-cores = multiprocessing.cpu_count()
-print(max(2, min(8, (cores * 2) + 1)))
-PY
-)
-  export UVICORN_WORKERS=$CPU_CORES
-  echo "Auto-detected CPU cores: $(./venv/bin/python -c 'import multiprocessing; print(multiprocessing.cpu_count())')"
-  echo "Setting UVICORN_WORKERS=${UVICORN_WORKERS}"
-fi
+# Start the FastAPI server
+echo "🌐 Starting FastAPI server..."
+echo "📍 Server will be available at: http://localhost:8000"
+echo "📖 API docs at: http://localhost:8000/docs"
+echo "🏥 Health check at: http://localhost:8000/health"
 
-echo "Starting FastAPI application..."
-./venv/bin/python -m uvicorn app.main:app \
-  --workers ${UVICORN_WORKERS} \
-  --host "${API_HOST:-0.0.0.0}" \
-  --port "${API_PORT:-8000}"
+# Use environment variables for configuration
+HOST="${HOST:-0.0.0.0}"
+PORT="${PORT:-8000}"
+WORKERS="${WORKERS:-1}"
+
+if [[ "${ENV:-development}" == "production" ]]; then
+    echo "🏭 Starting in production mode..."
+    ./venv/bin/uvicorn app.main:app --host $HOST --port $PORT --workers $WORKERS
+else
+    echo "🔧 Starting in development mode with auto-reload..."
+    ./venv/bin/uvicorn app.main:app --host $HOST --port $PORT --reload
+fi
 

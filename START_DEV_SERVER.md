@@ -1,5 +1,8 @@
 # Development Server Setup Guide
 
+./venv/bin/python check_connections.py
+START_CELERY=true ./start.sh
+
 This guide explains how to start the development server for the Knowledge Base Chat Backend API.
 
 ## Prerequisites
@@ -234,6 +237,32 @@ START_CELERY=true
 START_FLOWER=true
 USE_CELERY=true
 ```
+
+## Helper Scripts
+
+### Check Service Status
+```bash
+./check-workers.sh
+```
+Shows the status of all services (Redis, API, Celery workers) and warns about issues.
+
+### Stop Workers Cleanly
+```bash
+./stop-workers.sh          # Stop only Celery workers
+./stop-workers.sh --all     # Stop Celery workers and Redis
+```
+
+### Common Issues & Solutions
+
+#### Too Many Worker Processes
+If you see "Too many Celery processes" warning:
+```bash
+./stop-workers.sh
+./start.sh
+```
+
+#### Workers Already Running
+The updated `start.sh` now checks for existing workers before starting new ones, preventing duplicates.
 
 ## Next Steps
 

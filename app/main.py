@@ -9,6 +9,7 @@ from app.config.redisconnection import redisConnection
 from app.config.dbconnection import get_db_pool
 from app.core.config import llm
 from app.api.routes import router
+from app.api.routes import health as health_routes
 from app.worker.celery_app import celery_app
 from datetime import datetime
 
@@ -65,36 +66,9 @@ def create_app() -> FastAPI:
 
     # Mount all routes from the router
     app.include_router(router)
-
-    # Add health check endpoint for AWS
-    @app.get("/health", status_code=status.HTTP_200_OK, tags=["Health"])
-    async def health_check():
-        return JSONResponse(
-            status_code=status.HTTP_200_OK, content={"status": "healthy"}
-        )
-
-    @app.get("/health/workers", status_code=status.HTTP_200_OK, tags=["Health"])
-    async def check_worker_health():
-        try:
-            # Check if workers are responsive
-            i = celery_app.control.inspect()
-            stats = i.stats()
-            active = i.active()
-            
-            return JSONResponse(
-                status_code=status.HTTP_200_OK,
-                content={
-                    "status": "healthy" if stats else "unhealthy",
-                    "workers": len(stats) if stats else 0,
-                    "active_tasks": sum(len(tasks) for tasks in (active or {}).values()),
-                    "timestamp": datetime.utcnow().isoformat()
-                }
-            )
-        except Exception as e:
-            return JSONResponse(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                content={"status": "error", "detail": str(e)}
-            )
+    
+    # Mount comprehensive health check routes
+    app.include_router(health_routes.router, prefix="")
 
     @app.on_event("startup")
     def init_db_pool():

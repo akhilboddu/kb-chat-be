@@ -14,6 +14,12 @@ echo "Stopping FastAPI (uvicorn app.main:app) if running …"
 # `pkill -f` exits with code 1 if nothing matched; we ignore that.
 pkill -f "uvicorn.*app\.main:app" 2>/dev/null || true
 
+# Kill anything still using port 8000
+if lsof -ti:8000 > /dev/null 2>&1; then
+  echo "Killing processes on port 8000..."
+  lsof -ti:8000 | xargs kill -9 2>/dev/null || true
+fi
+
 if command -v docker compose &>/dev/null; then
   echo "Stopping Redis docker-compose service …"
   # Stop but do not remove the container so it can start quickly next time.

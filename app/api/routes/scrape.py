@@ -28,6 +28,13 @@ async def scrape_url_and_populate_kb(
     The scraping happens in the background.
     """
     try:
+        # --------------------------------------------------------------
+        # TEMP: Hard-force the scraper to fetch only 3 pages to speed up
+        # local testing, regardless of what the client sends.
+        # Remove this block when you're ready for full crawls.
+        # --------------------------------------------------------------
+        request.max_pages = 3
+
         # Initialize scraping status
         initial_status = {
             "status": "processing",

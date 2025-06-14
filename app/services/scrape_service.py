@@ -52,9 +52,35 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
             },
         )
         
+        # Enhanced progress callback for real-time updates including page counts
+        def progress_callback(percent: int, details: str, pages_found: int = 0):
+            """Callback to update progress during scraping with real-time page counts"""
+            try:
+                # Map scraper progress (15-50%) to our overall progress (15-35%)
+                adjusted_percent = 15 + ((percent - 15) * 20 / 75)  # Scale 15-90% to 15-35%
+                adjusted_percent = max(15, min(35, adjusted_percent))  # Clamp to range
+                
+                # Update with real-time page count
+                db_manager.update_scrape_status(
+                    kb_id,
+                    {
+                        "status": current_status,
+                        "submitted_url": url,
+                        "pages_scraped": pages_found,  # Real-time page count
+                        "total_pages": total_pages,
+                        "progress": {
+                            "stage": "scraping_pages",
+                            "details": details,
+                            "percent": int(adjusted_percent)
+                        },
+                    },
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update progress: {e}")
+        
         scrape_result = await scraper.scrape_website(
-            url, max_pages=max_pages
-        )  # Pass max_pages override
+            url, max_pages=max_pages, progress_callback=progress_callback
+        )
 
         if not scrape_result or "error" in scrape_result:
             error_detail = (
@@ -228,20 +254,60 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
             },
         )
         
-        add_success = kb_manager.add_to_kb(
-            kb_id, 
-            text_to_add, 
-            knowledge_source="website",
-            source_name=source_name,
-            source_url=url,
-            metadata={"pages_scraped": pages_scraped_count}
-        )
+        # ------------------------------------------------------------------
+        # 4-B. Add text to Knowledge Base (can take a while ‑ embeddings)
+        # Run add_to_kb in a background thread and emit heartbeat updates so
+        # the UI keeps moving from 90 % → 99 % while we wait.
+        # ------------------------------------------------------------------
+
+        try:
+            add_future = asyncio.create_task(
+                asyncio.to_thread(
+                    kb_manager.add_to_kb,
+                    kb_id,
+                    text_to_add,
+                    metadata={"pages_scraped": pages_scraped_count},
+                    knowledge_source="website",
+                    source_name=source_name,
+                    source_url=url,
+                )
+            )
+
+            heartbeat_percent = 91
+            while not add_future.done():
+                # Send heartbeat (max 99 %)
+                db_manager.update_scrape_status(
+                    kb_id,
+                    {
+                        "status": current_status,
+                        "submitted_url": url,
+                        "pages_scraped": pages_scraped_count,
+                        "total_pages": pages_scraped_count,
+                        "progress": {
+                            "stage": "finalizing_kb",
+                            "details": f"🔗 Finalizing knowledge base ({heartbeat_percent}%)",
+                            "percent": heartbeat_percent,
+                        },
+                    },
+                )
+                # Wait a bit before next ping
+                await asyncio.sleep(5)
+                heartbeat_percent = min(heartbeat_percent + 2, 99)
+
+            # When finished, get result / raise exception if failed in thread
+            add_success = await add_future
+        except Exception as e:
+            logger.error(
+                f"[Background Task] Failed to add content to KB due to connection issue: {e}"
+            )
+            add_success = False
+        
         if add_success:
             logger.info(
                 f"[Background Task] Successfully populated KB '{kb_id}' with scraped content from URL '{url}'."
             )
             
-            # Update knowledge_sources table
+            # Update knowledge_sources table with connection retry
             try:
                 # Try to get bot_id from kb_id
                 bot_response = supabase.table("bots").select("id").eq("kb_id", kb_id).execute()
@@ -267,21 +333,69 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
                 # Don't fail the whole process if knowledge_sources update fails
             
             current_status = "completed"
-            db_manager.update_scrape_status(
-                kb_id,
-                {
-                    "status": current_status,
-                    "submitted_url": url,
-                    "pages_scraped": pages_scraped_count,  # Final count
-                    "progress": {
-                        "stage": "completed",
-                        "details": "🚀 AI agent ready! Knowledge base created successfully",
-                        "chars_added": len(text_to_add),
-                        "profile_keys": list(business_profile.keys()),
-                        "percent": 100
-                    },
-                },
-            )
+            # Try multiple times to ensure final status is saved with exponential backoff
+            final_update_success = False
+            for attempt in range(5):  # Increased from 3 to 5 attempts
+                try:
+                    success = db_manager.update_scrape_status(
+                        kb_id,
+                        {
+                            "status": current_status,
+                            "submitted_url": url,
+                            "pages_scraped": pages_scraped_count,  # Final count
+                            "total_pages": pages_scraped_count,  # Ensure total_pages is set
+                            "progress": {
+                                "stage": "completed",
+                                "details": "🚀 AI agent ready! Knowledge base created successfully",
+                                "chars_added": len(text_to_add),
+                                "profile_keys": list(business_profile.keys()),
+                                "percent": 100
+                            },
+                        },
+                    )
+                    if success:
+                        logger.info(f"Successfully updated final status to completed for KB {kb_id}")
+                        final_update_success = True
+                        break
+                    else:
+                        logger.warning(f"Attempt {attempt + 1}: update_scrape_status returned False for KB {kb_id}")
+                except Exception as e:
+                    logger.error(f"Attempt {attempt + 1} failed to update final status: {e}")
+                    if attempt == 4:  # Last attempt
+                        logger.error(f"Failed to update final status after 5 attempts for KB {kb_id}")
+                    else:
+                        # Exponential backoff: 1s, 2s, 4s, 8s
+                        wait_time = 2 ** attempt
+                        await asyncio.sleep(wait_time)
+            
+            # If all attempts failed, try one final direct database update
+            if not final_update_success:
+                logger.warning(f"All retry attempts failed, trying direct database update for KB {kb_id}")
+                try:
+                    # Re-use the module-level Supabase client (avoid shadowing)
+                    direct_result = supabase.table('scraping_status').upsert({
+                        'kb_id': kb_id,
+                        'status': 'completed',
+                        'submitted_url': url,
+                        'pages_scraped': pages_scraped_count,
+                        'total_pages': pages_scraped_count,
+                        'progress_data': {
+                            "stage": "completed",
+                            "details": "🚀 AI agent ready! Knowledge base created successfully",
+                            "percent": 100
+                        }
+                    }).execute()
+                    if direct_result.data:
+                        logger.info(f"Direct database update successful for KB {kb_id}")
+                        final_update_success = True
+                except Exception as e:
+                    logger.error(f"Direct database update also failed for KB {kb_id}: {e}")
+            
+            # Log final status for debugging
+            if final_update_success:
+                logger.info(f"[Background Task] FINAL STATUS: KB '{kb_id}' completed successfully with {pages_scraped_count} pages")
+            else:
+                logger.error(f"[Background Task] CRITICAL: Failed to update final completion status for KB '{kb_id}'")
         else:
             logger.error(
                 f"[Background Task] Failed to add scraped content to KB '{kb_id}' from URL '{url}'."
