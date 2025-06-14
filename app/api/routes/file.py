@@ -61,7 +61,7 @@ async def upload_to_kb(
         "message": f"Upload initiated for {len(file_data_list)} file(s)" + (f" ({failed_files} failed to read)" if failed_files > 0 else ""),
         "progress": {
             "stage": "initialized",
-            "details": "🪄 Magic in progress – preparing files for upload",
+            "details": "🪄 Starting upload",
             "percent": 0
         }
     }

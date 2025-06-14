@@ -30,10 +30,10 @@ async def process_files_background(kb_id: str, file_data_list: List[Dict[str, An
             "total_files": total_files + initial_failed_files,
             "processed_files": 0,
             "failed_files": initial_failed_files,
-            "message": f"Starting to process {total_files} file(s)" + (f" ({initial_failed_files} already failed)" if initial_failed_files > 0 else ""),
+            "message": f"Processing {total_files} files" + (f" ({initial_failed_files} failed)" if initial_failed_files > 0 else ""),
             "progress": {
                 "stage": "initialized",
-                "details": "Processing file uploads",
+                "details": "Starting upload",
                 "percent": 0
             }
         }
@@ -59,10 +59,10 @@ async def process_files_background(kb_id: str, file_data_list: List[Dict[str, An
                     "total_files": total_files + initial_failed_files,
                     "processed_files": processed_files,
                     "failed_files": failed_files,
-                    "message": f"Processing file {idx + 1} of {total_files}: {filename}",
+                    "message": f"File {idx + 1}/{total_files}: {filename}",
                     "progress": {
                         "stage": "processing_file",
-                        "details": f"📥 Ingesting: {filename}",
+                        "details": f"📥 {filename}",
                         "percent": file_base_percent
                     }
                 }
@@ -91,10 +91,10 @@ async def process_files_background(kb_id: str, file_data_list: List[Dict[str, An
                     "total_files": total_files + initial_failed_files,
                     "processed_files": processed_files,
                     "failed_files": failed_files,
-                    "message": f"Parsing file {idx + 1} of {total_files}: {filename}",
+                    "message": f"Parsing {idx + 1}/{total_files}: {filename}",
                     "progress": {
                         "stage": "parsing_file",
-                        "details": f"🔍 Extracting text from: {filename}",
+                        "details": f"🔍 {filename}",
                         "percent": file_base_percent + int(file_increment * 0.1)
                     }
                 }
@@ -138,12 +138,12 @@ async def process_files_background(kb_id: str, file_data_list: List[Dict[str, An
                         "total_files": total_files + initial_failed_files,
                         "processed_files": processed_files,
                         "failed_files": failed_files,
-                        "message": f"Finished parsing {filename}",
-                        "progress": {
-                            "stage": "parsing_complete",
-                            "details": f"📄 Parsed text from: {filename}",
-                            "percent": file_base_percent + int(file_increment * 0.5)
-                        }
+                                            "message": f"Parsed {filename}",
+                    "progress": {
+                        "stage": "parsing_complete",
+                        "details": f"📄 {filename}",
+                        "percent": file_base_percent + int(file_increment * 0.5)
+                    }
                     }
                 )
                 
@@ -172,10 +172,10 @@ async def process_files_background(kb_id: str, file_data_list: List[Dict[str, An
                     "total_files": total_files + initial_failed_files,
                     "processed_files": processed_files,
                     "failed_files": failed_files,
-                    "message": f"Embedding content from: {filename}",
+                    "message": f"Embedding {filename}",
                     "progress": {
                         "stage": "embedding",
-                        "details": f"🧠 Building neural connections for: {filename}",
+                        "details": f"🧠 {filename}",
                         "percent": file_base_percent + int(file_increment * 0.7)
                     }
                 }
@@ -189,10 +189,10 @@ async def process_files_background(kb_id: str, file_data_list: List[Dict[str, An
                     "total_files": total_files + initial_failed_files,
                     "processed_files": processed_files,
                     "failed_files": failed_files,
-                    "message": f"Finalising embeddings for: {filename}",
+                    "message": f"Finalizing {filename}",
                     "progress": {
                         "stage": "embedding_finalising",
-                        "details": f"🔗 Finalising vectors for: {filename}",
+                        "details": f"🔗 {filename}",
                         "percent": file_base_percent + int(file_increment * 0.9)
                     }
                 }
@@ -225,12 +225,12 @@ async def process_files_background(kb_id: str, file_data_list: List[Dict[str, An
                             "total_files": total_files + initial_failed_files,
                             "processed_files": processed_files,
                             "failed_files": failed_files,
-                            "message": f"Completed file {idx + 1} of {total_files}",
-                            "progress": {
-                                "stage": "file_complete",
-                                "details": f"✅ Successfully processed: {filename}",
-                                "percent": file_base_percent + file_increment
-                            }
+                                                    "message": f"Done {idx + 1}/{total_files}",
+                        "progress": {
+                            "stage": "file_complete",
+                            "details": f"✅ {filename}",
+                            "percent": file_base_percent + file_increment
+                        }
                         }
                     )
                     
@@ -265,11 +265,15 @@ async def process_files_background(kb_id: str, file_data_list: List[Dict[str, An
             final_status = "failed"
             
         # Generate final message
-        message = f"Processed {processed_files} file(s) successfully"
+        if processed_files == 1:
+            message = "1 file processed"
+        else:
+            message = f"{processed_files} files processed"
+            
         if no_content_files > 0:
-            message += f", {no_content_files} file(s) had no text content"
+            message += f", {no_content_files} empty"
         if failed_files > 0:
-            message += f", {failed_files} file(s) failed to process"
+            message += f", {failed_files} failed"
             
         db_manager.update_file_upload_status(
             kb_id,
@@ -281,7 +285,7 @@ async def process_files_background(kb_id: str, file_data_list: List[Dict[str, An
                 "message": message,
                 "progress": {
                     "stage": "completed",
-                    "details": "🚀 " + message,
+                    "details": "✅ " + message,
                     "percent": 100
                 }
             }

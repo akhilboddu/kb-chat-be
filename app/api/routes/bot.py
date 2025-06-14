@@ -27,6 +27,104 @@ class DemoBotRequest(BaseModel):
     max_pages: Optional[int] = 1
 
 
+# KB Management Compatibility Endpoints
+@router.get("/{bot_id}/kb/sources")
+async def list_bot_kb_sources(bot_id: str):
+    """List all knowledge sources for a bot's KB - compatibility endpoint"""
+    try:
+        # Get the kb_id from bot_id
+        bot_response = supabase.table("bots").select("kb_id").eq("id", bot_id).execute()
+        
+        if not bot_response.data or len(bot_response.data) == 0:
+            raise HTTPException(status_code=404, detail=f"Bot with ID {bot_id} not found")
+        
+        kb_id = bot_response.data[0]["kb_id"]
+        
+        # Query the view using kb_id
+        sources = supabase.table("vw_kb_sources")\
+            .select("*")\
+            .eq("kb_id", kb_id)\
+            .order("last_updated", desc=True)\
+            .execute()
+        
+        return {"sources": sources.data or []}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error listing KB sources for bot {bot_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to list KB sources: {str(e)}")
+
+@router.get("/{bot_id}/kb/documents")
+async def list_bot_kb_documents(
+    bot_id: str,
+    source_name: Optional[str] = None,
+    source_type: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = Query(50, le=200),
+    offset: int = Query(0, ge=0)
+):
+    """List documents for a bot's KB with filtering and search - compatibility endpoint"""
+    try:
+        # Get the kb_id from bot_id
+        bot_response = supabase.table("bots").select("kb_id").eq("id", bot_id).execute()
+        
+        if not bot_response.data or len(bot_response.data) == 0:
+            raise HTTPException(status_code=404, detail=f"Bot with ID {bot_id} not found")
+        
+        kb_id = bot_response.data[0]["kb_id"]
+        
+        query = supabase.table("knowledge_base_documents")\
+            .select("id, document_id, content, source_type, source_name, source_url, created_at", count="exact")\
+            .eq("kb_id", kb_id)
+        
+        if source_name:
+            query = query.eq("source_name", source_name)
+        if source_type:
+            query = query.eq("source_type", source_type)
+        if search:
+            query = query.ilike("content", f"%{search}%")
+        
+        query = query.order("created_at", desc=True)
+        result = query.range(offset, offset + limit - 1).execute()
+        
+        return {
+            "documents": result.data or [],
+            "total": result.count or 0,
+            "limit": limit,
+            "offset": offset
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error listing KB documents for bot {bot_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to list KB documents: {str(e)}")
+
+@router.post("/{bot_id}/kb/optimize")
+async def optimize_bot_knowledge_base(bot_id: str):
+    """AI-powered knowledge base optimization for a bot - compatibility endpoint"""
+    try:
+        # Get the kb_id from bot_id
+        bot_response = supabase.table("bots").select("kb_id").eq("id", bot_id).execute()
+        
+        if not bot_response.data or len(bot_response.data) == 0:
+            raise HTTPException(status_code=404, detail=f"Bot with ID {bot_id} not found")
+        
+        kb_id = bot_response.data[0]["kb_id"]
+        
+        # Import and call the optimize function from kb router
+        from app.api.routes.kb import optimize_knowledge_base
+        
+        # Call the optimization function with the kb_id (treating it as agent_id)
+        return await optimize_knowledge_base(kb_id)
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error optimizing KB for bot {bot_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to optimize KB: {str(e)}")
+
 @router.post("/{bot_id}/knowledge", response_model=StatusResponse)
 async def bot_knowledge_endpoint(bot_id: str, request: AddKnowledgeRequest):
     """
