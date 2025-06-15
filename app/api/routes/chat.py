@@ -220,7 +220,9 @@ async def chat_endpoint(
                 final_content = cleaned_output  # Start with the agent's cleaned output
                 response_type = "answer"
 
-                if cleaned_output.endswith(handoff_marker):
+                print(f"cleaned output: {cleaned_output}")
+
+                if handoff_marker in cleaned_output:
                     print(f"Handoff triggered by agent marker for {kb_id}.")
                     final_content = cleaned_output[: -len(handoff_marker)].strip()
                     response_type = "handoff"
