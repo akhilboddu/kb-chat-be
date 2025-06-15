@@ -12,6 +12,7 @@ from app.config.redisconnection import redisConnection
 from app.config.settings import EXPIRY_STATUS_TIME, ONLINE
 from app.core.supabase_client import supabase
 from app.database.operations import post_message
+from app.utils.cache_utils import get_cached_response, set_cached_response
 from app.models.chat import (
     ChatRequest,
     ChatResponse,
@@ -45,6 +46,51 @@ router = APIRouter(tags=["chat"])
 
 # Store active websocket connections
 active_connections: Dict[str, Set[WebSocket]] = {}
+
+async def broadcast_to_all_connections(conversation_id: str, message_data: dict):
+    """Broadcast message to all WebSocket connections for this conversation"""
+    logger.info(f"Attempting to broadcast to conversation {conversation_id}, active_connections has: {list(active_connections.keys())}")
+    if conversation_id not in active_connections:
+        logger.warning(f"No active connections found for conversation {conversation_id}")
+        return
+    
+    connection_count = len(active_connections[conversation_id])
+    logger.info(f"Broadcasting to {connection_count} connections for conversation {conversation_id}")
+    
+    dead_connections = []
+    sent_count = 0
+    for ws in list(active_connections[conversation_id]):
+        try:
+            await ws.send_json(message_data)
+            sent_count += 1
+            logger.debug(f"Successfully sent message to WebSocket connection")
+        except Exception as e:
+            logger.error(f"Failed to send message to WebSocket: {e}")
+            dead_connections.append(ws)
+    
+    logger.info(f"Successfully sent to {sent_count}/{connection_count} connections")
+    
+    # Clean up dead connections
+    for ws in dead_connections:
+        active_connections[conversation_id].discard(ws)
+    
+    if not active_connections[conversation_id]:
+        del active_connections[conversation_id]
+        logger.info(f"Removed conversation {conversation_id} from active_connections (no remaining connections)")
+
+async def handle_handoff_triggered(conversation_id: str):
+    """Handle all handoff-related updates when handoff is triggered"""
+    # Update conversation status to human
+    supabase.table("conversations").update({
+        "status": "human"
+    }).eq("id", conversation_id).execute()
+    
+    # Increment handoff_requests counter
+    resp = supabase.table("conversations").select("handoff_requests").eq("id", conversation_id).single().execute()
+    current = resp.data.get("handoff_requests", 0) if resp.data else 0
+    supabase.table("conversations").update({
+        "handoff_requests": current + 1
+    }).eq("id", conversation_id).execute()
 
 # Add a new WebSocket endpoint for agents/operators
 agent_active_connections = {}
@@ -147,6 +193,20 @@ async def chat_endpoint(
     # Define default error/handoff messages outside the try block
     generic_error_msg = "Sorry, I encountered an issue processing your request."
     iteration_limit_msg = f"Hmm, I seem to be having trouble finding that specific information right now. I'll ask a human colleague to take a look for you. {handoff_marker}"
+
+    # Check cache first for faster response, but only for specific questions, not context-dependent words
+    # Skip cache for short, context-dependent responses like "yes", "no", "ok", etc.
+    should_use_cache = len(user_message.strip()) > 10 and not user_message.lower().strip() in ['yes', 'no', 'ok', 'sure', 'yeah', 'yep', 'nope', 'thanks', 'thank you']
+    
+    if should_use_cache:
+        cached_response = get_cached_response(kb_id, user_message)
+        if cached_response:
+            logger.info(f"Using cached response for kb_id: {kb_id}")
+            return ChatResponse(
+                content=cached_response["response"],
+                type="answer",
+                kb_id=kb_id
+            )
 
     try:
         # --- Memory Management (Load from DB) ---
@@ -276,6 +336,11 @@ async def chat_endpoint(
             )
             # Optionally save an error placeholder? For now, just skipping.
 
+        # --- Cache successful responses ---
+        # Only cache responses for specific questions, not context-dependent words
+        if response_type == "answer" and final_content and "(needs help)" not in final_content and should_use_cache:
+            set_cached_response(kb_id, user_message, final_content)
+            
         # --- Return Response ---
         # Return the final_content (which has marker removed for handoffs)
         print(
@@ -730,24 +795,23 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
             except Exception as e:
                 print(f"Error sending user message to websocket: {e}")
 
-    response = supabase.table("bots").select("*").eq("id", bot_id).execute()
+    # Fetch bot and conversation data concurrently for better performance
+    bot_task = supabase.table("bots").select("*").eq("id", bot_id).execute()
+    conversation_task = supabase.table("conversations").select("*").eq("id", request.conversation_id).execute()
+    
+    # Process bot data
+    response = bot_task
     bots_data = response.data[0]
-
     user_id = bots_data["user_id"]
     print(user_id, "user_id")
     kb_id = bots_data["kb_id"]
 
+    # Get user data and conversation data
     userData = supabase.auth.admin.get_user_by_id(user_id)
     company_email = userData.user.email
     print(userData, "user_data")
     
-
-    conversation_repsonse = (
-        supabase.table("conversations")
-        .select("*")
-        .eq("id", request.conversation_id)
-        .execute()
-    )
+    conversation_repsonse = conversation_task
     print(f"status is {conversation_repsonse.data}")
     if conversation_repsonse.data and len(conversation_repsonse.data) > 0:
         status = conversation_repsonse.data[0]["status"]
@@ -911,6 +975,140 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
         return response
 
 
+async def bot_chat_websocket_endpoint(bot_id: str, request: ChatRequest, websocket: WebSocket):
+    """
+    WebSocket-based bot chat endpoint for real-time response delivery.
+    """
+    logger.info(f"Starting WebSocket chat for bot_id: {bot_id}, conversation: {request.conversation_id}")
+    
+    try:
+        # Save user message first
+        add_user_message_response = (
+            supabase.table("messages")
+            .insert({
+                "conversation_id": request.conversation_id,
+                "role": "user",
+                "content": request.message,
+                "reply_to_message_id": request.reply_to_message_id,
+            })
+            .execute()
+        )
+        
+        # Broadcast user message to all connections
+        if add_user_message_response.data:
+            user_message_id = add_user_message_response.data[0]["id"]
+            await broadcast_to_all_connections(request.conversation_id, {
+                "type": "message",
+                "id": user_message_id,
+                "content": request.message,
+                "role": "user",
+                "reply_to_message_id": request.reply_to_message_id,
+                "timestamp": datetime.now().isoformat()
+            })
+        
+        # Get bot and KB info
+        bot_response = supabase.table("bots").select("*").eq("id", bot_id).execute()
+        if not bot_response.data:
+            await websocket.send_json({"type": "error", "content": "Bot not found"})
+            return
+            
+        bot_data = bot_response.data[0]
+        kb_id = bot_data["kb_id"]
+        user_id = bot_data["user_id"]
+        
+        # Get conversation context
+        conversation_response = (
+            supabase.table("conversations")
+            .select("*")
+            .eq("id", request.conversation_id)
+            .execute()
+        )
+        
+        if not conversation_response.data:
+            await websocket.send_json({"type": "error", "content": "Conversation not found"})
+            return
+            
+        # Get chat response using the standard chat endpoint
+        import time
+        start_time = time.time()
+        logger.info(f"Starting AI processing for message: '{request.message[:50]}...'")
+        
+        response = await chat_endpoint(
+            kb_id,
+            request,
+            store_history=False,
+            customer_context={
+                "customer_name": conversation_response.data[0].get("customer_name"),
+                "customer_email": conversation_response.data[0].get("customer_email"),
+                "customer_phone": conversation_response.data[0].get("customer_phone"),
+                "bot_name": bot_data.get("name", "Assistant"),
+                "company_name": bot_data.get("company", "our company")
+            }
+        )
+        
+        processing_time = time.time() - start_time
+        logger.info(f"AI processing completed in {processing_time:.2f} seconds")
+        
+        # Determine message status based on response type
+        is_handoff = response.type == "handoff"
+        logger.info(f"Bot response received: content='{response.content[:100]}...', type='{response.type}', handoff_triggered='{is_handoff}'")
+        
+        # Save the complete bot response to database (bot messages don't get handoff status)
+        bot_message_response = supabase.table("messages").insert({
+            "conversation_id": request.conversation_id,
+            "role": "bot",
+            "content": response.content,
+            "status": None  # Bot messages don't get handoff status
+        }).execute()
+        logger.info(f"Bot message saved to database: {bot_message_response.data[0]['id'] if bot_message_response.data else 'FAILED'}")
+        
+        # Handle handoff workflow if triggered - update the USER message that caused the handoff
+        if is_handoff:
+            logger.info(f"Handoff triggered for conversation {request.conversation_id} - updating user message status")
+            await handle_handoff_triggered(request.conversation_id)
+            
+            # Update the user message that triggered this handoff to have handoff status
+            if add_user_message_response.data:
+                user_message_id = add_user_message_response.data[0]["id"]
+                logger.info(f"Updating user message {user_message_id} with handoff status")
+                supabase.table("messages").update({
+                    "status": "handoff"
+                }).eq("id", user_message_id).execute()
+                logger.info(f"User message {user_message_id} updated with handoff status")
+                
+                # Broadcast the user message status update to frontend
+                await broadcast_to_all_connections(request.conversation_id, {
+                    "type": "message_update",
+                    "message_id": user_message_id,
+                    "status": "handoff"
+                })
+        
+        # Cache the response for future use
+        set_cached_response(kb_id, request.message, response.content)
+        
+        # Broadcast message to all connections with correct event type
+        if bot_message_response.data:
+            message_data = {
+                "type": "message",
+                "id": bot_message_response.data[0]["id"],
+                "content": response.content,
+                "role": "bot",
+                "status": None,  # Bot messages don't get handoff status
+                "timestamp": datetime.now().isoformat()
+            }
+            logger.info(f"Broadcasting bot message to conversation {request.conversation_id}: {len(active_connections.get(request.conversation_id, []))} connections")
+            await broadcast_to_all_connections(request.conversation_id, message_data)
+        else:
+            logger.error(f"Failed to save bot message to database for conversation {request.conversation_id}")
+                
+    except Exception as e:
+        logger.error(f"Error in WebSocket chat: {e}")
+        await broadcast_to_all_connections(request.conversation_id, {
+            "type": "error",
+            "content": "An error occurred while processing your request"
+        })
+
+
 @router.post(
     "/bots/{bot_id}/conversations", response_model=CreateBotConversationResponse
 )
@@ -1032,7 +1230,8 @@ async def list_bot_conversations_endpoint(
         )
         total_count = count_response.count if hasattr(count_response, "count") else 0
 
-        query = supabase.table("conversations").select("*").eq("bot_id", bot_id)
+        # Use the view that already contains the last message for every conversation
+        query = supabase.table("conversations_last_message").select("*").eq("bot_id", bot_id)
 
         print("conversations------>", query)
 
@@ -1055,34 +1254,7 @@ async def list_bot_conversations_endpoint(
         # Calculate total pages
         total_pages = math.ceil(total_count / page_size) if total_count > 0 else 1
 
-        # Fetch last messages in parallel
-        conversations = response.data
-
-        async def fetch_last_message(conversation):
-            # This function fetches the last message for a single conversation
-            last_message_response = (
-                supabase.table("messages")
-                .select("*")
-                .eq("conversation_id", conversation["id"])
-                .order("created_at", desc=True)
-                .limit(1)
-                .execute()
-            )
-
-            if last_message_response.data and len(last_message_response.data) > 0:
-                conversation["last_message"] = last_message_response.data[0]["content"]
-                conversation["last_message_time"] = last_message_response.data[0][
-                    "created_at"
-                ]
-            else:
-                conversation["last_message"] = None
-                conversation["last_message_time"] = None
-
-            return conversation
-
-        # Run all fetch operations in parallel
-        tasks = [fetch_last_message(conversation) for conversation in conversations]
-        conversations = await asyncio.gather(*tasks)
+        conversations = response.data  # Last message fields already included by the view
 
         return PaginatedListBotConversationsResponse(
             conversations=conversations,
@@ -1347,23 +1519,16 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
                     # Message from agent - handle_human_chat will save to DB
                     result = await handle_human_chat(conversation_id, message, reply_to_message_id=reply_to_message_id)
                     
-                    # Broadcast the human message manually since handle_human_chat doesn't do it
+                    # Broadcast the human message using the broadcast function
                     message_id = result.get('id')
-                    for ws in list(active_connections.get(conversation_id, [])):
-                        try:
-                            await ws.send_json({
-                                "type": "message",
-                                "id": message_id,
-                                "content": message,
-                                "role": "human",
-                                "reply_to_message_id": reply_to_message_id,
-                                "timestamp": datetime.utcnow().isoformat()
-                            })
-                        except Exception as e:
-                            print(f"Error sending human message to websocket: {e}")
-                            active_connections[conversation_id].remove(ws)
-                            if not active_connections[conversation_id]:
-                                del active_connections[conversation_id]
+                    await broadcast_to_all_connections(conversation_id, {
+                        "type": "message",
+                        "id": message_id,
+                        "content": message,
+                        "role": "human",
+                        "reply_to_message_id": reply_to_message_id,
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
 
                     # --- NEW: Check if widget user is online, send email if not ---
                     # Fetch conversation details
@@ -1406,23 +1571,16 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
                     print("handling user chat------>", message)
                     result = await handle_user_chat(conversation_id, message, reply_to_message_id=reply_to_message_id)
                     
-                    # Broadcast the user message manually since handle_user_chat doesn't do it
+                    # Broadcast the user message using the broadcast function
                     message_id = result.get('id')
-                    for ws in list(active_connections.get(conversation_id, [])):
-                        try:
-                            await ws.send_json({
-                                "type": "message",
-                                "id": message_id,
-                                "content": message,
-                                "role": "user",
-                                "reply_to_message_id": reply_to_message_id,
-                                "timestamp": datetime.utcnow().isoformat()
-                            })
-                        except Exception as e:
-                            print(f"Error sending user message to websocket: {e}")
-                            active_connections[conversation_id].remove(ws)
-                            if not active_connections[conversation_id]:
-                                del active_connections[conversation_id]
+                    await broadcast_to_all_connections(conversation_id, {
+                        "type": "message",
+                        "id": message_id,
+                        "content": message,
+                        "role": "user",
+                        "reply_to_message_id": reply_to_message_id,
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
 
                     # Check if bot is online and send email notification if not
                     client = redisConnection.client
@@ -1451,16 +1609,50 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
 
                 # Note: bot_chat_endpoint will handle broadcasting both user and bot messages with proper IDs
             else:
-                # Handle as AI message
+                # Handle as AI message with streaming support
                 from app.models.chat import ChatRequest
-                # bot_chat_endpoint will handle saving the user message and broadcasting bot response
+                
+                # First check cache for quick response, but only for specific questions, not context-dependent words
+                if bot_id:
+                    bot_data = supabase.table("bots").select("kb_id").eq("id", bot_id).single().execute()
+                    kb_id = bot_data.data.get("kb_id") if bot_data.data else None
+                    
+                    # Skip cache for short, context-dependent responses
+                    should_use_cache = len(message.strip()) > 10 and not message.lower().strip() in ['yes', 'no', 'ok', 'sure', 'yeah', 'yep', 'nope', 'thanks', 'thank you']
+                    
+                    if kb_id and should_use_cache:
+                        cached_response = get_cached_response(kb_id, message)
+                        if cached_response:
+                            # Save cached response to database for consistency
+                            logger.info("Using cached response for faster delivery")
+                            cached_message_response = supabase.table("messages").insert({
+                                "conversation_id": conversation_id,
+                                "role": "bot",
+                                "content": cached_response["response"],
+                            }).execute()
+                            
+                            # Broadcast cached response to all connections
+                            if cached_message_response.data:
+                                await broadcast_to_all_connections(conversation_id, {
+                                    "type": "message",
+                                    "id": cached_message_response.data[0]["id"],
+                                    "content": cached_response["response"],
+                                    "role": "bot",
+                                    "cached": True,
+                                    "timestamp": datetime.utcnow().isoformat()
+                                })
+                            continue
+                
+                # If no cache, proceed with streaming response
                 chat_request = ChatRequest(
                     conversation_id=conversation_id,
                     message=message,
                     reply_to_message_id=reply_to_message_id
                 )
-                print("chat_request------>", chat_request)
-                response = await bot_chat_endpoint(bot_id, chat_request)  # bot_chat_endpoint already uses store_history=False internally
+                print("chat_request------>, will use WebSocket", chat_request)
+                
+                # Call WebSocket version for real-time response
+                await bot_chat_websocket_endpoint(bot_id, chat_request, websocket)
                
     except WebSocketDisconnect:
         print(f"WebSocket disconnected for conversation {conversation_id}")
@@ -1546,40 +1738,56 @@ async def get_conversations_by_email(
 # Add a new endpoint to resolve a handoff message
 @router.post("/messages/{message_id}/resolve")
 async def resolve_handoff_message(message_id: str):
-    from app.core.supabase_client import supabase
-    # Update the message status in the DB
-    update_resp = supabase.table("messages").update({"status": "handoff_resolved"}).eq("id", message_id).execute()
-    if not update_resp:
-        return {"success": False, "error": "Failed to update message status"}
-    # Find the conversation_id for this message
-    msg_resp = supabase.table("messages").select("conversation_id").eq("id", message_id).single().execute()
-    if not msg_resp or not msg_resp.data:
-        return {"success": False, "error": "Message not found"}
-    conversation_id = msg_resp.data["conversation_id"]
-    # Broadcast the update to all clients
-    if conversation_id in active_connections:
-        for ws in list(active_connections[conversation_id]):
-            try:
-                await ws.send_json({
-                    "type": "message_update",
-                    "message_id": message_id,
-                    "status": "handoff_resolved"
-                })
-            except Exception as e:
-                print(f"Error sending message update to websocket: {e}")
-                active_connections[conversation_id].remove(ws)
-                if not active_connections[conversation_id]:
-                    del active_connections[conversation_id]
-    # Fetch current value
-    resp = supabase.table("conversations").select("handoff_requests").eq("id", conversation_id).single().execute()
-    current = resp.data["handoff_requests"] if resp.data and "handoff_requests" in resp.data else 0
-
-    # Increment (or decrement, clamp to >= 0)
-    new_value = max(current - 1, 0)  # or max(current - 1, 0) for decrement
-
-    # Update
-    supabase.table("conversations").update({"handoff_requests": new_value}).eq("id", conversation_id).execute()
-    return {"success": True}
+    try:
+        from app.core.supabase_client import supabase
+        print(f"Attempting to resolve handoff message: {message_id}")
+        
+        # First, find the conversation_id for this message
+        msg_resp = supabase.table("messages").select("conversation_id, status").eq("id", message_id).single().execute()
+        if not msg_resp.data:
+            print(f"Message not found: {message_id}")
+            return {"success": False, "error": "Message not found"}
+        
+        conversation_id = msg_resp.data["conversation_id"]
+        current_status = msg_resp.data.get("status")
+        print(f"Found message in conversation {conversation_id} with status: {current_status}")
+        
+        # Update the message status in the DB
+        update_resp = supabase.table("messages").update({"status": "handoff_resolved"}).eq("id", message_id).execute()
+        if update_resp.data is None:
+            print(f"Failed to update message status for {message_id}")
+            return {"success": False, "error": "Failed to update message status"}
+        
+        print(f"Successfully updated message {message_id} to handoff_resolved")
+        
+        # Broadcast the update to all clients
+        print(f"Broadcasting status update for message {message_id}")
+        await broadcast_to_all_connections(conversation_id, {
+            "type": "message_update",
+            "message_id": message_id,
+            "status": "handoff_resolved"
+        })
+        
+        # Fetch current handoff_requests value and decrement
+        resp = supabase.table("conversations").select("handoff_requests").eq("id", conversation_id).single().execute()
+        current = resp.data.get("handoff_requests", 0) if resp.data else 0
+        print(f"Current handoff_requests count: {current}")
+        
+        # Decrement handoff requests count (clamp to >= 0)
+        new_value = max(current - 1, 0)
+        print(f"Updating handoff_requests to: {new_value}")
+        
+        # Update the conversation
+        supabase.table("conversations").update({"handoff_requests": new_value}).eq("id", conversation_id).execute()
+        
+        print(f"Successfully resolved handoff for message {message_id}")
+        return {"success": True, "message": "Handoff resolved successfully"}
+        
+    except Exception as e:
+        print(f"Error resolving handoff message {message_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": f"Internal server error: {str(e)}"}
 
 @router.get("/conversations/{conversation_id}")
 async def get_conversation_status(conversation_id: str):

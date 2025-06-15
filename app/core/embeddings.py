@@ -229,4 +229,18 @@ def get_embeddings() -> CohereEmbeddings:
     return _embeddings_instance
 
 # Create singleton instance for import
-embeddings_manager = get_embeddings() 
+embeddings_manager = get_embeddings()
+
+# Add backward compatibility check for flexible embeddings
+try:
+    from app.core.embeddings_flexible import get_embeddings as get_flexible_embeddings
+    
+    # Check if user wants to use flexible embeddings
+    import os
+    if os.getenv("USE_FLEXIBLE_EMBEDDINGS", "false").lower() == "true":
+        print("Using flexible embeddings system")
+        embeddings_manager = get_flexible_embeddings()
+    else:
+        print("Using Cohere embeddings (legacy)")
+except ImportError:
+    print("Flexible embeddings not available, using Cohere embeddings") 

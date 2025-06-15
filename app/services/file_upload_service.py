@@ -138,12 +138,12 @@ async def process_files_background(kb_id: str, file_data_list: List[Dict[str, An
                         "total_files": total_files + initial_failed_files,
                         "processed_files": processed_files,
                         "failed_files": failed_files,
-                                            "message": f"Parsed {filename}",
-                    "progress": {
-                        "stage": "parsing_complete",
-                        "details": f"📄 {filename}",
-                        "percent": file_base_percent + int(file_increment * 0.5)
-                    }
+                        "message": f"Parsed {filename}",
+                        "progress": {
+                            "stage": "parsing_complete",
+                            "details": f"📄 {filename}",
+                            "percent": file_base_percent + int(file_increment * 0.5)
+                        }
                     }
                 )
                 
@@ -172,52 +172,31 @@ async def process_files_background(kb_id: str, file_data_list: List[Dict[str, An
                     "total_files": total_files + initial_failed_files,
                     "processed_files": processed_files,
                     "failed_files": failed_files,
-                    "message": f"Embedding {filename}",
+                    "message": f"Processing {filename}",
                     "progress": {
-                        "stage": "embedding",
-                        "details": f"🧠 {filename}",
+                        "stage": "processing",
+                        "details": f"🧠 Processing {filename}",
                         "percent": file_base_percent + int(file_increment * 0.7)
                     }
                 }
             )
 
-            # Additional progress ping (90% of file progress) before heavy embedding work
-            db_manager.update_file_upload_status(
-                kb_id,
-                {
-                    "status": current_status,
-                    "total_files": total_files + initial_failed_files,
-                    "processed_files": processed_files,
-                    "failed_files": failed_files,
-                    "message": f"Finalizing {filename}",
-                    "progress": {
-                        "stage": "embedding_finalising",
-                        "details": f"🔗 {filename}",
-                        "percent": file_base_percent + int(file_increment * 0.9)
-                    }
-                }
-            )
-
-            # Stage 4: Add to knowledge base (80% of file progress)
+            # Stage 4: Add to knowledge base with batch processing
             logger.info(f"Adding parsed text from {filename} to KB {kb_id} - text length: {len(raw_extracted_text)}")
+            
             try:
-                logger.info(f"Calling kb_manager.add_to_kb for {filename}")
-                success = kb_manager.add_to_kb(
-                    kb_id,
-                    raw_extracted_text,
-                    knowledge_source="file",
-                    source_name=filename,
-                    metadata={"file_size": file_size, "content_type": content_type}
-                )
-                logger.info(f"kb_manager.add_to_kb returned: {success} for {filename}")
-                
-                if success:
-                    file_extension = file_parser.get_file_extension(filename)
-                    parsed_as = "Markdown" if file_extension == ".pdf" else "text"
-                    logger.info(f"Successfully added content (parsed as {parsed_as}) from {filename}")
-                    processed_files += 1
+                # Define progress callback for KB operations
+                def kb_progress_callback(kb_percent: int, kb_message: str):
+                    # Map KB progress (0-100) to file progress (70-100%)
+                    file_progress = file_base_percent + int(file_increment * (0.7 + 0.3 * kb_percent / 100))
                     
-                    # Final per-file completion update (100% of file progress)
+                    # Ensure we reach 100% for the last file when KB processing is complete
+                    if kb_percent >= 100 and idx == len(file_data_list) - 1:
+                        file_progress = 100
+                    
+                    # Log progress calculation for debugging
+                    logger.info(f"KB Progress: {kb_percent}% -> File Progress: {file_progress}% (base: {file_base_percent}, increment: {file_increment})")
+                    
                     db_manager.update_file_upload_status(
                         kb_id,
                         {
@@ -225,12 +204,78 @@ async def process_files_background(kb_id: str, file_data_list: List[Dict[str, An
                             "total_files": total_files + initial_failed_files,
                             "processed_files": processed_files,
                             "failed_files": failed_files,
-                                                    "message": f"Done {idx + 1}/{total_files}",
-                        "progress": {
-                            "stage": "file_complete",
-                            "details": f"✅ {filename}",
-                            "percent": file_base_percent + file_increment
+                            "message": f"{filename}: {kb_message}",
+                            "progress": {
+                                "stage": "kb_processing",
+                                "details": f"📊 {filename}: {kb_message}",
+                                "percent": file_progress
+                            }
                         }
+                    )
+
+                logger.info(f"Calling kb_manager.add_to_kb for {filename}")
+                
+                # Retry logic for knowledge base addition
+                max_retries = 3
+                success = False
+                last_error = None
+                
+                for attempt in range(max_retries):
+                    try:
+                        # Use the add_to_kb method which now internally uses batch processing
+                        success = kb_manager.add_to_kb(
+                            kb_id,
+                            raw_extracted_text,
+                            knowledge_source="file",
+                            source_name=filename,
+                            metadata={"file_size": file_size, "content_type": content_type},
+                            progress_callback=kb_progress_callback
+                        )
+                        
+                        if success:
+                            logger.info(f"kb_manager.add_to_kb succeeded on attempt {attempt + 1} for {filename}")
+                            break
+                        else:
+                            last_error = f"add_to_kb returned False"
+                            logger.warning(f"kb_manager.add_to_kb returned False on attempt {attempt + 1} for {filename}")
+                            
+                    except Exception as e:
+                        last_error = str(e)
+                        logger.error(f"kb_manager.add_to_kb failed on attempt {attempt + 1} for {filename}: {e}")
+                        
+                        if attempt < max_retries - 1:
+                            import time
+                            wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                            logger.info(f"Retrying in {wait_time} seconds...")
+                            time.sleep(wait_time)
+                        else:
+                            logger.error(f"All {max_retries} attempts failed for {filename}. Last error: {last_error}")
+                
+                if success:
+                    file_extension = file_parser.get_file_extension(filename)
+                    parsed_as = "Markdown" if file_extension == ".pdf" else "text"
+                    logger.info(f"Successfully added content (parsed as {parsed_as}) from {filename}")
+                    processed_files += 1
+                    
+                    # Final per-file completion update - ensure we reach 100% for the last file
+                    final_percent = file_base_percent + file_increment
+                    if idx == len(file_data_list) - 1:
+                        # This is the last file, ensure we're at 100%
+                        final_percent = 100
+                    
+                    db_manager.update_file_upload_status(
+                        kb_id,
+                        {
+                            "status": current_status,
+                            "total_files": total_files + initial_failed_files,
+                            "processed_files": processed_files,
+                            "failed_files": failed_files,
+                            "message": f"Completed {idx + 1}/{total_files}",
+                            "progress": {
+                                "stage": "file_complete",
+                                "details": f"✅ {filename}",
+                                "percent": final_percent
+                            }
                         }
                     )
                     
@@ -250,12 +295,48 @@ async def process_files_background(kb_id: str, file_data_list: List[Dict[str, An
                         logger.error(f"Failed to update knowledge_sources table: {str(e)}")
                     
                 else:
-                    logger.error(f"Failed to add content from {filename} to KB")
+                    logger.error(f"Failed to add content from {filename} to KB after {max_retries} attempts. Last error: {last_error}")
                     failed_files += 1
                     
+                    # Update status to show specific failure
+                    db_manager.update_file_upload_status(
+                        kb_id,
+                        {
+                            "status": current_status,
+                            "total_files": total_files + initial_failed_files,
+                            "processed_files": processed_files,
+                            "failed_files": failed_files,
+                            "message": f"Failed to process {filename}: {last_error}",
+                            "progress": {
+                                "stage": "file_failed",
+                                "details": f"❌ {filename} - {last_error}",
+                                "percent": file_base_percent + file_increment
+                            }
+                        }
+                    )
+                    
             except Exception as e:
-                logger.error(f"Error adding content from {filename} to KB: {e}")
+                logger.error(f"Unexpected error processing {filename}: {e}")
+                import traceback
+                traceback.print_exc()
                 failed_files += 1
+                
+                # Update status to show unexpected failure
+                db_manager.update_file_upload_status(
+                    kb_id,
+                    {
+                        "status": current_status,
+                        "total_files": total_files + initial_failed_files,
+                        "processed_files": processed_files,
+                        "failed_files": failed_files,
+                        "message": f"Unexpected error processing {filename}: {str(e)}",
+                        "progress": {
+                            "stage": "file_error",
+                            "details": f"⚠️ {filename} - Unexpected error",
+                            "percent": file_base_percent + file_increment
+                        }
+                    }
+                )
                 
         # Final status update
         final_status = "completed"

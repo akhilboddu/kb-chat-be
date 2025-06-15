@@ -25,10 +25,10 @@ redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0")
 class TaskProtection:
     """Provides protection mechanisms for background tasks"""
     
-    # Task timeout settings (in seconds)
+    # Task timeout settings (in seconds) - reduced to allow retries
     TASK_TIMEOUTS = {
         "scrape": 600,      # 10 minutes
-        "upload": 300,      # 5 minutes
+        "upload": 180,      # 3 minutes (reduced from 5)
         "optimize": 900,    # 15 minutes
     }
     

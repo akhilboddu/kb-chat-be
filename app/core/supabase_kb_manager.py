@@ -143,9 +143,11 @@ class KBManager:
                   metadata: Optional[Dict[str, Any]] = None, 
                   knowledge_source: str = "manual",
                   source_name: Optional[str] = None,
-                  source_url: Optional[str] = None) -> bool:
+                  source_url: Optional[str] = None,
+                  progress_callback: Optional[callable] = None) -> bool:
         """
         Adds text to a knowledge base with contextualization and optional metadata.
+        This is now a wrapper around batch_add_to_kb for backward compatibility.
         
         Args:
             kb_id: ID of the knowledge base to update
@@ -154,6 +156,7 @@ class KBManager:
             knowledge_source: Source of the knowledge (website, file, human conversation, manual)
             source_name: Optional name of the source (e.g., filename, website title)
             source_url: Optional URL of the source
+            progress_callback: Optional callback(percent, message) for progress updates
             
         Returns:
             Success status
@@ -162,69 +165,244 @@ class KBManager:
             print(f"No valid content to add to KB {kb_id}")
             return False
         
-        # Get the KB to ensure it exists
-        kb_collection = self.create_or_get_kb(kb_id)
-        
         # Process and chunk the text
         chunks = data_processor.chunk_text(text_to_add)
         if not chunks:
             print(f"Text resulted in no chunks, nothing to add to KB {kb_id}")
             return False
         
+        # Use batch method
+        return self.batch_add_to_kb(
+            kb_id=kb_id,
+            text_chunks=chunks,
+            full_document=text_to_add,
+            metadata=metadata,
+            knowledge_source=knowledge_source,
+            source_name=source_name,
+            source_url=source_url,
+            progress_callback=progress_callback
+        )
+    
+    def batch_add_to_kb(self, kb_id: str, text_chunks: List[str], 
+                        full_document: Optional[str] = None,
+                        metadata: Optional[Dict[str, Any]] = None, 
+                        knowledge_source: str = "manual",
+                        source_name: Optional[str] = None,
+                        source_url: Optional[str] = None,
+                        progress_callback: Optional[callable] = None) -> bool:
+        """
+        Adds multiple text chunks to a knowledge base with batch processing.
+        Uses batch context generation and embeddings for efficiency.
+        
+        Args:
+            kb_id: ID of the knowledge base to update
+            text_chunks: List of text chunks to add
+            full_document: Optional full document for better context generation
+            metadata: Optional metadata dictionary
+            knowledge_source: Source of the knowledge (website, file, human conversation, manual)
+            source_name: Optional name of the source (e.g., filename, website title)
+            source_url: Optional URL of the source
+            progress_callback: Optional callback(percent, message) for progress updates
+            
+        Returns:
+            Success status
+        """
+        # Filter out empty chunks
+        valid_chunks = [chunk for chunk in text_chunks if chunk.strip()]
+        
+        if not valid_chunks:
+            print(f"No valid chunks to add to KB {kb_id}")
+            return False
+        
+        print(f"[KB Manager] Processing {len(valid_chunks)} chunks for {source_name}")
+        
+        # Get the KB to ensure it exists
+        kb_collection = self.create_or_get_kb(kb_id)
+        
+        # Use full document for context or join chunks
+        if not full_document:
+            full_document = "\n\n".join(valid_chunks)
+        
+        print(f"[KB Manager] Full document length: {len(full_document)} characters")
+        
         # Generate unique timestamp for this batch
         timestamp = int(time.time() * 1000)
         
-        # For context generation, use the full text as document
-        full_document = text_to_add
-        
-        documents_to_insert = []
-        
-        for i, chunk in enumerate(chunks):
-            if not chunk.strip():
-                continue
+        try:
+            # Check if we should skip context generation (for debugging/performance)
+            skip_context = os.getenv("SKIP_CONTEXT_GENERATION", "false").lower() == "true"
             
-            # Generate context
-            context = contextualizer.create_context(full_document, chunk)
-            ctx_text = f"{context} {chunk}"
-            
-            # Generate embedding
-            embedding = embeddings_manager.embed_query(ctx_text)
-            
-            if embedding:
-                # Merge metadata with timestamp
-                doc_metadata = metadata.copy() if metadata else {}
-                doc_metadata['timestamp'] = timestamp
-                doc_metadata['chunk_index'] = i
+            if skip_context:
+                print(f"[KB Manager] Skipping context generation (SKIP_CONTEXT_GENERATION=true)")
+                contexts = [""] * len(valid_chunks)  # Empty contexts
                 
-                document_data = {
-                    'kb_id': kb_id,
-                    'document_id': f"add_{timestamp}_{i}",
-                    'content': chunk,
-                    'ctx_text': ctx_text,
-                    'embedding': embedding,
-                    'metadata': json.dumps(doc_metadata),
-                    'knowledge_source': knowledge_source,
-                    'source_type': knowledge_source,
-                    'source_name': source_name or f"{knowledge_source}_{timestamp}",
-                    'source_url': source_url
-                }
-                documents_to_insert.append(document_data)
-        
-        if documents_to_insert:
+                if progress_callback:
+                    progress_callback(30, f"Context generation skipped")
+            else:
+                # Batch generate contexts (10 at a time to avoid rate limits and timeouts)
+                print(f"Generating contexts for {len(valid_chunks)} chunks...")
+                contexts = []
+                context_batch_size = 10  # Reduced from 20 to avoid timeouts
+                
+                for i in range(0, len(valid_chunks), context_batch_size):
+                    batch_chunks = valid_chunks[i:i + context_batch_size]
+                    
+                    try:
+                        # Add timeout and error handling for context generation
+                        print(f"Processing context batch {i//context_batch_size + 1} of {(len(valid_chunks) + context_batch_size - 1)//context_batch_size}")
+                        batch_contexts = contextualizer.batch_create_contexts(
+                            full_document, 
+                            batch_chunks,
+                            show_progress=False
+                        )
+                        contexts.extend(batch_contexts)
+                        
+                        # Progress callback for context generation
+                        if progress_callback:
+                            percent = int((i + len(batch_chunks)) / len(valid_chunks) * 30)  # 0-30% for contexts
+                            progress_callback(percent, f"Generating contexts: {i + len(batch_chunks)}/{len(valid_chunks)} chunks")
+                            print(f"[KB Progress] Context generation: {percent}% - Processed {i + len(batch_chunks)}/{len(valid_chunks)} chunks")
+                        
+                        # Small delay between batches to avoid rate limits
+                        if i + context_batch_size < len(valid_chunks):
+                            time.sleep(0.5)
+                            
+                    except Exception as e:
+                        print(f"Error generating contexts for batch {i//context_batch_size + 1}: {e}")
+                        # Use empty contexts as fallback
+                        fallback_contexts = ["This section contains information from the document."] * len(batch_chunks)
+                        contexts.extend(fallback_contexts)
+                        
+                        if progress_callback:
+                            percent = int((i + len(batch_chunks)) / len(valid_chunks) * 30)
+                            progress_callback(percent, f"Context generation issue, continuing: {i + len(batch_chunks)}/{len(valid_chunks)} chunks")
+                
+                # Ensure we have contexts for all chunks
+                if len(contexts) < len(valid_chunks):
+                    print(f"Warning: Only generated {len(contexts)} contexts for {len(valid_chunks)} chunks. Adding fallback contexts.")
+                    while len(contexts) < len(valid_chunks):
+                        contexts.append("This section contains information from the document.")
+            
+            # Create contextualized texts
+            ctx_texts = [f"{context} {chunk}" if context else chunk for context, chunk in zip(contexts, valid_chunks)]
+            
+            # Batch generate embeddings
+            print(f"Generating embeddings for {len(ctx_texts)} contextualized chunks...")
+            
+            if progress_callback:
+                progress_callback(35, f"Starting embeddings generation for {len(ctx_texts)} chunks")
+            
             try:
-                # Batch insert
-                batch_size = 100
-                for i in range(0, len(documents_to_insert), batch_size):
-                    batch = documents_to_insert[i:i + batch_size]
-                    self.supabase.table('knowledge_base_documents').insert(batch).execute()
+                # Get embeddings info for debugging
+                embeddings_info = embeddings_manager.get_embedding_info()
+                print(f"Using embeddings provider: {embeddings_info.get('provider', 'unknown')}")
+                print(f"Model: {embeddings_info.get('model', 'unknown')}")
+                print(f"Dimensions: {embeddings_info.get('dimension', 'unknown')}")
                 
-                print(f"Added {len(documents_to_insert)} new contextualized chunks to KB {kb_id} from source: {knowledge_source}")
-                return True
+                start_time = time.time()
+                embeddings = embeddings_manager.embed_texts(ctx_texts)
+                elapsed_time = time.time() - start_time
+                
+                print(f"Generated {len(embeddings)} embeddings in {elapsed_time:.2f}s ({elapsed_time/len(embeddings):.3f}s per embedding)")
+                
+                if progress_callback:
+                    progress_callback(50, f"Generated embeddings for {len(embeddings)} chunks in {elapsed_time:.1f}s")
+                    print(f"[KB Progress] Embeddings complete: 50%")
+                    
             except Exception as e:
-                print(f"Error adding documents to KB {kb_id}: {e}")
+                print(f"Error generating embeddings: {e}")
+                import traceback
+                traceback.print_exc()
+                
+                # Generate embeddings one by one as fallback
+                print("Falling back to individual embedding generation...")
+                embeddings = []
+                for idx, ctx_text in enumerate(ctx_texts):
+                    try:
+                        start_time = time.time()
+                        embedding = embeddings_manager.embed_query(ctx_text)
+                        elapsed = time.time() - start_time
+                        embeddings.append(embedding)
+                        
+                        if idx % 5 == 0:  # Log every 5th embedding
+                            print(f"Generated embedding {idx+1}/{len(ctx_texts)} in {elapsed:.3f}s")
+                            
+                    except Exception as e2:
+                        print(f"Error generating embedding for chunk {idx}: {e2}")
+                        # Use zero embedding as last resort
+                        embeddings.append([0.0] * 1024)
+                    
+                    if progress_callback and idx % 10 == 0:
+                        percent = 30 + int((idx / len(ctx_texts)) * 20)  # 30-50% for embeddings
+                        progress_callback(percent, f"Generating embeddings: {idx+1}/{len(ctx_texts)} chunks")
+            
+            # Build documents for insertion
+            documents_to_insert = []
+            for i, (chunk, ctx_text, embedding) in enumerate(zip(valid_chunks, ctx_texts, embeddings)):
+                if embedding and any(embedding):  # Check embedding is not all zeros
+                    # Merge metadata with timestamp
+                    doc_metadata = metadata.copy() if metadata else {}
+                    doc_metadata['timestamp'] = timestamp
+                    doc_metadata['chunk_index'] = i
+                    
+                    document_data = {
+                        'kb_id': kb_id,
+                        'document_id': f"batch_{timestamp}_{i}",
+                        'content': chunk,
+                        'ctx_text': ctx_text,
+                        'embedding': embedding,
+                        'metadata': json.dumps(doc_metadata),
+                        'knowledge_source': knowledge_source,
+                        'source_type': knowledge_source,
+                        'source_name': source_name or f"{knowledge_source}_{timestamp}",
+                        'source_url': source_url
+                    }
+                    documents_to_insert.append(document_data)
+            
+            if documents_to_insert:
+                # Batch insert documents
+                batch_size = 100
+                total_batches = (len(documents_to_insert) + batch_size - 1) // batch_size
+                
+                for batch_idx in range(0, len(documents_to_insert), batch_size):
+                    batch = documents_to_insert[batch_idx:batch_idx + batch_size]
+                    
+                    # Retry logic for database insertion
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            self.supabase.table('knowledge_base_documents').insert(batch).execute()
+                            break
+                        except Exception as e:
+                            if attempt < max_retries - 1:
+                                print(f"Retry {attempt + 1}/{max_retries} for batch insertion after error: {e}")
+                                time.sleep(2 ** attempt)  # Exponential backoff
+                            else:
+                                raise
+                    
+                    # Progress callback for insertion
+                    if progress_callback:
+                        current_batch = batch_idx // batch_size + 1
+                        percent = 50 + int((current_batch / total_batches) * 50)  # 50-100% for insertion
+                        progress_callback(percent, f"Inserting batch {current_batch}/{total_batches}")
+                        print(f"[KB Progress] Insertion: {percent}%")
+                
+                print(f"Added {len(documents_to_insert)} contextualized chunks to KB {kb_id} from source: {knowledge_source}")
+                
+                # Final progress callback
+                if progress_callback:
+                    progress_callback(100, f"Successfully added {len(documents_to_insert)} chunks")
+                    print(f"[KB Progress] Complete: 100%")
+                
+                return True
+            else:
+                print(f"No valid documents generated, nothing added to KB {kb_id}")
                 return False
-        else:
-            print(f"No valid documents generated from text, nothing added to KB {kb_id}")
+                
+        except Exception as e:
+            print(f"Error in batch_add_to_kb for KB {kb_id}: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def get_similar_docs(self, kb_id: str, query: str, n_results: int = 5) -> List[dict]:

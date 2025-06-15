@@ -261,21 +261,10 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
         # ------------------------------------------------------------------
 
         try:
-            add_future = asyncio.create_task(
-                asyncio.to_thread(
-                    kb_manager.add_to_kb,
-                    kb_id,
-                    text_to_add,
-                    metadata={"pages_scraped": pages_scraped_count},
-                    knowledge_source="website",
-                    source_name=source_name,
-                    source_url=url,
-                )
-            )
-
-            heartbeat_percent = 91
-            while not add_future.done():
-                # Send heartbeat (max 99 %)
+            # Define progress callback to map KB progress to overall scrape progress (90-100%)
+            def kb_progress_cb(kb_percent: int, kb_msg: str):
+                # Map 0-100 → 90-100
+                overall_percent = 90 + int(kb_percent * 0.1)
                 db_manager.update_scrape_status(
                     kb_id,
                     {
@@ -285,16 +274,25 @@ async def run_scrape_and_populate(kb_id: str, url: str, max_pages: Optional[int]
                         "total_pages": pages_scraped_count,
                         "progress": {
                             "stage": "finalizing_kb",
-                            "details": f"🔗 Finalizing knowledge base ({heartbeat_percent}%)",
-                            "percent": heartbeat_percent,
+                            "details": f"{kb_msg}",
+                            "percent": overall_percent,
                         },
                     },
                 )
-                # Wait a bit before next ping
-                await asyncio.sleep(5)
-                heartbeat_percent = min(heartbeat_percent + 2, 99)
 
-            # When finished, get result / raise exception if failed in thread
+            add_future = asyncio.create_task(
+                asyncio.to_thread(
+                    kb_manager.add_to_kb,
+                    kb_id,
+                    text_to_add,
+                    metadata={"pages_scraped": pages_scraped_count},
+                    knowledge_source="website",
+                    source_name=source_name,
+                    source_url=url,
+                    progress_callback=kb_progress_cb,
+                )
+            )
+
             add_success = await add_future
         except Exception as e:
             logger.error(
