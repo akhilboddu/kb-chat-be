@@ -271,6 +271,9 @@ def create_agent_executor(
     # Ensure the prompt includes all required ReAct variables
     react_template = f"""{system_prompt_template}
 
+Here is the conversation so far (you have already said these messages, so DO NOT repeat yourself):
+{{chat_history}}
+
 You have access to the following tools:
 
 {{tools}}

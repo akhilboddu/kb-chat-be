@@ -5,7 +5,7 @@
 
 set -e  # Exit on any error
 
-echo "🚀 Starting KB Chat Backend..."
+echo "🚀 Starting KB Chat Backend with HuggingFace Embeddings..."
 
 # ------------------------------------------------------------------
 # Load environment variables from .env if present so users don't need
@@ -67,6 +67,26 @@ fi
 # Set default environment variables
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
+# Set HuggingFace embeddings and worker safety defaults
+export USE_FLEXIBLE_EMBEDDINGS="${USE_FLEXIBLE_EMBEDDINGS:-true}"
+export EMBEDDINGS_PROVIDER="${EMBEDDINGS_PROVIDER:-huggingface}"
+export HUGGINGFACE_MODEL="${HUGGINGFACE_MODEL:-mixedbread-ai/mxbai-embed-large-v1}"
+
+# CRITICAL: Worker safety environment variables (prevent segfaults)
+export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:128}"
+export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
+
+# Display configuration status
+echo "📋 Configuration Status:"
+echo "  🤖 Embeddings Provider: ${EMBEDDINGS_PROVIDER}"
+echo "  🎯 HuggingFace Model: ${HUGGINGFACE_MODEL}"
+echo "  🧵 Worker Pool: threads (prevents segfaults)"
+echo "  🛡️  Safety Variables: TOKENIZERS_PARALLELISM=${TOKENIZERS_PARALLELISM}, OMP_NUM_THREADS=${OMP_NUM_THREADS}"
+
 # Check for required environment variables
 if [[ -z "${SUPABASE_URL}" ]]; then
     echo "⚠️  SUPABASE_URL not set in environment"
@@ -110,9 +130,9 @@ if [[ "${START_CELERY:-false}" == "true" ]]; then
     if is_running "celery.*worker.*-Q scrape"; then
         echo "Scrape worker is already running, skipping..."
     else
-        # Start scrape worker in background
-        echo "Starting scrape worker..."
-        ./venv/bin/celery -A app.worker.celery_app worker -Q scrape --loglevel=info -n scrape@%h --concurrency=1 &
+        # Start scrape worker in background with thread pool
+        echo "Starting scrape worker with thread pool..."
+        ./venv/bin/celery -A app.worker.celery_app worker -Q scrape --pool=threads --concurrency=2 --loglevel=info -n scrape@%h &
         SCRAPE_WORKER_PID=$!
         echo "Scrape worker started with PID: $SCRAPE_WORKER_PID"
     fi
@@ -120,9 +140,9 @@ if [[ "${START_CELERY:-false}" == "true" ]]; then
     if is_running "celery.*worker.*-Q upload"; then
         echo "Upload worker is already running, skipping..."
     else
-        # Start upload worker in background
-        echo "Starting upload worker..."
-        ./venv/bin/celery -A app.worker.celery_app worker -Q upload --loglevel=info -n upload@%h --concurrency=1 &
+        # Start upload worker in background with thread pool
+        echo "Starting upload worker with thread pool..."
+        ./venv/bin/celery -A app.worker.celery_app worker -Q upload --pool=threads --concurrency=2 --loglevel=info -n upload@%h &
         UPLOAD_WORKER_PID=$!
         echo "Upload worker started with PID: $UPLOAD_WORKER_PID"
     fi
@@ -130,9 +150,9 @@ if [[ "${START_CELERY:-false}" == "true" ]]; then
     if is_running "celery.*worker.*-Q optimize"; then
         echo "Optimize worker is already running, skipping..."
     else
-        # Start optimize worker in background
-        echo "Starting optimize worker..."
-        ./venv/bin/celery -A app.worker.celery_app worker -Q optimize --loglevel=info -n optimize@%h --concurrency=1 &
+        # Start optimize worker in background with thread pool
+        echo "Starting optimize worker with thread pool..."
+        ./venv/bin/celery -A app.worker.celery_app worker -Q optimize --pool=threads --concurrency=2 --loglevel=info -n optimize@%h &
         OPTIMIZE_WORKER_PID=$!
         echo "Optimize worker started with PID: $OPTIMIZE_WORKER_PID"
     fi

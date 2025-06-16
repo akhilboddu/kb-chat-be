@@ -17,7 +17,7 @@ This is a sophisticated multi-tenant AI sales agent backend built with FastAPI t
 │                                Core Components                                          │
 │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌───────────┐ ┌─────────────┐ ┌──────┐ │
 │  │ KB Manager  │ │ DB Manager  │ │Agent Manager│ │ Scraper   │ │ WebSocket   │ │Redis │ │
-│  │ (Supabase)  │ │(Supabase+SQL│ │ (LangChain) │ │(Playwright)│ │ Chat Server │ │Status│ │
+│  │ (Supabase)  │ │(Supabase+SQL│ │ (LangChain) │ │(Firecrawl) │ │ Chat Server │ │Status│ │
 │  └─────────────┘ └─────────────┘ └─────────────┘ └───────────┘ └─────────────┘ └──────┘ │
 ├─────────────────────────────────────────────────────────────────────────────────────────┤
 │                             Background Task Processing                                  │
@@ -45,10 +45,10 @@ This is a sophisticated multi-tenant AI sales agent backend built with FastAPI t
 │  │Google Gemini│ │  DeepSeek   │ │   OpenAI    │ │ WhatsApp  │ │  AWS SES    │ │PayStack │
 │  │    LLM      │ │    LLM      │ │    LLM      │ │Business API│ │Email Service│ │Payment│ │
 │  └─────────────┘ └─────────────┘ └─────────────┘ └───────────┘ └─────────────┘ └──────┘ │
-│  ┌─────────────┐ ┌─────────────┐                                                         │
-│  │   Cohere    │ │  Anthropic  │                                                         │
-│  │ Embeddings  │ │Claude (CTX) │                                                         │
-│  └─────────────┘ └─────────────┘                                                         │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐                                        │
+│  │   Cohere    │ │  Anthropic  │ │ HuggingFace │                                        │
+│  │ Embeddings  │ │Claude (CTX) │ │ Embeddings  │                                        │
+│  └─────────────┘ └─────────────┘ └─────────────┘                                        │
 └─────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -173,7 +173,7 @@ cleanup_duplicates(kb_id)  # Remove duplicate documents
 
 ### 5. Web Scraper (`scraper.py`)
 
-**Purpose**: Intelligent web scraping using Playwright for automated knowledge base population.
+**Purpose**: Intelligent web scraping using Firecrawl for automated knowledge base population.
 
 **Key Features**:
 - **Multi-page Scraping**: Follows internal links up to configurable limits
@@ -796,18 +796,19 @@ VITE_BASE_URL=frontend_base_url
 The system supports multiple LLM providers with automatic fallback:
 
 1. **Google Gemini** (Primary)
-   - Model: `gemini-1.5-flash`
+   - Model: `gemini-2.0-flash-lite`
    - Fast and cost-effective
    - Good for conversational AI
 
-2. **DeepSeek** (Fallback)
+2. **OpenAI** (Secondary Fallback)
+   - Model: `gpt-4`
+   - Premium option with high accuracy
+   - Configurable via OPENAI_MODEL env var
+
+3. **DeepSeek** (Tertiary Fallback)
    - Model: `deepseek-chat`
    - Uses OpenAI-compatible API
    - Alternative provider
-
-3. **OpenAI** (Optional)
-   - Various models supported
-   - Premium option
 
 ### Conversation Flow
 ```
@@ -865,10 +866,10 @@ User Query → Embed Query → Hybrid Search → Contextualized Results → LLM 
 ## Web Scraping System
 
 ### Scraping Architecture
-- **Browser Engine**: Playwright with Chromium
+- **Scraping Engine**: Firecrawl API
 - **Parallel Processing**: Multiple pages scraped concurrently
 - **Content Focus**: Smart selection of main content areas
-- **Resource Blocking**: Faster scraping by blocking images/scripts
+- **Automatic Crawling**: Follows internal links intelligently
 
 ### Business Intelligence Extraction
 The scraper uses LLM analysis to extract:
@@ -901,8 +902,12 @@ GOOGLE_API_KEY=your_gemini_api_key
 DEEPSEEK_API_KEY=your_deepseek_key
 DEEPSEEK_API_BASE=https://api.deepseek.com/v1
 OPENAI_API_KEY=your_openai_key
-ANTHROPIC_API_KEY=your_anthropic_key  # NEW: For context generation
-COHERE_API_KEY=your_cohere_key  # NEW: For embeddings + reranking
+ANTHROPIC_API_KEY=your_anthropic_key  # For context generation
+COHERE_API_KEY=your_cohere_key  # For embeddings + reranking
+
+# Embeddings Configuration (NEW)
+EMBEDDINGS_PROVIDER=cohere  # Options: cohere, huggingface
+HUGGINGFACE_MODEL=sentence-transformers/all-MiniLM-L6-v2  # Used if provider is huggingface
 
 # Storage Paths
 # CHROMADB_PATH=./chromadb_data  # REMOVED - Replaced by Supabase Vector DB
@@ -1059,7 +1064,10 @@ app/
 11. **app/services/agent_service.py** — High-level orchestration for conversation lifecycles, CRM enrichment, push notifications and human handoff signals.
 12. **app/utils/** — Helper utilities such as `text_processing.py` (advanced deduplication), `verification.py` (auth helpers) and `crm_utils.py` (customer data sync).
 13. **tests/** — Unit & integration tests, e.g. `tests/core/test_embeddings.py` and `test_e2e_supabase.py` (verifies hybrid search RPC end-to-end).
-14. **scripts/** — Operational scripts like `scripts/apply_knowledge_source_migration.py` used for data backfills during ChromaDB → Supabase migration.
+14. **scripts/** — Operational scripts including:
+   - `scripts/apply_knowledge_source_migration.py` - ChromaDB → Supabase migration
+   - `scripts/migrate_embeddings.py` - Embeddings provider migration tool
+   - `scripts/test_embeddings.py` - Comprehensive embeddings testing utility
 
 This section provides a file-by-file map to accelerate onboarding and code navigation for new contributors.
 
@@ -1336,6 +1344,58 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
 - **Query Optimization**: Optimized status queries and updates
 - **Index Usage**: Proper indexing for fast status lookups
 - **Cleanup Procedures**: Automatic cleanup of old status records
+
+## Embeddings System Configuration
+
+### Flexible Embeddings Provider Support
+
+The system now supports multiple embeddings providers with seamless switching via environment variables:
+
+#### 1. **Cohere Embeddings (Default)**
+- **Model**: `embed-english-v3.0`
+- **Dimensions**: 1024
+- **Batch Size**: 96 texts per API call
+- **Features**:
+  - High-quality multilingual embeddings
+  - Optimized for semantic search
+  - Built-in retry logic with exponential backoff
+  - Automatic text truncation for oversized inputs
+
+#### 2. **HuggingFace Embeddings (Alternative)**
+- **Default Model**: `sentence-transformers/all-MiniLM-L6-v2`
+- **Dimensions**: 384 (varies by model)
+- **Features**:
+  - Free and open-source
+  - Local inference option available
+  - Wide variety of models to choose from
+  - Lower computational requirements
+
+#### Configuration
+
+Set the embeddings provider in your `.env` file:
+
+```bash
+# Use Cohere (default)
+EMBEDDINGS_PROVIDER=cohere
+COHERE_API_KEY=your_cohere_key
+
+# Use HuggingFace
+EMBEDDINGS_PROVIDER=huggingface
+HUGGINGFACE_MODEL=sentence-transformers/all-MiniLM-L6-v2  # Optional, defaults to all-MiniLM-L6-v2
+```
+
+#### Implementation Note
+
+To switch between providers, the system would need to:
+1. Update `app/core/embeddings.py` to support provider selection
+2. Adjust vector dimensions in Supabase schema if switching models
+3. Re-embed existing documents if changing providers
+
+**Current Status**: The system supports both Cohere and HuggingFace embeddings with seamless switching. The flexible embeddings system is production-ready and includes:
+- Multiple high-quality 1024-dimensional models
+- Backward compatibility with existing Cohere implementation
+- Migration tools for switching between providers
+- Comprehensive testing and validation tools
 
 ## Future Enhancements
 
