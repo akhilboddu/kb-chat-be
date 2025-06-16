@@ -80,6 +80,7 @@ __pypackages__/
 # Celery stuff
 celerybeat-schedule
 celerybeat.pid
+.celery_*.pid
 
 # SageMath parsed files
 *.sage.py
@@ -126,3 +127,6 @@ dmypy.json
 *.sqlite3
 *.sqlite3-journal
 .DS_Store .env
+
+# Application generated files
+app/results/ # Ignore scraping results and other generated files
