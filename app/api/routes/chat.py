@@ -39,6 +39,7 @@ from app.services.send_email import notify_admin_on_user_message, notify_client_
 from app.utils.text_processing import clean_agent_output, auto_add_handoff_if_needed
 from app.utils.verification import get_current_user
 from app.utils.crm_utils import ensure_crm_entry
+from app.utils.subscription_limits import enforce_subscription_limits
 
 logger = logging.getLogger(__name__)
 
@@ -1007,6 +1008,9 @@ async def bot_chat_websocket_endpoint(bot_id: str, request: ChatRequest, websock
                 "reply_to_message_id": request.reply_to_message_id,
                 "timestamp": datetime.now().isoformat()
             })
+
+        # ENFORCE SUBSCRIPTION LIMITS before AI responds (user message is always saved)
+        await enforce_subscription_limits(bot_id, request.conversation_id)
         
         # Get bot and KB info
         bot_response = supabase.table("bots").select("*").eq("id", bot_id).execute()
@@ -1511,8 +1515,12 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
             status = conversation_response.data[0]["status"]
             bot_id = conversation_response.data[0]["bot_id"] if conversation_response.data else None
 
+             
+           
+
             print("status------>", status)
             print("bot_id------>", bot_id)
+
 
             role = data.get('role', 'user')  # Default to 'user' if not provided
 
