@@ -14,7 +14,8 @@ from langchain.memory import ConversationBufferMemory
 from langchain_core.messages import HumanMessage, AIMessage
 import asyncio
 import json
-
+from app.api.routes.chat import active_connections, broadcast_to_all_connections, chat_endpoint, handle_handoff_triggered
+from app.utils.subscription_limits import enforce_subscription_limits
 from app.models.whatsapp import (
     WhatsAppEmbeddedSignupRequest,
     WhatsAppSetupResponse,
@@ -401,6 +402,7 @@ async def whatsapp_webhook(request: Request):
     Webhook endpoint to receive WhatsApp notifications
     """
     try:
+
         body = await request.json()  # Parse the JSON body
         logger.info(f"📦 Webhook data: {body}")
 
@@ -411,44 +413,53 @@ async def whatsapp_webhook(request: Request):
                     if change.get("value", {}).get("messages"):
                         for message in change["value"]["messages"]:
                             from_number = message.get('from')
-                            message_content = message.get('text', {}).get('body')
+                            message_content = message.get('text', {}).get('body')   
                             message_id = message.get('id')
                             timestamp = message.get('timestamp')
-                            
-                            logger.info(f"💬 Message from: {from_number}")
-                            logger.info(f"📝 Message content: {message_content}")
-                            logger.info(f"🆔 Message ID: {message_id}")
-                            logger.info(f"⏰ Timestamp: {timestamp}")
-
-                            # Get the bot_id from the phone_number_id
                             phone_number_id = change["value"].get("metadata", {}).get("phone_number_id")
                             if not phone_number_id:
                                 logger.error("No phone_number_id found in webhook data")
                                 continue
-
                             # Get bot_id from phone_number_id
                             result = supabase.table("whatsapp_configs").select("bot_id").eq("phone_number_id", phone_number_id).execute()
                             if not result.data:
                                 logger.error(f"No bot found for phone_number_id: {phone_number_id}")
                                 continue
-
                             bot_id = result.data[0]["bot_id"]
-                            
                             # Get kb_id from bot_id
                             bot_result = supabase.table("bots").select("kb_id").eq("id", bot_id).execute()
                             if not bot_result.data:
                                 logger.error(f"No kb_id found for bot_id: {bot_id}")
                                 continue
-
                             kb_id = bot_result.data[0]["kb_id"]
-
                             # Check if conversation exists for this phone number and bot
                             conversation_result = supabase.table("conversations").select("*").eq("bot_id", bot_id).eq("customer_phone", from_number).execute()
-                            
                             conversation_id = None
+                            #check if the message is a button click
+                            if message.get('interactive'):
+                                reply_id = message.get('interactive', {}).get('button_reply', {}).get('id')
+                                if reply_id == "chat_with_AI":
+                                    conversation_result = supabase.table("conversations").select("*").eq("bot_id", bot_id).eq("customer_phone", from_number).eq("status", "human").execute()
+                                    if conversation_result.data:
+                                        conversation_id = conversation_result.data[0]["id"]
+                                        # Update existing conversation
+                                        supabase.table("conversations").update({   
+                                            "updated_at": datetime.utcnow().isoformat(),
+                                            "status": "ai"
+                                        }).eq("id", conversation_id).execute()
+                                        #send the message to the user
+                                        await send_whatsapp_message(
+                                            phone_number_id=phone_number_id,
+                                            to_number=from_number,
+                                            message="You are now back to chatting with our AI assistant, but we have notified a human agent about your request.",
+                                            button_text=None
+                                        )
+                                        return {"status": "success", "message": "Chat with AI"}
+                                    
+                        
                             if conversation_result.data:
-                                # Update existing conversation
                                 conversation_id = conversation_result.data[0]["id"]
+                                # Update existing conversation
                                 supabase.table("conversations").update({
                                     "updated_at": datetime.utcnow().isoformat(),
                                     "status": "ai" if conversation_result.data[0]["status"] == "closed" else conversation_result.data[0]["status"]
@@ -460,15 +471,14 @@ async def whatsapp_webhook(request: Request):
                                     "bot_id": bot_id,
                                     "customer_phone": from_number,
                                     "customer_email": None,
-                                    "customer_name": f"Whatsapp User {random_number}",  # Initial random name
+                                    "customer_name": f"Whatsapp User {random_number}",
                                     "channel": "whatsapp",
-                                    "status": "awaiting_name",  # Special status for first-time users
+                                    "status": "awaiting_name",
                                     "read": False,
                                     "created_at": datetime.utcnow().isoformat(),
                                     "updated_at": datetime.utcnow().isoformat()
                                 }).execute()
                                 conversation_id = new_conversation.data[0]["id"]
-
                                 # Send welcome message asking for name
                                 welcome_message = "Hey! To get started, please tell me your name."
                                 await send_whatsapp_message(
@@ -476,7 +486,6 @@ async def whatsapp_webhook(request: Request):
                                     to_number=from_number,
                                     message=welcome_message
                                 )
-                                # Store the welcome message
                                 supabase.table("messages").insert({
                                     "conversation_id": conversation_id,
                                     "content": welcome_message,
@@ -485,32 +494,35 @@ async def whatsapp_webhook(request: Request):
                                     "created_at": datetime.utcnow().isoformat()
                                 }).execute()
                                 return {"status": "success", "message": "Welcome message sent"}
-
                             # Store the incoming message
-                            supabase.table("messages").insert({
+                            message_insert_response = supabase.table("messages").insert({
                                 "conversation_id": conversation_id,
                                 "content": message_content,
                                 "role": "user",
                                 "read": False,
                                 "created_at": datetime.utcnow().isoformat()
                             }).execute()
-
+                            message_db_id = message_insert_response.data[0]["id"] if message_insert_response.data else None
+                            if conversation_id in active_connections and message_db_id:
+                                await broadcast_to_all_connections(conversation_id, {
+                                    "type": "message",
+                                    "id": message_db_id,
+                                    "content": message_content,
+                                    "role": "user",
+                                    "timestamp": datetime.utcnow().isoformat()
+                                })
                             # Handle name collection for first-time users
                             if conversation_result.data and conversation_result.data[0]["status"] == "awaiting_name":
-                                # Update the conversation with the user's name
                                 supabase.table("conversations").update({
                                     "customer_name": message_content,
                                     "status": "ai",
                                     "updated_at": datetime.utcnow().isoformat()
                                 }).eq("id", conversation_id).execute()
-
-                                # Update CRM with the new name
                                 first_name, last_name = None, None
                                 if message_content:
                                     parts = message_content.split(" ", 1)
                                     first_name = parts[0]
                                     last_name = parts[1] if len(parts) > 1 else ""
-
                                 ensure_crm_entry(
                                     bot_id=bot_id,
                                     first_name=first_name,
@@ -518,15 +530,12 @@ async def whatsapp_webhook(request: Request):
                                     phone_number=from_number,
                                     email=None
                                 )
-
-                                # Send confirmation message
                                 confirmation_message = f"Thank you {message_content}! How can I help you today?"
                                 await send_whatsapp_message(
                                     phone_number_id=phone_number_id,
                                     to_number=from_number,
                                     message=confirmation_message
                                 )
-                                # Store the confirmation message
                                 supabase.table("messages").insert({
                                     "conversation_id": conversation_id,
                                     "content": confirmation_message,
@@ -535,161 +544,113 @@ async def whatsapp_webhook(request: Request):
                                     "created_at": datetime.utcnow().isoformat()
                                 }).execute()
                                 return {"status": "success", "message": "Name collected"}
-
-                            # Process the message using chat functionality
-                            try:
-                                # Create chat request
+                            # If status is closed then change the status to ai
+                            if conversation_result.data[0]["status"] == "closed":
+                                supabase.table("conversations").update({
+                                    "status": "ai"
+                                }).eq("id", conversation_id).execute()
+                            # If status is human then end the function here and return success
+                            if conversation_result.data[0]["status"] == "human":
+                                return {"status": "success", "message": "Message received"}
+                            # If status is ai, handle with AI (reuse chat_endpoint)
+                            if conversation_result.data[0]["status"] == "ai":
+                                # Prepare ChatRequest
                                 chat_request = ChatRequest(
                                     message=message_content,
-                                    conversation_id=message_id
+                                    conversation_id=conversation_id
                                 )
-
-                                # Get conversation history using conversation_id
-                                db_history = db_manager.get_conversation_history(conversation_id)
-                                
-                                # Create memory instance
-                                memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-                                
-                                # Populate memory from DB history
-                                for msg in db_history:
-                                    if msg.get('message_type') == 'human':
-                                        memory.chat_memory.add_user_message(msg.get('content', ''))
-                                    elif msg.get('message_type') == 'ai':
-                                        memory.chat_memory.add_ai_message(msg.get('content', ''))
-
-                                # Create agent executor
-                                agent_executor = agent_manager.create_agent_executor(kb_id=kb_id, memory=memory)
-
-                                # Format history for prompt
-                                memory_variables = memory.load_memory_variables({})
-                                history_string = memory_variables.get('chat_history', '')
-                                if not isinstance(history_string, str):
-                                    formatted_history = []
-                                    for msg in history_string:
-                                        if isinstance(msg, HumanMessage):
-                                            formatted_history.append(f"Human: {msg.content}")
-                                        elif isinstance(msg, AIMessage):
-                                            formatted_history.append(f"AI: {msg.content}")
-                                    history_string = "\n".join(formatted_history)
-
-                                # Prepare agent input
-                                input_data = {
-                                    "input": message_content,
-                                    "chat_history": history_string
+                                # Optionally, fetch customer context if needed
+                                customer_context = {
+                                    "customer_name": conversation_result.data[0].get("customer_name"),
+                                    "customer_email": conversation_result.data[0].get("customer_email"),
+                                    "customer_phone": conversation_result.data[0].get("customer_phone"),
+                                    "bot_name": None,  # You can fetch bot name if needed
+                                    "company_name": None  # You can fetch company name if needed
                                 }
-
-                                # Invoke agent
-                                response = await asyncio.to_thread(agent_executor.invoke, input_data)
+                                #get bot_id from conversation_id
+                                # Call chat_endpoint to get AI response
+                                # ENFORCE SUBSCRIPTION LIMITS before AI responds (user message is always saved)
+                                print(f"bot_id: {bot_id}, conversation_id: {conversation_id}")
+                                await enforce_subscription_limits(bot_id, conversation_id)
                                 
-                                # Process response
-                                agent_output = response.get("output")
-                                if agent_output:
-                                    cleaned_output = clean_agent_output(agent_output)
-                                    # Apply automatic handoff detection for insufficient answers
-                                    cleaned_output = auto_add_handoff_if_needed(cleaned_output)
-                                    
-                                    # Save messages to conversation history
-                                    db_manager.add_conversation_message(conversation_id, 'human', message_content)
-                                    db_manager.add_conversation_message(conversation_id, 'ai', cleaned_output)
-
-                                    # Store the AI response message
-                                    supabase.table("messages").insert({
-                                        "conversation_id": conversation_id,
-                                        "content": cleaned_output,
+                                response = await chat_endpoint(
+                                    kb_id,
+                                    chat_request,
+                                    store_history=False,  # Already saved user message
+                                    customer_context=customer_context
+                                )
+                                # Save AI response to DB
+                                ai_message_response = supabase.table("messages").insert({
+                                    "conversation_id": conversation_id,
+                                    "role": "bot",
+                                    "content": response.content,
+                                    "created_at": datetime.utcnow().isoformat()
+                                }).execute()
+                                ai_message_id = ai_message_response.data[0]["id"] if ai_message_response.data else None
+                                # Broadcast AI response to all WebSocket clients
+                                if conversation_id in active_connections and ai_message_id:
+                                    await broadcast_to_all_connections(conversation_id, {
+                                        "type": "message",
+                                        "id": ai_message_id,
+                                        "content": response.content,
                                         "role": "bot",
-                                        "read": False,
-                                        "created_at": datetime.utcnow().isoformat()
-                                    }).execute()
+                                        "timestamp": datetime.utcnow().isoformat()
+                                    })
+                                
+                               
+                                # Handoff handling: if AI triggers handoff, update status and notify
+                                if response.type == "handoff":
+                                    await handle_handoff_triggered(conversation_id)
+                                    # Update the user message that triggered this handoff to have handoff status
+                                    print(f"message_insert_response: {message_insert_response}")
+                                    if message_insert_response:
+                                        user_message_id = message_insert_response.data[0]["id"]
+                                        logger.info(f"Updating user message {user_message_id} with handoff status")
+                                        supabase.table("messages").update({
+                                            "status": "handoff"
+                                        }).eq("id", user_message_id).execute()
+                                        logger.info(f"User message {user_message_id} updated with handoff status")
 
-                                    # Send response back to WhatsApp
-                                    message_sent = await send_whatsapp_message(
-                                        phone_number_id=phone_number_id,
-                                        to_number=from_number,
-                                        message=cleaned_output
-                                    )
-                                    
-                                    if not message_sent:
-                                        # If message wasn't sent due to user not initiating conversation,
-                                        # send a welcome message explaining how to start
-                                        welcome_message = (
-                                            "Welcome! To start chatting with our AI assistant, "
-                                            "please send any message to this number. "
-                                            "Once you do, I'll be able to respond to your questions."
-                                        )
                                         await send_whatsapp_message(
                                             phone_number_id=phone_number_id,
                                             to_number=from_number,
-                                            message=welcome_message
+                                            message=response.content,
+                                            button_text="Chat with AI"
                                         )
-                                        # Store the welcome message
-                                        supabase.table("messages").insert({
-                                            "conversation_id": conversation_id,
-                                            "content": welcome_message,
-                                            "role": "bot",
-                                            "read": False,
-                                            "created_at": datetime.utcnow().isoformat()
-                                        }).execute()
-
-                                    if cleaned_output and "(needs help)" in cleaned_output:
-                                        # Remove the marker from the response
-                                        cleaned_output = cleaned_output.replace("(needs help)", "").strip()
                                         
-                                        # Update conversation status to human
-                                        supabase.table("conversations").update({
-                                            "status": "human"
-                                        }).eq("id", conversation_id).execute()
-                                        
-                                        # Create handover request
-                                        supabase.table("handover_requests").insert({
-                                            "conversation_id": conversation_id,
-                                            "last_message_id": message_id
-                                        }).execute()
-
-                                        #get user email from conversation_id in supabase
-                                        user_data = supabase.table("users").select("*").eq("id", conversation_result.data[0]["user_id"]).execute()
-                                        company_email = user_data.data[0]["email"]
-                                        
-                                        # Send notification to admin
-                                        notify_admin_on_user_message(
+                                        # Broadcast the user message status update to frontend
+                                        await broadcast_to_all_connections(conversation_id, {
+                                            "type": "message_update",
+                                            "message_id": user_message_id,
+                                            "status": "handoff"
+                                        })
+                                    # Send notification to admin
+                                    # get user email from conversation_id in supabase
+                                    user_data = supabase.table("users").select("*").eq("id", conversation_result.data[0]["user_id"]).execute()
+                                    company_email = user_data.data[0]["email"]
+                                    notify_admin_on_user_message(
                                             conversation_result.data[0]["customer_name"],
                                             conversation_result.data[0]["customer_email"],
                                             message_content,
                                             bot_id,
                                             company_email
                                         )
-                                                
                                 else:
-                                    logger.error("No output from agent")
-                                    error_message = "I apologize, but I'm having trouble processing your message right now."
                                     await send_whatsapp_message(
                                         phone_number_id=phone_number_id,
                                         to_number=from_number,
-                                        message=error_message
+                                        message=response.content,
+                                        button_text=None
                                     )
-                                    # Store the error message
-                                    supabase.table("messages").insert({
-                                        "conversation_id": conversation_id,
-                                        "content": error_message,
-                                        "role": "ai",
-                                        "read": False,
-                                        "created_at": datetime.utcnow().isoformat()
-                                    }).execute()
 
-                            except Exception as e:
-                                logger.error(f"Error processing message: {str(e)}")
-                                await send_whatsapp_message(
-                                    phone_number_id=phone_number_id,
-                                    to_number=from_number,
-                                    message="I apologize, but I encountered an error processing your message."
-                                )
 
+                                return {"status": "success", "message": "AI response sent"}
         return {"status": "success", "message": "Webhook received"}
-
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
         return {"status": "error", "message": str(e)}
 
-async def send_whatsapp_message(phone_number_id: str, to_number: str, message: str):
+async def send_whatsapp_message(phone_number_id: str, to_number: str, message: str, button_text: str = None ):
     """
     Send a message back to WhatsApp
     """
@@ -707,7 +668,32 @@ async def send_whatsapp_message(phone_number_id: str, to_number: str, message: s
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json"
         }
-        payload = {
+        if button_text:
+            payload = {
+            "messaging_product": "whatsapp",
+            "to": to_number,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": {
+                "text": message
+                },
+                "action": {
+                "buttons": [
+                    {
+                    "type": "reply",
+                    "reply": {
+                        "id": "chat_with_AI",
+                        "title": "Chat with AI"
+                    }
+                }
+            ]
+            }
+        }
+        }
+        else:
+            
+                payload = {
             "messaging_product": "whatsapp",
             "to": to_number,
             "type": "text",
@@ -783,6 +769,24 @@ async def send_whatsapp_from_agent(request: Request):
             )
 
         phone_number_id = whatsapp_config.data[0]["phone_number_id"]
+
+        #save the message in supabase   
+        insert_response = supabase.table("messages").insert({
+            "conversation_id": conversation_id,
+            "content": message,
+            "role": "human",
+            "read": False,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+        message_id = insert_response.data[0]["id"] if insert_response.data else None
+        if conversation_id in active_connections and message_id:
+            await broadcast_to_all_connections(conversation_id, {
+                "type": "message",
+                "id": message_id,
+                "content": message,
+                "role": "human",
+                "timestamp": datetime.utcnow().isoformat()
+            })
 
         # Send the WhatsApp message
         message_sent = await send_whatsapp_message(

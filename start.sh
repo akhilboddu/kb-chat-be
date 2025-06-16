@@ -112,20 +112,14 @@ stop_existing
 
 # Check if Redis is running
 if ! redis-cli ping >/dev/null 2>&1; then
-    echo "⚠️  Redis is not running. Starting Redis..."
-    if command -v brew >/dev/null 2>&1; then
-        # macOS with Homebrew
-        brew services start redis
-    elif command -v systemctl >/dev/null 2>&1; then
-        # Linux with systemd
-        sudo systemctl start redis
+    echo "⚠️  Local Redis is not running. Checking Docker Redis..."
+    if docker ps | grep -q redis; then
+        echo "✅ Docker Redis is running"
     else
-        echo "❌ Please start Redis manually: redis-server"
+        echo "❌ Neither local Redis nor Docker Redis is running"
+        echo "Please ensure Redis is running either locally or in Docker"
         exit 1
     fi
-    
-    # Wait for Redis to start
-    sleep 2
 fi
 
 # Optionally start Celery workers
