@@ -263,7 +263,7 @@ class HuggingFaceEmbeddings(BaseEmbeddings):
                             future = executor.submit(model.embed_documents, batch)
                         
                         try:
-                            batch_embeddings = future.result(timeout=120)  # 2 min timeout per batch
+                            batch_embeddings = future.result(timeout=300)  # 5 min timeout per batch for CPU models
                             if hasattr(model, 'encode'):
                                 batch_embeddings = batch_embeddings.tolist()
                             all_embeddings.extend(batch_embeddings)
@@ -335,7 +335,7 @@ class HuggingFaceEmbeddings(BaseEmbeddings):
                     future = executor.submit(model.embed_query, query_text)
                 
                 try:
-                    embedding = future.result(timeout=30)  # 30s timeout for single query
+                    embedding = future.result(timeout=60)  # 60s timeout for single query on CPU
                     if hasattr(model, 'encode'):
                         embedding = embedding.tolist()
                         

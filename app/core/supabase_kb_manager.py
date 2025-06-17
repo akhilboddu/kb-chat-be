@@ -35,6 +35,16 @@ class KBManager:
         self.supabase = supabase
         print("Initialized Supabase KB Manager with Contextual RAG")
     
+    def _is_in_celery_context(self) -> bool:
+        """Return True when executing inside a Celery worker process."""
+        import sys
+        return (
+            os.getenv('RUNNING_IN_CELERY', '').lower() == 'true'  # explicit flag from compose
+            or os.getenv('CELERY_WORKER_NAME') is not None        # set by Celery itself
+            or 'celery' in os.getenv('_', '').lower()             # parent command contains celery
+            or any('celery' in str(arg).lower() for arg in sys.argv)
+        )
+    
     def create_or_get_kb(self, kb_id: str, name: Optional[str] = None, agent_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Creates a new knowledge base or gets an existing one.
@@ -241,6 +251,7 @@ class KBManager:
             use_parallel = (
                 os.getenv("ENABLE_PARALLEL_PROCESSING", "false").lower() == "true" 
                 and PARALLEL_PROCESSING_AVAILABLE
+                and not self._is_in_celery_context()
             )
             
             if use_parallel:
@@ -263,6 +274,8 @@ class KBManager:
                     ))
                 finally:
                     loop.close()
+            else:
+                print(f"[KB Manager] Using STANDARD processing pipeline")
             
             # Check if we should skip context generation (for debugging/performance)
             skip_context = os.getenv("SKIP_CONTEXT_GENERATION", "false").lower() == "true"

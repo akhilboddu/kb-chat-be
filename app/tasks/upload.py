@@ -4,7 +4,6 @@ from app.utils.logging import task_with_correlation
 from app.utils.task_protection import prevent_duplicate_task
 from celery.exceptions import SoftTimeLimitExceeded
 from app.core import supabase_metadata_manager as db_manager
-import asyncio
 import hashlib
 import json
 
@@ -34,8 +33,22 @@ def run_upload_task(self, kb_id, file_data_list, initial_failed_files=0):
     - Tasks running longer than configured time limits
     """
     try:
-        # Run the async function in a new event loop
-        asyncio.run(process_files_background(kb_id, file_data_list, initial_failed_files))
+        # Import asyncio and handle event loop properly
+        import asyncio
+        
+        # Check if there's already a running event loop
+        try:
+            loop = asyncio.get_running_loop()
+            # We're in an async context - this shouldn't happen in Celery, but handle it
+            print("Warning: Already in async context, this may cause issues")
+            # Create a new thread to run the async function
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, process_files_background(kb_id, file_data_list, initial_failed_files))
+                future.result()
+        except RuntimeError:
+            # No event loop running, safe to create one
+            asyncio.run(process_files_background(kb_id, file_data_list, initial_failed_files))
     except SoftTimeLimitExceeded:
         # Update status to failed before the task is killed
         db_manager.update_file_upload_status(

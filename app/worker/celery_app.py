@@ -26,8 +26,8 @@ def get_time_limits(queue_name: str) -> tuple:
         tuple: (soft_time_limit, time_limit) in seconds
     """
     if queue_name == 'upload':
-        soft_limit = int(os.getenv('UPLOAD_SOFT_LIMIT', '1800'))  # 30 min default
-        hard_limit = int(os.getenv('UPLOAD_HARD_LIMIT', '2400'))  # 40 min default
+        soft_limit = int(os.getenv('UPLOAD_SOFT_LIMIT', '3600'))  # 60 min default for HF CPU embeddings
+        hard_limit = int(os.getenv('UPLOAD_HARD_LIMIT', '4200'))  # 70 min default for HF CPU embeddings
     elif queue_name == 'scrape':
         soft_limit = int(os.getenv('SCRAPE_SOFT_LIMIT', '600'))   # 10 min default
         hard_limit = int(os.getenv('SCRAPE_HARD_LIMIT', '900'))   # 15 min default
