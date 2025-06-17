@@ -11,6 +11,13 @@ import cohere
 from cohere.errors import TooManyRequestsError, BadRequestError
 from dotenv import load_dotenv
 
+# Import performance monitoring
+try:
+    from app.utils.performance_monitor import performance_monitor
+    PERFORMANCE_MONITORING_AVAILABLE = True
+except ImportError:
+    PERFORMANCE_MONITORING_AVAILABLE = False
+
 # Load environment variables at module import time
 load_dotenv()
 
@@ -63,41 +70,68 @@ class CohereEmbeddings:
         if not texts:
             return []
         
-        # Remove empty texts and track their indices
-        non_empty_texts = []
-        non_empty_indices = []
-        for i, text in enumerate(texts):
-            if text and text.strip():
-                non_empty_texts.append(text)
-                non_empty_indices.append(i)
+        # Performance monitoring start
+        start_time = time.time()
+        success = True
+        error_msg = None
         
-        if not non_empty_texts:
-            logger.warning("All texts were empty, returning empty embeddings")
-            return [[0.0] * self.EMBEDDING_DIM for _ in texts]
+        try:
+            # Remove empty texts and track their indices
+            non_empty_texts = []
+            non_empty_indices = []
+            for i, text in enumerate(texts):
+                if text and text.strip():
+                    non_empty_texts.append(text)
+                    non_empty_indices.append(i)
         
-        all_embeddings = []
+            if not non_empty_texts:
+                logger.warning("All texts were empty, returning empty embeddings")
+                return [[0.0] * self.EMBEDDING_DIM for _ in texts]
+            
+            all_embeddings = []
+            
+            # Process in batches
+            for i in range(0, len(non_empty_texts), self.BATCH_SIZE):
+                batch = non_empty_texts[i:i + self.BATCH_SIZE]
+                batch_embeddings = self._embed_batch_with_retry(
+                    batch, 
+                    input_type, 
+                    max_retries, 
+                    retry_delay
+                )
+                all_embeddings.extend(batch_embeddings)
+            
+            # Reconstruct full embedding list with zeros for empty texts
+            full_embeddings = []
+            embedding_idx = 0
+            for i in range(len(texts)):
+                if i in non_empty_indices:
+                    full_embeddings.append(all_embeddings[embedding_idx])
+                    embedding_idx += 1
+                else:
+                    # Empty text gets zero vector
+                    full_embeddings.append([0.0] * self.EMBEDDING_DIM)
         
-        # Process in batches
-        for i in range(0, len(non_empty_texts), self.BATCH_SIZE):
-            batch = non_empty_texts[i:i + self.BATCH_SIZE]
-            batch_embeddings = self._embed_batch_with_retry(
-                batch, 
-                input_type, 
-                max_retries, 
-                retry_delay
-            )
-            all_embeddings.extend(batch_embeddings)
-        
-        # Reconstruct full embedding list with zeros for empty texts
-        full_embeddings = []
-        embedding_idx = 0
-        for i in range(len(texts)):
-            if i in non_empty_indices:
-                full_embeddings.append(all_embeddings[embedding_idx])
-                embedding_idx += 1
-            else:
-                # Empty text gets zero vector
-                full_embeddings.append([0.0] * self.EMBEDDING_DIM)
+        except Exception as e:
+            success = False
+            error_msg = str(e)
+            logger.error(f"Error in embed_texts: {e}")
+            raise
+        finally:
+            # Performance monitoring end
+            try:
+                elapsed_time = time.time() - start_time
+                if PERFORMANCE_MONITORING_AVAILABLE:
+                    performance_monitor.record_embeddings_performance(
+                        provider="cohere",
+                        model=self.MODEL,
+                        batch_size=len(texts),
+                        duration=elapsed_time,
+                        success=success,
+                        error=error_msg
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to record embeddings performance: {e}")
         
         return full_embeddings
     

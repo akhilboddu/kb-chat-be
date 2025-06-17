@@ -13,6 +13,13 @@ import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
+# Import performance monitoring
+try:
+    from app.utils.performance_monitor import performance_monitor
+    PERFORMANCE_MONITORING_AVAILABLE = True
+except ImportError:
+    PERFORMANCE_MONITORING_AVAILABLE = False
+
 # Google Gemini
 try:
     import google.generativeai as genai
@@ -69,14 +76,16 @@ Keep it concise and factual. Do not include the chunk content itself in your res
         openai_api_key: Optional[str] = None,
         prefer_gemini: bool = True,
         cache_size: int = 10000,
-        batch_size: int = 10
+        batch_size: int = 50
     ):
         """
         Initialize the contextualizer.
         prefer_gemini: if True (default) use Gemini Flash when available
-        batch_size: number of chunks to process in each batch (default 10)
+        batch_size: number of chunks to process in each batch (default 50 - optimized for t3.large)
         """
-        self.batch_size = batch_size
+        # Dynamic batch sizing based on environment
+        self.batch_size = int(os.getenv("CONTEXT_BATCH_SIZE", str(batch_size)))
+        self.enable_delays = os.getenv("ENABLE_CONTEXT_DELAYS", "false").lower() == "true"
         
         # Gemini setup (Primary)
         self.use_gemini = prefer_gemini and GEMINI_AVAILABLE
@@ -170,15 +179,38 @@ Keep it concise and factual. Do not include the chunk content itself in your res
                     logger.warning(f"⚠️ Gemini single prompt failed: {e}")
                     contexts.append("This section contains relevant information from the document.")
                     
-                # Small delay to avoid rate limits
-                time.sleep(0.1)
+                # Optional delay only if enabled via environment variable
+                if self.enable_delays:
+                    time.sleep(0.05)  # Reduced delay when enabled
             
             elapsed = time.time() - start_time
             logger.info(f"✅ Gemini batch completed in {elapsed:.2f}s ({len(prompts)/elapsed:.1f} contexts/sec)")
+            
+            # Record performance metrics
+            if PERFORMANCE_MONITORING_AVAILABLE:
+                performance_monitor.record_context_performance(
+                    provider="gemini",
+                    batch_size=len(prompts),
+                    duration=elapsed,
+                    success=True
+                )
+            
             return contexts
             
         except Exception as e:
+            elapsed = time.time() - start_time
             logger.error(f"❌ Gemini batch processing failed: {e}")
+            
+            # Record failure metrics
+            if PERFORMANCE_MONITORING_AVAILABLE:
+                performance_monitor.record_context_performance(
+                    provider="gemini",
+                    batch_size=len(prompts),
+                    duration=elapsed,
+                    success=False,
+                    error=str(e)
+                )
+            
             raise
     
     def _call_anthropic_batch(self, prompts: List[str]) -> List[str]:
@@ -209,8 +241,9 @@ Keep it concise and factual. Do not include the chunk content itself in your res
                     logger.warning(f"⚠️ Anthropic prompt {i+1} failed: {e}")
                     contexts.append("This section contains relevant information from the document.")
                 
-                # Rate limiting delay
-                time.sleep(0.2)
+                # Optional rate limiting delay
+                if self.enable_delays:
+                    time.sleep(0.1)  # Reduced delay when enabled
             
             elapsed = time.time() - start_time
             logger.info(f"✅ Anthropic batch completed in {elapsed:.2f}s")
@@ -253,8 +286,9 @@ Keep it concise and factual. Do not include the chunk content itself in your res
                     logger.warning(f"⚠️ OpenAI prompt {i+1} failed: {e}")
                     contexts.append("This section contains relevant information from the document.")
                 
-                # Rate limiting delay
-                time.sleep(0.1)
+                # Optional rate limiting delay
+                if self.enable_delays:
+                    time.sleep(0.05)  # Reduced delay when enabled
             
             elapsed = time.time() - start_time
             logger.info(f"✅ OpenAI batch completed in {elapsed:.2f}s")

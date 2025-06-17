@@ -239,10 +239,10 @@ class KBManager:
                 if progress_callback:
                     progress_callback(30, f"Context generation skipped")
             else:
-                # Batch generate contexts (10 at a time to avoid rate limits and timeouts)
+                # Batch generate contexts (environment controlled batch size)
                 print(f"Generating contexts for {len(valid_chunks)} chunks...")
                 contexts = []
-                context_batch_size = 10  # Reduced from 20 to avoid timeouts
+                context_batch_size = int(os.getenv("CONTEXT_BATCH_SIZE", "50"))  # Environment controlled
                 
                 for i in range(0, len(valid_chunks), context_batch_size):
                     batch_chunks = valid_chunks[i:i + context_batch_size]
@@ -263,9 +263,10 @@ class KBManager:
                             progress_callback(percent, f"Generating contexts: {i + len(batch_chunks)}/{len(valid_chunks)} chunks")
                             print(f"[KB Progress] Context generation: {percent}% - Processed {i + len(batch_chunks)}/{len(valid_chunks)} chunks")
                         
-                        # Small delay between batches to avoid rate limits
+                        # Optional delay between batches only if enabled via environment variable
                         if i + context_batch_size < len(valid_chunks):
-                            time.sleep(0.5)
+                            if os.getenv("ENABLE_BATCH_DELAYS", "false").lower() == "true":
+                                time.sleep(0.1)  # Reduced delay
                             
                     except Exception as e:
                         print(f"Error generating contexts for batch {i//context_batch_size + 1}: {e}")
@@ -314,32 +315,48 @@ class KBManager:
                 import traceback
                 traceback.print_exc()
                 
-                # Generate embeddings one by one as fallback
-                print("Falling back to individual embedding generation...")
+                # Improved fallback: Process in smaller batches instead of individual
+                print("Falling back to smaller batch embedding generation...")
                 embeddings = []
-                for idx, ctx_text in enumerate(ctx_texts):
+                fallback_batch_size = int(os.getenv("EMBEDDINGS_FALLBACK_BATCH_SIZE", "10"))
+                
+                for idx in range(0, len(ctx_texts), fallback_batch_size):
+                    batch = ctx_texts[idx:idx + fallback_batch_size]
                     try:
                         start_time = time.time()
-                        embedding = embeddings_manager.embed_query(ctx_text)
+                        batch_embeddings = embeddings_manager.embed_texts(batch)
                         elapsed = time.time() - start_time
-                        embeddings.append(embedding)
+                        embeddings.extend(batch_embeddings)
                         
-                        if idx % 5 == 0:  # Log every 5th embedding
-                            print(f"Generated embedding {idx+1}/{len(ctx_texts)} in {elapsed:.3f}s")
-                            
+                        print(f"Generated embeddings for batch {idx//fallback_batch_size + 1} ({len(batch)} items) in {elapsed:.3f}s")
+                        
+                        if progress_callback and idx % (fallback_batch_size * 2) == 0:
+                            percent = 30 + int((idx / len(ctx_texts)) * 20)
+                            progress_callback(percent, f"Generating embeddings (fallback): {idx+len(batch)}/{len(ctx_texts)} chunks")
                     except Exception as e2:
-                        print(f"Error generating embedding for chunk {idx}: {e2}")
-                        # Use zero embedding as last resort
-                        embeddings.append([0.0] * 1024)
-                    
-                    if progress_callback and idx % 10 == 0:
-                        percent = 30 + int((idx / len(ctx_texts)) * 20)  # 30-50% for embeddings
-                        progress_callback(percent, f"Generating embeddings: {idx+1}/{len(ctx_texts)} chunks")
+                        print(f"Error in fallback batch {idx//fallback_batch_size}: {e2}")
+                        # Use zero embeddings as last resort
+                        zero_embedding = [0.0] * embeddings_manager.get_embedding_info().get("dimension", 1024)
+                        embeddings.extend([zero_embedding] * len(batch))
+            
+            # Validate embeddings before processing
+            valid_embeddings = []
+            for i, embedding in enumerate(embeddings):
+                if embedding and len(embedding) > 0 and any(abs(x) > 1e-10 for x in embedding):
+                    valid_embeddings.append((i, embedding))
+                else:
+                    print(f"Warning: Invalid embedding at index {i}, skipping chunk")
+
+            if not valid_embeddings:
+                print(f"No valid embeddings generated, aborting KB addition for {source_name}")
+                return False
+            
+            print(f"Processing {len(valid_embeddings)} valid embeddings out of {len(embeddings)} total")
             
             # Build documents for insertion
             documents_to_insert = []
             for i, (chunk, ctx_text, embedding) in enumerate(zip(valid_chunks, ctx_texts, embeddings)):
-                if embedding and any(embedding):  # Check embedding is not all zeros
+                if embedding and len(embedding) > 0 and any(abs(x) > 1e-10 for x in embedding):  # Enhanced validation
                     # Merge metadata with timestamp
                     doc_metadata = metadata.copy() if metadata else {}
                     doc_metadata['timestamp'] = timestamp
