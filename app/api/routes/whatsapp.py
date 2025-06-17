@@ -632,7 +632,7 @@ async def whatsapp_webhook(request: Request):
                                             conversation_result.data[0]["customer_name"],
                                             conversation_result.data[0]["customer_email"],
                                             message_content,
-                                            bot_id,
+                                            conversation_id,
                                             company_email
                                         )
                                 else:

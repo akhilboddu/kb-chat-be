@@ -837,7 +837,7 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
                     conversation_repsonse.data[0]["customer_name"],
                     conversation_repsonse.data[0]["customer_email"],
                     request.message,
-                    bot_id,
+                    request.conversation_id,
                     company_email
                 )
                 return {
@@ -907,7 +907,7 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
                     conversation_repsonse.data[0]["customer_name"],
                     conversation_repsonse.data[0]["customer_email"],
                     request.message,
-                    bot_id,
+                    request.conversation_id,
                     company_email
                 )
         supabase.table("handover_requests").insert(

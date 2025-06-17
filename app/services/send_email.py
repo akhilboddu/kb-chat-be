@@ -67,9 +67,9 @@ def notify_client_message(
 
 
 def notify_admin_on_user_message(
-    user_name: str, user_email: str, message: str, bot_id: str, company_email: str
+    user_name: str, user_email: str, message: str, conversation_id: str, company_email: str
 ):
-    conversation_link = f"{VITE_BASE_URL}/conversations/{bot_id}"
+    conversation_link = f"{VITE_BASE_URL}/chat-convo/{conversation_id}"
    
 
     ses_client = boto3.client(

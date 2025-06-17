@@ -52,13 +52,24 @@ def create_app() -> FastAPI:
     all_origins = default_origins + additional_origins
     origins = list(set(all_origins))  # Remove duplicates
     
+    # Add local development servers to origins
+    origins.extend([
+        "http://127.0.0.1:5500",
+        "http://localhost:5500",
+        "http://127.0.0.1:5173",
+        "http://localhost:5173"
+    ])
+    
+    # Remove duplicates again after adding local servers
+    origins = list(set(origins))
+    
     print(f"CORS Origins configured: {origins}")  # Debug logging
     redisConnection.connect()
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=["*"],  # Allow all origins
+        allow_credentials=False,  # Must be False when using "*" for origins
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["content-type", "content-length"],
