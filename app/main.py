@@ -87,25 +87,29 @@ def create_app() -> FastAPI:
     async def get_version():
         """Get current deployment version information for both frontend and backend."""
         try:
-            # Path to build numbers file
-            build_numbers_path = Path(__file__).parent.parent.parent / "deployment" / "build-numbers.json"
+            # Try multiple possible paths for build numbers file
+            possible_paths = [
+                Path("/tmp/build-numbers.json"),  # Docker container location
+                Path(__file__).parent.parent.parent / "deployment" / "build-numbers.json",  # Local development
+            ]
             
-            if build_numbers_path.exists():
-                with open(build_numbers_path, 'r') as f:
-                    build_data = json.load(f)
-                return build_data
-            else:
-                # Fallback if file doesn't exist
-                return {
-                    "frontend": {
-                        "build": 0,
-                        "last_deployed": None
-                    },
-                    "backend": {
-                        "build": 0,
-                        "last_deployed": None
-                    }
+            for build_numbers_path in possible_paths:
+                if build_numbers_path.exists():
+                    with open(build_numbers_path, 'r') as f:
+                        build_data = json.load(f)
+                    return build_data
+            
+            # Fallback if file doesn't exist anywhere
+            return {
+                "frontend": {
+                    "build": 0,
+                    "last_deployed": None
+                },
+                "backend": {
+                    "build": 0,
+                    "last_deployed": None
                 }
+            }
         except Exception as e:
             logger.error(f"Error reading version info: {e}")
             return JSONResponse(
