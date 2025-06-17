@@ -33,7 +33,7 @@ ses_client = boto3.client(
 
 
 def notify_client_message(
-     company_name: str, company_email: str, message: str, conversation_id: str, user_email: str
+     company_name: str, company_email: str, message: str, conversation_id: str, user_email: str, bot_id: str = None
 ):
     print("company_email------>", company_email)
     print("user_email------>", user_email)
@@ -44,7 +44,24 @@ def notify_client_message(
         aws_secret_access_key=SES_SECRET_ACCESS_KEY,
     )
     
-    converssationLink = f"{VITE_BASE_URL}/chat-convo/{conversation_id}"
+    # Generate URL with both bot_id and conversation_id for the new structure
+    if bot_id:
+        conversation_link = f"{VITE_BASE_URL}/chat-convo/{bot_id}/{conversation_id}"
+    else:
+        # Fallback: fetch bot_id from conversation if not provided
+        try:
+            from app.core.supabase_client import supabase
+            conversation_response = supabase.table("conversations").select("bot_id").eq("id", conversation_id).execute()
+            if conversation_response.data and len(conversation_response.data) > 0:
+                bot_id = conversation_response.data[0]["bot_id"]
+                conversation_link = f"{VITE_BASE_URL}/chat-convo/{bot_id}/{conversation_id}"
+            else:
+                # Ultimate fallback to old format if bot_id can't be found
+                conversation_link = f"{VITE_BASE_URL}/chat-convo/{conversation_id}"
+        except Exception as e:
+            print(f"Error fetching bot_id for conversation {conversation_id}: {e}")
+            conversation_link = f"{VITE_BASE_URL}/chat-convo/{conversation_id}"
+    
     try:
         response = ses_client.send_templated_email(
             Source=SENDER_EMAIL,
@@ -55,7 +72,7 @@ def notify_client_message(
                     "company_name": company_name,
                     "company_email": company_email,
                     "message": message,
-                    "conversation_link": converssationLink,
+                    "conversation_link": conversation_link,
                 }
             ),
         )
@@ -67,11 +84,26 @@ def notify_client_message(
 
 
 def notify_admin_on_user_message(
-    user_name: str, user_email: str, message: str, conversation_id: str, company_email: str
+    user_name: str, user_email: str, message: str, conversation_id: str, company_email: str, bot_id: str = None
 ):
-    conversation_link = f"{VITE_BASE_URL}/chat-convo/{conversation_id}"
-   
-
+    # Generate URL with both bot_id and conversation_id for the new structure
+    if bot_id:
+        conversation_link = f"{VITE_BASE_URL}/chat-convo/{bot_id}/{conversation_id}"
+    else:
+        # Fallback: fetch bot_id from conversation if not provided
+        try:
+            from app.core.supabase_client import supabase
+            conversation_response = supabase.table("conversations").select("bot_id").eq("id", conversation_id).execute()
+            if conversation_response.data and len(conversation_response.data) > 0:
+                bot_id = conversation_response.data[0]["bot_id"]
+                conversation_link = f"{VITE_BASE_URL}/chat-convo/{bot_id}/{conversation_id}"
+            else:
+                # Ultimate fallback to old format if bot_id can't be found
+                conversation_link = f"{VITE_BASE_URL}/chat-convo/{conversation_id}"
+        except Exception as e:
+            print(f"Error fetching bot_id for conversation {conversation_id}: {e}")
+            conversation_link = f"{VITE_BASE_URL}/chat-convo/{conversation_id}"
+    
     ses_client = boto3.client(
         "ses",
         region_name=SES_REGION,

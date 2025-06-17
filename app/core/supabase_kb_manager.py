@@ -15,6 +15,14 @@ from app.core.embeddings import embeddings_manager
 from app.core.contextualizer import contextualizer
 from app.core import data_processor
 
+# Import parallel processing components
+try:
+    from app.core.parallel_processor import get_parallel_processor
+    from app.core.smart_batcher import get_smart_batcher
+    PARALLEL_PROCESSING_AVAILABLE = True
+except ImportError:
+    PARALLEL_PROCESSING_AVAILABLE = False
+
 
 class KBManager:
     """
@@ -229,6 +237,33 @@ class KBManager:
         timestamp = int(time.time() * 1000)
         
         try:
+            # Check if parallel processing is enabled and available
+            use_parallel = (
+                os.getenv("ENABLE_PARALLEL_PROCESSING", "false").lower() == "true" 
+                and PARALLEL_PROCESSING_AVAILABLE
+            )
+            
+            if use_parallel:
+                print(f"[KB Manager] Using PARALLEL processing pipeline 🚀")
+                import asyncio
+                # Run async method in sync context
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return loop.run_until_complete(self._batch_add_parallel(
+                        kb_id=kb_id,
+                        text_chunks=valid_chunks,
+                        full_document=full_document,
+                        metadata=metadata,
+                        knowledge_source=knowledge_source,
+                        source_name=source_name,
+                        source_url=source_url,
+                        progress_callback=progress_callback,
+                        timestamp=timestamp
+                    ))
+                finally:
+                    loop.close()
+            
             # Check if we should skip context generation (for debugging/performance)
             skip_context = os.getenv("SKIP_CONTEXT_GENERATION", "false").lower() == "true"
             
@@ -604,6 +639,124 @@ class KBManager:
         except Exception as e:
             print(f"Error retrieving content from KB {kb_id}: {e}")
             raise e
+    
+    async def _batch_add_parallel(
+        self,
+        kb_id: str,
+        text_chunks: List[str],
+        full_document: str,
+        metadata: Optional[Dict[str, Any]],
+        knowledge_source: str,
+        source_name: Optional[str],
+        source_url: Optional[str],
+        progress_callback: Optional[callable],
+        timestamp: int
+    ) -> bool:
+        """
+        Parallel processing implementation for batch_add_to_kb.
+        Uses concurrent context generation and embeddings for maximum performance.
+        """
+        import asyncio
+        
+        # Check if smart batching is enabled
+        use_smart_batching = os.getenv("ENABLE_SMART_BATCHING", "false").lower() == "true"
+        
+        try:
+            # Get batch configuration
+            if use_smart_batching:
+                smart_batcher = get_smart_batcher()
+                # Calculate average chunk size
+                avg_chunk_size = sum(len(chunk) for chunk in text_chunks) // len(text_chunks) if text_chunks else 1000
+                batch_config = smart_batcher.get_adaptive_batch_sizes(len(text_chunks), avg_chunk_size)
+                print(f"[KB Manager] Smart batching: {batch_config.reason}")
+            
+            # Get parallel processor
+            parallel_processor = get_parallel_processor()
+            
+            # Run parallel processing
+            start_time = time.time()
+            processed_documents, success = await parallel_processor.process_chunks_parallel(
+                chunks=text_chunks,
+                full_document=full_document,
+                kb_id=kb_id,
+                metadata=metadata,
+                knowledge_source=knowledge_source,
+                source_name=source_name,
+                source_url=source_url,
+                progress_callback=progress_callback
+            )
+            
+            if not success or not processed_documents:
+                print(f"Parallel processing failed for KB {kb_id}")
+                return False
+            
+            # Insert documents into database
+            print(f"[KB Manager] Inserting {len(processed_documents)} documents into database")
+            
+            # Progress callback for database insertion (60-100%)
+            if progress_callback:
+                progress_callback(60, f"Inserting {len(processed_documents)} documents into database")
+            
+            # Batch insert documents
+            batch_size = 100
+            total_batches = (len(processed_documents) + batch_size - 1) // batch_size
+            
+            for batch_idx in range(0, len(processed_documents), batch_size):
+                batch = processed_documents[batch_idx:batch_idx + batch_size]
+                
+                # Retry logic for database insertion
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        self.supabase.table('knowledge_base_documents').insert(batch).execute()
+                        break
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            print(f"Retry {attempt + 1}/{max_retries} for batch insertion after error: {e}")
+                            time.sleep(2 ** attempt)  # Exponential backoff
+                        else:
+                            raise
+                
+                # Progress callback for insertion
+                if progress_callback:
+                    current_batch = batch_idx // batch_size + 1
+                    percent = 60 + int((current_batch / total_batches) * 40)  # 60-100% for insertion
+                    progress_callback(percent, f"Inserting batch {current_batch}/{total_batches}")
+            
+            elapsed = time.time() - start_time
+            print(f"[KB Manager] Parallel processing completed in {elapsed:.2f}s for {len(processed_documents)} documents")
+            
+            # Record performance if smart batching is enabled
+            if use_smart_batching and 'batch_config' in locals():
+                smart_batcher.record_performance(
+                    batch_config=batch_config,
+                    duration=elapsed,
+                    chunks_processed=len(processed_documents),
+                    success=True
+                )
+            
+            # Final progress callback
+            if progress_callback:
+                progress_callback(100, f"Successfully added {len(processed_documents)} chunks")
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error in parallel batch_add_to_kb: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Record failure if smart batching is enabled
+            if use_smart_batching and 'batch_config' in locals() and 'start_time' in locals():
+                elapsed = time.time() - start_time
+                smart_batcher.record_performance(
+                    batch_config=batch_config,
+                    duration=elapsed,
+                    chunks_processed=0,
+                    success=False
+                )
+            
+            return False
     
     def cleanup_duplicates(self, kb_id: str) -> int:
         """

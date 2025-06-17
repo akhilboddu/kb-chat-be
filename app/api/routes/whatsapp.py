@@ -633,7 +633,8 @@ async def whatsapp_webhook(request: Request):
                                             conversation_result.data[0]["customer_email"],
                                             message_content,
                                             conversation_id,
-                                            company_email
+                                            company_email,
+                                            conversation_result.data[0]["bot_id"]  # Pass the bot_id
                                         )
                                 else:
                                     await send_whatsapp_message(

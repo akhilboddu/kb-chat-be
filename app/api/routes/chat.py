@@ -138,7 +138,8 @@ async def send_mail(request: ChatRequest):
             company_email,
             request.message,
             request.conversation_id,  
-            client_email
+            client_email,
+            botId  # Pass the bot_id that we already fetched
         )
         return {"message": "mail has been sent"}
 
@@ -838,7 +839,8 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
                     conversation_repsonse.data[0]["customer_email"],
                     request.message,
                     request.conversation_id,
-                    company_email
+                    company_email,
+                    bot_id  # Pass the bot_id parameter
                 )
                 return {
                 "content": "Seems like no one is online to help you at the moment. But our team has been notified and will get back to you as soon as possible.",
@@ -908,7 +910,8 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
                     conversation_repsonse.data[0]["customer_email"],
                     request.message,
                     request.conversation_id,
-                    company_email
+                    company_email,
+                    bot_id  # Pass the bot_id parameter
                 )
         supabase.table("handover_requests").insert(
             {
@@ -1613,8 +1616,9 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
                                     conversation_response.data[0]["customer_name"],
                                     conversation_response.data[0]["customer_email"],
                                     message,
-                                    bot_id,
-                                    company_email
+                                    conversation_id,  # This should be conversation_id, not bot_id
+                                    company_email,
+                                    bot_id  # Pass bot_id as the new parameter
                                 )
 
                 # Note: bot_chat_endpoint will handle broadcasting both user and bot messages with proper IDs

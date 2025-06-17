@@ -1,5 +1,7 @@
 import logging
 import os
+import json
+from pathlib import Path
 from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -80,6 +82,36 @@ def create_app() -> FastAPI:
     
     # Mount comprehensive health check routes
     app.include_router(health_routes.router, prefix="")
+
+    @app.get("/version")
+    async def get_version():
+        """Get current deployment version information for both frontend and backend."""
+        try:
+            # Path to build numbers file
+            build_numbers_path = Path(__file__).parent.parent.parent / "deployment" / "build-numbers.json"
+            
+            if build_numbers_path.exists():
+                with open(build_numbers_path, 'r') as f:
+                    build_data = json.load(f)
+                return build_data
+            else:
+                # Fallback if file doesn't exist
+                return {
+                    "frontend": {
+                        "build": 0,
+                        "last_deployed": None
+                    },
+                    "backend": {
+                        "build": 0,
+                        "last_deployed": None
+                    }
+                }
+        except Exception as e:
+            logger.error(f"Error reading version info: {e}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Could not read version information"}
+            )
 
     @app.on_event("startup")
     def init_db_pool():
