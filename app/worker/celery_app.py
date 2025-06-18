@@ -1,8 +1,9 @@
 import os
 import threading
-from celery import Celery, Task
+from celery import Celery, Task, signals
 from kombu import Queue
 import psutil
+import gc
 from app.utils.logging import get_logger
 
 # Set environment variables BEFORE importing any ML libraries
@@ -42,7 +43,7 @@ celery_app = Celery(
     "kb_tasks",
     broker=os.getenv("CELERY_BROKER_URL", os.getenv("REDIS_URL")),
     backend=os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/1"),
-    include=['app.tasks.scrape', 'app.tasks.upload', 'app.tasks.optimize']
+    include=['app.tasks.scrape', 'app.tasks.upload', 'app.tasks.optimize', 'app.tasks.cleanup']
 )
 
 # Enhanced configuration with thread-based workers for ML stability
@@ -63,7 +64,7 @@ celery_app.conf.update(
     
     # Worker lifecycle management
     worker_max_tasks_per_child=50,  # Restart workers periodically to prevent memory leaks
-    worker_max_memory_per_child=2048000,  # 2GB memory limit per worker
+    worker_max_memory_per_child=3072000,  # 3GB memory limit per worker (optimized for m5.xlarge)
     worker_disable_rate_limits=True,  # Disable rate limiting for ML workloads
     
     # Queue configuration
@@ -111,7 +112,7 @@ def check_memory(self):
     process = psutil.Process(os.getpid())
     memory_mb = process.memory_info().rss / 1024 / 1024
     
-    if memory_mb > 1500:  # Warning at 1.5GB (updated for ML workloads)
+    if memory_mb > 3000:  # Warning at 3GB (optimized for m5.xlarge)
         logger.warning("high_memory_usage", memory_mb=memory_mb, worker_id=self.request.hostname)
     
     return {"memory_mb": memory_mb, "worker_id": self.request.hostname}
@@ -159,4 +160,30 @@ def embeddings_health_check(self):
             "status": "unhealthy", 
             "error": str(e),
             "worker_id": self.request.hostname
-        } 
+        }
+
+
+# Memory guard - check memory before running tasks
+@signals.task_prerun.connect
+def memory_guard(**kwargs):
+    """Check memory before running tasks"""
+    logger = get_logger("memory_guard")
+    process = psutil.Process(os.getpid())
+    memory_mb = process.memory_info().rss / 1024 / 1024
+    
+    if memory_mb > 3000:  # Warning at 3GB
+        logger.warning("high_memory_before_task", memory_mb=memory_mb)
+        try:
+            # Force cleanup
+            from app.core.embeddings_flexible import HuggingFaceEmbeddings
+            HuggingFaceEmbeddings.cleanup_models()
+            gc.collect()
+            
+            # Check memory again
+            new_memory_mb = process.memory_info().rss / 1024 / 1024
+            logger.info("memory_after_cleanup", 
+                       before_mb=memory_mb, 
+                       after_mb=new_memory_mb,
+                       freed_mb=memory_mb - new_memory_mb)
+        except Exception as e:
+            logger.error("memory_cleanup_failed", error=str(e)) 

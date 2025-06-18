@@ -238,7 +238,7 @@ class HuggingFaceEmbeddings(BaseEmbeddings):
             model = self._get_model()
             
             # Process in batches for better memory management and progress tracking
-            batch_size = 32  # Conservative batch size for thread workers
+            batch_size = int(os.getenv("EMBED_BATCH_SIZE", "96"))  # Configurable batch size
             all_embeddings = []
             
             for i in range(0, len(non_empty_texts), batch_size):
