@@ -16,6 +16,7 @@ from app.models.crm import CRMEntry, PaginatedCRMResponse
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
 from dateutil.parser import isoparse  # more tolerant ISO-8601 parser
+import hashlib
 
 router = APIRouter(prefix="/bots", tags=["bots"])
 
@@ -24,7 +25,14 @@ class DemoBotRequest(BaseModel):
     url: HttpUrl
     name: Optional[str] = None
     description: Optional[str] = None
-    max_pages: Optional[int] = 1
+    max_pages: Optional[int] = 3  # Changed default from 1 to 3
+
+# New model for demo bot metadata response
+class DemoBotMetaResponse(BaseModel):
+    kb_id: str
+    status: str
+    name: Optional[str] = None
+    created_at: Optional[str] = None
 
 
 # KB Management Compatibility Endpoints
@@ -242,8 +250,13 @@ async def create_demo_bot(
     5. Initiates scraping of the URL
     """
     try:
+        # Normalize URL - add protocol if missing
+        url = str(request.url)
+        if not url.startswith('http'):
+            url = f"https://{url}"
+            
         # Extract domain from URL
-        parsed_url = urlparse(str(request.url))
+        parsed_url = urlparse(url)
         domain = parsed_url.netloc.replace('www.', '')
         
         # Check if demo bot already exists
@@ -266,8 +279,8 @@ async def create_demo_bot(
                 # Delete old knowledge base
                 kb_manager.delete_kb(old_kb_id)
                 
-                # Create new knowledge base
-                kb_id = f"demo_{hash(domain)}"
+                # Create new knowledge base with deterministic ID
+                kb_id = f"demo_{hashlib.sha1(domain.encode()).hexdigest()[:10]}"
                 kb_collection = kb_manager.create_or_get_kb(
                     kb_id=kb_id,
                     name=f"Demo KB for {domain}"
@@ -288,7 +301,7 @@ async def create_demo_bot(
                 
                 # Start scraping in background
                 scrape_request = ScrapeURLRequest(
-                    url=str(request.url),
+                    url=url,  # Use normalized URL
                     max_pages=request.max_pages
                 )
                 background_tasks.add_task(
@@ -309,8 +322,8 @@ async def create_demo_bot(
                     message="Using existing demo bot"
                 )
         
-        # No existing bot found, create new one
-        kb_id = f"demo_{hash(domain)}"
+        # No existing bot found, create new one with deterministic ID
+        kb_id = f"demo_{hashlib.sha1(domain.encode()).hexdigest()[:10]}"
         
         # Create new knowledge base
         kb_collection = kb_manager.create_or_get_kb(
@@ -338,7 +351,11 @@ async def create_demo_bot(
             }
         }
         
-        demo_bot_response = supabase.table("demo_bots").insert(demo_bot_data).execute()
+        # Use upsert to handle potential race conditions since url has unique constraint
+        demo_bot_response = supabase.table("demo_bots").upsert(
+            demo_bot_data,
+            on_conflict="url"
+        ).execute()
         
         if not demo_bot_response.data:
             # Clean up the KB if demo bot creation fails
@@ -350,7 +367,7 @@ async def create_demo_bot(
         
         # Start scraping in background
         scrape_request = ScrapeURLRequest(
-            url=str(request.url),
+            url=url,  # Use normalized URL
             max_pages=request.max_pages
         )
         background_tasks.add_task(
@@ -514,4 +531,48 @@ async def delete_bot(bot_id: str):
         raise HTTPException(
             status_code=500,
             detail=f"Failed to delete bot: {str(e)}"
+        )
+
+# New endpoint to get demo bot metadata
+@router.get("/demo-bot/meta")
+async def get_demo_bot_meta(url: str) -> DemoBotMetaResponse:
+    """
+    Get metadata for a demo bot by URL (read-only, no side effects)
+    """
+    try:
+        # Extract domain from URL - handle both with and without protocol
+        if url.startswith('http'):
+            parsed_url = urlparse(url)
+            domain = parsed_url.netloc.replace('www.', '')
+        else:
+            # Handle cases where URL doesn't have protocol
+            # Clean up the URL and extract domain
+            clean_url = url.replace('www.', '')
+            domain = clean_url.split('/')[0]
+        
+        # Look up demo bot
+        existing_bot = supabase.table("demo_bots").select("*").eq("url", domain).execute()
+        
+        if not existing_bot.data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No demo bot found for URL: {domain}"
+            )
+        
+        bot = existing_bot.data[0]
+        
+        return DemoBotMetaResponse(
+            kb_id=bot['kb_id'],
+            status=bot.get('status', 'unknown'),
+            name=bot.get('name'),
+            created_at=bot.get('created_at')
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting demo bot meta: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get demo bot metadata: {str(e)}"
         )
