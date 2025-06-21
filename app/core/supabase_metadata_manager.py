@@ -324,6 +324,43 @@ def upsert_agent_config(kb_id: str, config_data: Dict[str, Any]) -> bool:
         return False
 
 
+def save_web_search_config(bot_id: str, config_data: Dict[str, Any]) -> bool:
+    """
+    Saves or updates the web search configuration for a specific bot.
+    Uses 'upsert' to create or update the record based on the bot_id.
+
+    Args:
+        bot_id: The UUID of the bot.
+        config_data: A dictionary containing the web search configuration.
+
+    Returns:
+        True if the operation was successful, False otherwise.
+    """
+    try:
+        # Prepare the data for upsert
+        # The bot_id is included to match the record for updating
+        data_to_upsert = {
+            "bot_id": bot_id,
+            **config_data
+        }
+
+        # Perform the upsert operation
+        # Supabase's upsert will use the primary key or a unique column
+        # to decide whether to INSERT or UPDATE. Our unique index on `bot_id`
+        # makes it the perfect candidate for the `on_conflict` parameter.
+        (supabase.table('web_search_configs')
+         .upsert(data_to_upsert, on_conflict='bot_id')
+         .execute())
+
+        print(f"Successfully saved web search configuration for bot_id: {bot_id}")
+        return True
+    except Exception as e:
+        print(f"Error saving web search configuration for bot {bot_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 # === SCRAPING STATUS FUNCTIONS ===
 def update_scrape_status(kb_id: str, status_data: dict) -> bool:
     """Updates the scraping status for a KB."""
@@ -540,4 +577,53 @@ def get_db():
 def init_db():
     """Legacy function - no longer needed as tables are created via Supabase migrations."""
     print("init_db() called but not needed - Supabase tables should be created via migrations")
-    pass 
+    pass
+
+
+def get_bot_by_bot_id(bot_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieves bot details using its knowledge base ID.
+
+    Args:
+        kb_id: The knowledge base ID associated with the bot.
+
+    Returns:
+        A dictionary containing the bot's details, or None if not found.
+    """
+    if not bot_id:
+        return None
+        
+    try:
+        # The .single() method will raise an error if more than one row is found,
+        # which is good for ensuring data integrity. It returns data=None if no rows are found.
+        result = supabase.table('bots').select('*').eq('id', bot_id).single().execute()
+        return result.data
+    except Exception as e:
+        print(f"Error fetching bot by bot_id '{bot_id}': {e}")
+        # This can happen if no rows are found or multiple rows are found.
+        # Returning None is a safe default.
+        return None 
+
+
+def get_web_search_config(bot_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieves the web search configuration for a specific bot.
+
+    Args:
+        bot_id: The UUID of the bot.
+
+    Returns:
+        A dictionary containing the web search configuration, or None if not found.
+    """
+    if not bot_id:
+        return None
+
+    try:
+        # Use .single() to fetch exactly one record or raise an error if 0 or more than 1 are found.
+        # This is safe because we have a unique constraint on bot_id.
+        result = supabase.table('web_search_configs').select('*').eq('bot_id', bot_id).single().execute()
+        return result.data
+    except Exception as e:
+        print(f"Could not fetch web search config for bot {bot_id} (this may be expected if none is set): {e}")
+        # It's common for a config not to exist, so we just return None.
+        return None 

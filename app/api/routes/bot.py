@@ -11,7 +11,7 @@ from app.core import kb_manager, supabase_metadata_manager as db_manager
 from app.core.supabase_client import supabase
 from fastapi import BackgroundTasks
 from pydantic import BaseModel, HttpUrl
-from typing import List, Optional
+from typing import List, Optional, Dict
 from app.models.crm import CRMEntry, PaginatedCRMResponse
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
@@ -203,6 +203,76 @@ async def bot_knowledge_endpoint(bot_id: str, request: AddKnowledgeRequest):
                 status_code=500,
                 detail=f"Failed to add knowledge to knowledge base: {str(e)}",
             )
+
+# --- Web Search Configuration ---
+
+class WebSearchConfigModel(BaseModel):
+    is_enabled: bool
+    usage_guide: str
+
+@router.get("/{bot_id}/web_search_config", response_model=WebSearchConfigModel)
+async def get_web_search_config(bot_id: str):
+    """
+    Retrieves the web search configuration for a specific bot.
+    If no config exists, returns a default configuration.
+    """
+    try:
+        response = supabase.table("web_search_configs").select("*").eq("bot_id", bot_id).single().execute()
+
+        if response.data:
+            # Config found, return it
+            return WebSearchConfigModel(**response.data)
+        else:
+            # No config found, return a default config to ensure the frontend works correctly.
+            default_config = {
+                "is_enabled": False,
+                "usage_guide": """Use this tool ONLY when the user's query is DIRECTLY related to your business context and you need current information that's not in your knowledge base.
+
+BUSINESS CONTEXT: {YOUR BUSINESS NAME HERE} - {INDUSTRY} - {YOUR WEBSITE HERE}
+
+APPROPRIATE USES:
+- Industry news affecting your products/services
+- Current market conditions for your business
+- Recent regulatory changes impacting your industry
+- Competitor updates relevant to your offerings
+- Technology trends affecting your solutions
+- Economic factors affecting your customers
+- Latest information about your products/services from your website
+
+DO NOT USE FOR: 
+- General news unrelated to your business
+- Personal queries or entertainment
+- Topics outside your industry scope
+- Information that doesn't help serve the customer""",
+            }
+            return WebSearchConfigModel(**default_config)
+
+    except Exception as e:
+        # Don't return 404 for 'not found', as we provide a default.
+        # Only raise 500 for actual database errors.
+        if "Multiple rows returned" in str(e):
+             raise HTTPException(status_code=500, detail="Data integrity error: Found multiple web search configurations for this bot.")
+        print(f"Error fetching web search config for bot {bot_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"An internal error occurred while fetching the web search configuration.")
+
+@router.put("/{bot_id}/web_search_config", response_model=StatusResponse)
+async def update_web_search_config(bot_id: str, config: WebSearchConfigModel):
+    """
+    Updates or creates the web search configuration for a specific bot.
+    """
+    try:
+        db_manager.save_web_search_config(bot_id, config.dict())
+        return StatusResponse(
+            status="success",
+            message="Web search configuration saved successfully."
+        )
+    except Exception as e:
+        print(f"Error saving web search config for bot {bot_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to save web search configuration: {str(e)}")
+
+# --- End Web Search Configuration ---
 
 @router.get("/crm/{bot_id}", response_model=PaginatedCRMResponse)
 def get_crm_entries_for_bot(

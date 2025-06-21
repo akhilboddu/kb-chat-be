@@ -180,6 +180,7 @@ async def chat_endpoint(
     request: ChatRequest,
     store_history: bool = Query(True, description="When false, skip persisting messages"),
     customer_context: Optional[Dict[str, Any]] = None,
+    custom_prompt: Optional[str] = None,
 ):
     """
     HTTP endpoint for stateful, non-streaming chat interactions with an agent,
@@ -809,6 +810,13 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     user_id = bots_data["user_id"]
     print(user_id, "user_id")
     kb_id = bots_data["kb_id"]
+    
+    # Get custom prompt if configured
+    custom_prompt = bots_data.get("custom_prompt")
+    if custom_prompt:
+        print(f"Found custom prompt for bot {bot_id}")
+    else:
+        print(f"No custom prompt configured for bot {bot_id}, using default")
 
     # Get user data and conversation data
     userData = supabase.auth.admin.get_user_by_id(user_id)
@@ -860,6 +868,7 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
         request,
         store_history=False,  # Prevent duplicate DB insert – we already saved the user row above
         customer_context=customer_context if 'customer_context' in locals() else None,
+        custom_prompt=custom_prompt,
     )
 
     # save user's message and bot's response to supabase
@@ -1037,6 +1046,13 @@ async def bot_chat_websocket_endpoint(bot_id: str, request: ChatRequest, websock
             await websocket.send_json({"type": "error", "content": "Conversation not found"})
             return
             
+        # Get custom prompt if configured
+        custom_prompt = bot_data.get("custom_prompt")
+        if custom_prompt:
+            print(f"Found custom prompt for bot {bot_id}")
+        else:
+            print(f"No custom prompt configured for bot {bot_id}, using default")
+
         # Get chat response using the standard chat endpoint
         import time
         start_time = time.time()
@@ -1052,7 +1068,8 @@ async def bot_chat_websocket_endpoint(bot_id: str, request: ChatRequest, websock
                 "customer_phone": conversation_response.data[0].get("customer_phone"),
                 "bot_name": bot_data.get("name", "Assistant"),
                 "company_name": bot_data.get("company", "our company")
-            }
+            },
+            custom_prompt=custom_prompt,
         )
         
         processing_time = time.time() - start_time

@@ -15,8 +15,9 @@ from langchain.agents.output_parsers import ReActSingleInputOutputParser
 from app.core.config import llm
 from app.core.tools import (
     get_retriever_tool,
-    get_knowledge_update_tool,
-    get_answering_tool,
+    # get_knowledge_update_tool, # This seems unused, can be removed if not needed
+    # get_answering_tool, # This seems unused, can be removed if not needed
+    get_web_search_tool,
 )
 from app.core import supabase_metadata_manager as db_manager  # Import db_manager
 
@@ -200,14 +201,41 @@ class EnhancedAgentExecutor:
         return getattr(self.agent_executor, name)
 
 
+def get_bot_business_context(kb_id: str) -> Dict[str, Any]:
+    """
+    Retrieve business context for a bot from the database.
+    
+    Args:
+        kb_id: Knowledge base ID
+        
+    Returns:
+        Dictionary containing business context
+    """
+    # Hardcoded Zaio business context since Supabase doesn't contain this data
+    zaio_business_context = {
+        'company_name': 'Zaio',
+        'industry': 'Edtech',
+        'products': ['Full Stack Bootcamp', 'Data Science Bootcamp', 'Cyber Security Bootcamp'],
+        'services': ['Full Stack Development Training', 'Data Science Training', 'Cyber Security Training'],
+        'bot_name': 'Zaio Assistant',
+        'business_keywords': [
+            'zaio', 'edtech', 'full stack', 'data science', 'cyber security', 'bootcamp', 'training', 
+            'coding', 'programming', 'education', 'tech education', 'developer', 'programmer', 
+            'salary', 'earnings', 'income', 'pay', 'compensation', 'job market', 'career', 'employment'
+        ]
+    }
+    
+    return zaio_business_context
+
 def create_agent_executor(
-    kb_id: str, memory: Optional[BaseMemory] = None, customer_context: Optional[Dict[str, Any]] = None
+    kb_id: str, memory: Optional[BaseMemory] = None, bot_id: str = "18eb9b0c-d283-4781-a727-6140d940db42", customer_context: Optional[Dict[str, Any]] = None
 ) -> Union[AgentExecutor, EnhancedAgentExecutor]:
     """
     Creates an AgentExecutor for a specific knowledge base, optionally with memory.
 
     Args:
         kb_id: The unique identifier for the knowledge base.
+        bot_id: The unique identifier for the bot.
         memory: Optional LangChain memory object.
         customer_context: Optional dictionary containing customer information (name, email, phone)
 
@@ -217,7 +245,7 @@ def create_agent_executor(
     if not llm:
         raise ValueError("LLM not initialized. Check .env configuration.")
 
-    # --- Fetch Agent Configuration ---
+    # --- Fetch Agent Configuration from DB ---
     print(f"Fetching agent config for kb_id: {kb_id}")
     agent_config = db_manager.get_agent_config(kb_id)
     system_prompt_template = agent_config["system_prompt"]
@@ -255,17 +283,34 @@ def create_agent_executor(
         system_prompt_template = system_prompt_template.replace("{company_name}", "our company")
     # --- End Format ---
 
-    # 1. Get tools specific to this kb_id
+    # --- Get Tools ---
+    
+    # 1. Get the retriever tool (always included)
     retriever_tool = get_retriever_tool(kb_id)
-    # update_tool = get_knowledge_update_tool(kb_id) # We might not give the agent direct update ability initially
-    # answering_tool = get_answering_tool(llm) # The ReAct agent directly uses the LLM for answering
+    tools_list = [retriever_tool]
+    
+    # 2. Get Bot Info and dynamically build Web Search Tool
+    bot_info = db_manager.get_bot_by_bot_id(bot_id)
+    
+    if bot_info:
+        # Fetch the client's saved web search configuration from the database
+        web_search_config_data = db_manager.get_web_search_config(bot_info['id'])
 
-    # Combine tools the agent can use
-    # tools_list = [retriever_tool, update_tool, answering_tool]
-    tools_list = [retriever_tool]  # Start simple: only retrieval allowed
+        # 3. Dynamically create and add the web search tool if it's enabled
+        web_search_tool = get_web_search_tool(config_data=web_search_config_data)
+        
+        if web_search_tool:
+            tools_list.append(web_search_tool)
+            print(f"Web search tool enabled and added for bot_id: {bot_info['id']}")
+        else:
+            print(f"Web search tool is disabled for bot_id: {bot_info['id']}")
+    else:
+        print(f"Warning: Could not find bot info for kb_id: {kb_id}. Web search tool will be disabled.")
 
     # Get tool names
     tool_names = [tool.name for tool in tools_list]
+
+    print(f"Tool names: {tool_names}")
 
     # 2. Create the ReAct-compatible prompt template
     # Ensure the prompt includes all required ReAct variables
