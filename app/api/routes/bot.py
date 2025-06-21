@@ -17,6 +17,10 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
 from dateutil.parser import isoparse  # more tolerant ISO-8601 parser
 import hashlib
+import logging
+
+# Create logger instance
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/bots", tags=["bots"])
 
@@ -249,6 +253,10 @@ async def create_demo_bot(
     4. If doesn't exist, creates new KB and demo bot
     5. Initiates scraping of the URL
     """
+    logger.info(
+        f"[DEMO-BOT] Incoming request – url={request.url}, name={request.name}, "
+        f"max_pages={request.max_pages}"
+    )
     try:
         # Normalize URL - add protocol if missing
         url = str(request.url)
@@ -262,6 +270,7 @@ async def create_demo_bot(
         # Check if demo bot already exists
         existing_bot = supabase.table("demo_bots").select("*").eq("url", domain).execute()
         
+        logger.info(f"[DEMO-BOT] Existing bot rows found: {len(existing_bot.data) if existing_bot.data else 0}")
         if existing_bot.data:
             bot = existing_bot.data[0]
             try:
@@ -303,6 +312,9 @@ async def create_demo_bot(
                 scrape_request = ScrapeURLRequest(
                     url=url,  # Use normalized URL
                     max_pages=request.max_pages
+                )
+                logger.info(
+                    f"[DEMO-BOT] Recreated KB {kb_id}. Queuing scrape (max_pages={request.max_pages})"
                 )
                 background_tasks.add_task(
                     scrape_url_and_populate_kb,
@@ -351,7 +363,7 @@ async def create_demo_bot(
             }
         }
         
-        # Use upsert to handle potential race conditions since url has unique constraint
+        logger.info(f"[DEMO-BOT] Creating new demo bot record for domain {domain}, kb_id={kb_id}")
         demo_bot_response = supabase.table("demo_bots").upsert(
             demo_bot_data,
             on_conflict="url"
@@ -370,6 +382,7 @@ async def create_demo_bot(
             url=url,  # Use normalized URL
             max_pages=request.max_pages
         )
+        logger.info(f"[DEMO-BOT] Queuing initial scrape task (max_pages={request.max_pages}) for KB {kb_id}")
         background_tasks.add_task(
             scrape_url_and_populate_kb,
             kb_id,
@@ -383,6 +396,7 @@ async def create_demo_bot(
         )
         
     except Exception as e:
+        logger.exception("[DEMO-BOT] Unhandled error while creating demo bot")
         print(f"Error creating demo bot: {str(e)}")
         raise HTTPException(
             status_code=500,
