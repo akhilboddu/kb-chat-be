@@ -1282,6 +1282,43 @@ async def list_bot_conversations_endpoint(
 
         conversations = response.data  # Last message fields already included by the view
 
+        # Post-process conversations to exclude page visits from last_message
+        for conversation in conversations:
+            if conversation.get('last_message'):
+                # Check if the last message is a page visit by looking for page visit indicators
+                last_msg = conversation['last_message']
+                if (last_msg and 
+                    (last_msg.startswith('📄 **Visited Page**:') or 
+                     last_msg.startswith('🔄 **Navigated to**:') or 
+                     last_msg.startswith('⬅️ **Browser Navigation**:') or 
+                     last_msg.startswith('👁️ **Returned to**:') or 
+                     last_msg.startswith('👋 **Left Page**:') or 
+                     last_msg.startswith('🚪 **Exiting**:') or 
+                     last_msg.startswith('🌐 **Page Activity**:'))):
+                    
+                    # Get the actual last non-page-visit message
+                    try:
+                        last_msg_response = (
+                            supabase.table("messages")
+                            .select("content, created_at")
+                            .eq("conversation_id", conversation['id'])
+                            .neq("role", "page_visit")
+                            .order("created_at", desc=True)
+                            .limit(1)
+                            .execute()
+                        )
+                        
+                        if last_msg_response.data and len(last_msg_response.data) > 0:
+                            conversation['last_message'] = last_msg_response.data[0]['content']
+                            conversation['last_message_time'] = last_msg_response.data[0]['created_at']
+                        else:
+                            # No non-page-visit messages found
+                            conversation['last_message'] = "No messages yet"
+                            
+                    except Exception as e:
+                        print(f"Error fetching last non-page-visit message for conversation {conversation['id']}: {e}")
+                        # Keep the original message if there's an error
+
         return PaginatedListBotConversationsResponse(
             conversations=conversations,
             total_count=total_count,
@@ -1544,6 +1581,34 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
 
             role = data.get('role', 'user')  # Default to 'user' if not provided
 
+            # Handle page visit messages
+            if role == 'page_visit':
+                page_data = data.get('page_data', {})
+                
+                # Save page visit message to database
+                page_visit_response = supabase.table("messages").insert({
+                    "conversation_id": conversation_id,
+                    "content": message,
+                    "role": "page_visit",
+                    "read": True,  # Page visits are automatically marked as read
+                }).execute()
+                
+                if page_visit_response.data:
+                    message_id = page_visit_response.data[0]["id"]
+                    
+                    # Broadcast page visit message to all connections
+                    await broadcast_to_all_connections(conversation_id, {
+                        "type": "message",
+                        "id": message_id,
+                        "content": message,
+                        "role": "page_visit",
+                        "page_data": page_data,
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    
+                    print(f"Page visit tracked: {page_data.get('url', 'Unknown URL')}")
+                continue
+
             if status == "human":
                 if role == "human":
                     # Message from agent - handle_human_chat will save to DB
@@ -1743,12 +1808,13 @@ async def get_conversations_by_email(
         )
 
         conversations = response.data if hasattr(response, "data") else []
-        # For each conversation, fetch the last message
+        # For each conversation, fetch the last non-page-visit message
         for conv in conversations:
             last_msg_resp = (
                 supabase.table("messages")
                 .select("content,created_at")
                 .eq("conversation_id", conv["id"])
+                .neq("role", "page_visit")  # Exclude page visit messages
                 .order("created_at", desc=True)
                 .limit(1)
                 .execute()
@@ -1757,7 +1823,7 @@ async def get_conversations_by_email(
                 conv["last_message"] = last_msg_resp.data[0]["content"]
                 conv["last_message_time"] = last_msg_resp.data[0]["created_at"]
             else:
-                conv["last_message"] = None
+                conv["last_message"] = "No messages yet"
                 conv["last_message_time"] = None
         return {"conversations": conversations}
     except Exception as e:

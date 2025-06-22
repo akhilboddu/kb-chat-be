@@ -2,7 +2,7 @@
 Lead Scorer Utility
 
 This module provides functions to process conversations through the lead scoring agent
-and save the results to the bot_crms table.
+and save the results to both the bot_crms and conversations tables.
 """
 
 import asyncio
@@ -16,7 +16,8 @@ from app.core.supabase_metadata_manager import get_formatted_conversation_histor
 
 async def process_lead_scoring(conversations: List[Dict[str, str]]) -> Dict[str, Any]:
     """
-    Process an array of conversations through the lead scoring agent and save results to bot_crms table.
+    Process an array of conversations through the lead scoring agent and save results to both 
+    conversations and bot_crms tables.
     
     Args:
         conversations: List of dictionaries with 'conversation_id' and 'bot_id' keys
@@ -59,14 +60,35 @@ async def process_lead_scoring(conversations: List[Dict[str, str]]) -> Dict[str,
                 reason = lead_score_result.get('reason', '')
                 contact_info = lead_score_result.get('email or phone number')
                 
-                # Validate contact_info
+                # ALWAYS update the conversations table with lead score and summary
+                # regardless of whether contact info is present
+                try:
+                    conversation_update_data = {
+                        "lead_score": score,
+                        "conversation_summary": reason,
+                        "updated_at": datetime.utcnow().isoformat()
+                    }
+                    
+                    conversation_update_response = supabase.table('conversations').update(
+                        conversation_update_data
+                    ).eq('id', conversation_id).execute()
+                    
+                    if conversation_update_response.data:
+                        print(f"✅ Updated conversation {conversation_id} with lead score {score} and summary")
+                    else:
+                        print(f"⚠️  Failed to update conversation {conversation_id} with lead score")
+                        
+                except Exception as conv_error:
+                    print(f"❌ Error updating conversation {conversation_id}: {str(conv_error)}")
+                
+                # Check if we should update CRM (only if contact info is present)
                 if not contact_info or contact_info.strip() == "":
                     print(f"⚠️  No contact info found for conversation {conversation_id}, skipping CRM update")
                     results["details"].append({
                         "conversation_id": conversation_id,
                         "bot_id": bot_id,
                         "score": score,
-                        "status": "skipped - no contact info"
+                        "status": "success - conversation updated, CRM skipped (no contact info)"
                     })
                     results["successful"] += 1
                     results["total_processed"] += 1
@@ -117,15 +139,15 @@ async def process_lead_scoring(conversations: List[Dict[str, str]]) -> Dict[str,
                         })
                         print(f"✅ Successfully processed conversation {conversation_id} with score {score}")
                     else:
-                        error_msg = f"Failed to save to database for conversation {conversation_id}"
+                        error_msg = f"Failed to save to CRM database for conversation {conversation_id}"
                         results["errors"].append(error_msg)
                         results["failed"] += 1
                         
                 except Exception as db_error:
-                    error_msg = f"Database error for conversation {conversation_id}: {str(db_error)}"
+                    error_msg = f"CRM database error for conversation {conversation_id}: {str(db_error)}"
                     results["errors"].append(error_msg)
                     results["failed"] += 1
-                    print(f"❌ Database error: {error_msg}")
+                    print(f"❌ CRM Database error: {error_msg}")
                     print(f"   CRM data that failed: {crm_data}")
                     print(f"   Contact info: {contact_info}")
                     import traceback
@@ -160,7 +182,7 @@ async def process_lead_scoring(conversations: List[Dict[str, str]]) -> Dict[str,
 
 async def score_single_conversation(conversation_id: str, bot_id: str) -> Optional[Dict[str, Any]]:
     """
-    Score a single conversation and save to bot_crms table.
+    Score a single conversation and save to both conversations and bot_crms tables.
     
     Args:
         conversation_id: The conversation ID to process

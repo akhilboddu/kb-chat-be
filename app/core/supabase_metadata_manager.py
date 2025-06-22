@@ -232,7 +232,8 @@ def get_conversation_history(conversation_id: str) -> List[Dict[str, Any]]:
         role_to_type_mapping = {
             "user": "human",
             "bot": "ai", 
-            "human": "human_agent"
+            "human": "human_agent",
+            "page_visit": "page_visit"
         }
         
         messages = []
