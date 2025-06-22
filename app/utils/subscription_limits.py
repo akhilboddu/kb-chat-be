@@ -15,13 +15,14 @@ async def get_plan_limits(plan_name: str) -> Dict[str, Any]:
         Dict containing the plan limits
     """
     try:
-        plan_name_norm = plan_name.strip().lower()
+        plan_name_norm = plan_name
+        print(f"THIS IS THE PLAN NAME NORM: {plan_name_norm}")
         response = supabase.table("plans").select("*").execute()
         if not response.data:
             logger.warning(f"No plans found in table, using default limits")
             return {"messages": 100, "conversations": 20, "live_bots": 1}
         for plan in response.data:
-            if plan.get("name", "").strip().lower() == plan_name_norm:
+            if plan.get("name", "") == plan_name_norm:
                 return plan
         logger.warning(f"Plan '{plan_name}' not found, using default limits")
         return {"messages": 100, "conversations": 20, "live_bots": 1}
@@ -44,7 +45,8 @@ async def get_bot_and_user(bot_id: str) -> Optional[Dict[str, Any]]:
         if not user_id:
             logger.error(f"No user_id found for bot: {bot_id}")
             return None
-        user_resp = supabase.table("users_metadata").select("*").eq("id", user_id).single().execute()
+        user_resp = supabase.table("subscriptions").select("*").eq("user_id", user_id).single().execute()
+        print(f"user_resp: {user_resp}")
         if not user_resp.data:
             logger.error(f"User profile not found for user: {user_id}")
             return None
@@ -104,9 +106,11 @@ async def check_subscription_limits(bot_id: str, conversation_id: str) -> Tuple[
             return True, "Bot or user not found"
         user_id = info["bot"].get("user_id")
         user_profile = info["user"]
-        subscription_tier = user_profile.get("payment_status", "Trial")
+        subscription_tier = user_profile.get("plan_name", "Trial")
+        print(f"THIS IS THE SUBSCRIPTION TIER: {subscription_tier}")
         # Get plan limits from database
         limits = await get_plan_limits(subscription_tier)
+        print(f"THIS IS THE LIMITS: {limits}")
         # --- MONTHLY LIMITS LOGIC ---
         # Only count messages/conversations from the 1st of the current month (UTC) to now
         now = datetime.now(timezone.utc)

@@ -1558,6 +1558,8 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
 
             message = data.get("message")
             reply_to_message_id = data.get("reply_to_message_id")
+            role = data.get('role', 'user')  # Default to 'user' if not provided - MOVED UP
+            
             if not message:
                 await websocket.send_json({"error": "Missing message"})
                 continue
@@ -1572,14 +1574,16 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
             status = conversation_response.data[0]["status"]
             bot_id = conversation_response.data[0]["bot_id"] if conversation_response.data else None
 
-             
-           
+            # If conversation is closed and user sends a message, reopen it to "ai"
+            if status == "closed" and role == "user":
+                supabase.table("conversations").update({"status": "ai"}).eq(
+                    "id", conversation_id
+                ).execute()
+                status = "ai"  # Update local status variable
+                print(f"Reopened closed conversation {conversation_id} to 'ai' status")
 
             print("status------>", status)
             print("bot_id------>", bot_id)
-
-
-            role = data.get('role', 'user')  # Default to 'user' if not provided
 
             # Handle page visit messages
             if role == 'page_visit':
