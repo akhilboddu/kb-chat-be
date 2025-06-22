@@ -1422,7 +1422,7 @@ async def send_message_to_demo_bot(request: DemoChatRequest):
     Endpoint for sending messages to a demo bot associated with a specific URL.
     The endpoint will:
     1. Find the demo bot's knowledge base using the URL
-    2. Process the message using the AI
+    2. Process the message using the AI with conversation context
     3. Return the response
     """
     try:
@@ -1442,24 +1442,82 @@ async def send_message_to_demo_bot(request: DemoChatRequest):
         kb_id = demo_bot_response.data[0]["kb_id"]
         
         # 2. Create a ChatRequest for the existing chat endpoint
+        conversation_id = request.conversationId or f"demo_{kb_id}"
         chat_request = ChatRequest(
             message=request.message,
-            conversation_id=f"demo_{kb_id}"  # Use a consistent conversation ID for demo bots
+            conversation_id=conversation_id
         )
         
-        # 3. Use the existing chat endpoint logic
-        response = await chat_endpoint(kb_id, chat_request)
+        # 3. Create memory with conversation context if provided
+        memory = ConversationBufferMemory(
+            memory_key="chat_history", return_messages=True
+        )
         
-        # 4. If the response is a handoff, add the additional message
-        if response.type == "handoff":
-            handoff_message = (
-                "\n\nOur AI was not able to answer this and this is where a human hand off would be triggered - "
-                "some one from your team can respond to the user and add this information to the knowledge base. "
-                "Sign up for a free trail to fully experience the Magic of deskForce ✨😃"
+        # Populate memory from conversation context if provided
+        if request.conversationContext:
+            print(f"Populating demo bot memory with {len(request.conversationContext)} messages")
+            for msg in request.conversationContext:
+                if msg.get("role") == "user":
+                    memory.chat_memory.add_user_message(msg.get("content", ""))
+                elif msg.get("role") == "bot":
+                    memory.chat_memory.add_ai_message(msg.get("content", ""))
+        
+        # 4. Create agent executor with populated memory
+        agent_executor = agent_manager.create_agent_executor(kb_id=kb_id, memory=memory)
+        
+        # 5. Format history for prompt
+        memory_variables = memory.load_memory_variables({})
+        history_string = memory_variables.get("chat_history", "")
+        if not isinstance(history_string, str):
+            formatted_history = []
+            for msg in history_string:
+                if isinstance(msg, HumanMessage):
+                    formatted_history.append(f"Human: {msg.content}")
+                elif isinstance(msg, AIMessage):
+                    formatted_history.append(f"AI: {msg.content}")
+            history_string = "\n".join(formatted_history)
+        
+        # 6. Prepare agent input with conversation history
+        input_data = {"input": request.message, "chat_history": history_string}
+        
+        # 7. Invoke agent with context
+        print(f"Invoking demo bot agent ({kb_id}) with conversation context")
+        import asyncio
+        response = await asyncio.to_thread(agent_executor.invoke, input_data)
+        
+        # 8. Process response
+        agent_output = response.get("output")
+        if agent_output:
+            from app.utils.text_processing import clean_agent_output, auto_add_handoff_if_needed
+            cleaned_output = clean_agent_output(agent_output)
+            
+            # Apply automatic handoff detection
+            cleaned_output = auto_add_handoff_if_needed(cleaned_output)
+            
+            # Check for handoff marker and determine response type
+            handoff_marker = "(needs help)"
+            if handoff_marker in cleaned_output:
+                final_content = cleaned_output.replace(handoff_marker, "").strip()
+                response_type = "handoff"
+                
+                # Add the demo-specific handoff message
+                handoff_message = (
+                    "\n\nOur AI was not able to answer this and this is where a human hand off would be triggered - "
+                    "some one from your team can respond to the user and add this information to the knowledge base. "
+                    "Sign up for a free trail to fully experience the Magic of deskForce ✨😃"
+                )
+                final_content = final_content + handoff_message
+            else:
+                final_content = cleaned_output
+                response_type = "answer"
+            
+            return ChatResponse(content=final_content, type=response_type)
+        else:
+            # No output from agent
+            return ChatResponse(
+                content="I'm sorry, I couldn't process your request right now. Please try again.",
+                type="answer"
             )
-            response.content = response.content + handoff_message
-        
-        return response
         
     except HTTPException as http_exc:
         raise http_exc

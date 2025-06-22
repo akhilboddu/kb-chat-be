@@ -1,0 +1,23 @@
+{
+  "scrape_metadata": {
+    "url": "https://unilink.co.za/",
+    "base_domain": "unilink.co.za",
+    "pages_scraped": 0,
+    "scrape_time": "2025-06-20T17:31:00.074021",
+    "processing_time_seconds": 31.732063055038452
+  },
+  "raw_data": [],
+  "business_profile": {
+    "raw_content": {
+      "text_content": [],
+      "urls": [],
+      "social_links": {}
+    },
+    "structured_content": "Okay, I'm ready to clean and structure the website content for your knowledge base. Please provide the raw text. I will remove all duplicates, consolidate information, and present it in a clear, organized format. I will prioritize accuracy and completeness while adhering to your specific instructions.",
+    "metadata": {
+      "total_paragraphs": 0,
+      "total_urls": 0,
+      "total_social_links": 0
+    }
+  }
+}

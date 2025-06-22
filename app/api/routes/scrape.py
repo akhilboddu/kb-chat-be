@@ -110,10 +110,23 @@ async def get_scrape_status(kb_id: str):
     try:
         status = db_manager.get_scrape_status(kb_id)
         if not status:
-            raise HTTPException(
-                status_code=404, detail=f"No scraping operation found for KB {kb_id}"
+            # Return a "not found" status instead of throwing 404
+            # This allows the frontend polling to handle it gracefully
+            return ScrapeStatusResponse(
+                kb_id=kb_id,
+                status="not_found",
+                submitted_url="",
+                pages_scraped=0,
+                total_pages=0,
+                progress={
+                    "stage": "not_found",
+                    "details": "No scraping operation found"
+                }
             )
         return ScrapeStatusResponse(**status)
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
         logger.error(f"Error retrieving scrape status for KB {kb_id}: {e}")
         raise HTTPException(
