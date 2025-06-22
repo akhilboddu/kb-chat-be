@@ -11,7 +11,7 @@ from app.core import kb_manager, supabase_metadata_manager as db_manager
 from app.core.supabase_client import supabase
 from fastapi import BackgroundTasks
 from pydantic import BaseModel, HttpUrl
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from app.models.crm import CRMEntry, PaginatedCRMResponse
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
@@ -273,6 +273,293 @@ async def update_web_search_config(bot_id: str, config: WebSearchConfigModel):
         raise HTTPException(status_code=500, detail=f"Failed to save web search configuration: {str(e)}")
 
 # --- End Web Search Configuration ---
+
+# --- Lead Scorer Configuration ---
+
+class LeadScorerConfigModel(BaseModel):
+    is_enabled: bool
+    scoring_guide: str
+    inactive_time: int = 3  # Default to 3 hours
+
+@router.get("/{bot_id}/lead_scorer_config", response_model=LeadScorerConfigModel)
+async def get_lead_scorer_config(bot_id: str):
+    """
+    Retrieves the lead scorer configuration for a specific bot.
+    If no config exists, returns a default configuration.
+    """
+    try:
+        response = supabase.table("lead_scorer_configs").select("*").eq("bot_id", bot_id).single().execute()
+
+        if response.data:
+            # Config found, return it
+            return LeadScorerConfigModel(**response.data)
+        else:
+            # No config found, return a default config to ensure the frontend works correctly.
+            default_config = {
+                "is_enabled": False,
+                "scoring_guide": """Analyze the entire conversation to determine if the user is a qualified lead. A qualified lead shows strong interest, has a clear need for our products/services, and has provided contact information.
+
+SCORING CRITERIA:
+- High Interest (5 points): Asks specific questions about pricing, features, or implementation. Uses phrases like "I need this" or "How can I start?".
+- Clear Need (3 points): Clearly describes a problem that our product/service solves.
+- Contact Info Provided (2 points): User voluntarily provides an email or phone number.
+- Budget Mentioned (1 point): User mentions a budget that aligns with our pricing.
+
+OUTPUT FORMAT:
+Return a JSON object with two keys: 'score' (the total score) and 'reason' (a brief summary of why the score was given).""",
+                "inactive_time": 3,
+            }
+            return LeadScorerConfigModel(**default_config)
+
+    except Exception as e:
+        # Don't return 404 for 'not found', as we provide a default.
+        # Only raise 500 for actual database errors.
+        if "Multiple rows returned" in str(e):
+             raise HTTPException(status_code=500, detail="Data integrity error: Found multiple lead scorer configurations for this bot.")
+        print(f"Error fetching lead scorer config for bot {bot_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"An internal error occurred while fetching the lead scorer configuration.")
+
+@router.put("/{bot_id}/lead_scorer_config", response_model=StatusResponse)
+async def update_lead_scorer_config(bot_id: str, config: LeadScorerConfigModel):
+    """
+    Updates or creates the lead scorer configuration for a specific bot.
+    """
+    try:
+        db_manager.save_lead_scorer_config(bot_id, config.dict())
+        return StatusResponse(
+            status="success",
+            message="Lead scorer configuration saved successfully."
+        )
+    except Exception as e:
+        print(f"Error saving lead scorer config for bot {bot_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to save lead scorer configuration: {str(e)}")
+
+# --- End Lead Scorer Configuration ---
+
+# --- Lead Scoring Endpoint ---
+
+class ScoreSingleLeadRequest(BaseModel):
+    conversation_id: str
+    bot_id: str
+
+class ScoreSingleLeadResponse(BaseModel):
+    status: str
+    message: str
+    conversation_id: str
+    bot_id: str
+    lead_score: Optional[int] = None
+    contact_info: Optional[str] = None
+    scoring_reason: Optional[str] = None
+
+@router.post("/score-single-lead", response_model=ScoreSingleLeadResponse)
+async def score_single_lead(request: ScoreSingleLeadRequest):
+    """
+    Score a single conversation for lead potential and save to bot_crms table.
+    
+    This endpoint:
+    1. Takes a conversation_id and bot_id
+    2. Runs the lead scoring agent on the conversation
+    3. Saves the results to the bot_crms table
+    4. Returns the scoring results
+    """
+    try:
+        from app.utils.lead_scorer import score_single_conversation
+        
+        print(f"Scoring lead for conversation {request.conversation_id} of bot {request.bot_id}")
+        
+        # Process the conversation through the lead scoring utility
+        result = await score_single_conversation(request.conversation_id, request.bot_id)
+        
+        if result and result.get("status") == "success":
+            # Lead was successfully scored
+            return ScoreSingleLeadResponse(
+                status="success",
+                message="Lead scored successfully and saved to CRM",
+                conversation_id=request.conversation_id,
+                bot_id=request.bot_id,
+                lead_score=result.get("score"),
+                contact_info=None,  # This would be extracted from the scoring result if available
+                scoring_reason="Lead scoring completed successfully"
+            )
+        elif result and result.get("status") == "skipped - lead scoring disabled or no config":
+            # Lead scoring is disabled or no configuration
+            return ScoreSingleLeadResponse(
+                status="skipped",
+                message="Lead scoring is disabled or not configured for this bot",
+                conversation_id=request.conversation_id,
+                bot_id=request.bot_id,
+                lead_score=None,
+                contact_info=None,
+                scoring_reason="Lead scoring disabled or no configuration found"
+            )
+        else:
+            # Lead scoring failed
+            return ScoreSingleLeadResponse(
+                status="failed",
+                message="Failed to score lead - conversation may not exist or scoring agent failed",
+                conversation_id=request.conversation_id,
+                bot_id=request.bot_id,
+                lead_score=None,
+                contact_info=None,
+                scoring_reason="Lead scoring failed"
+            )
+            
+    except Exception as e:
+        print(f"Error scoring single lead: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to score lead: {str(e)}"
+        )
+
+# --- End Lead Scoring Endpoint ---
+
+# --- Auto Lead Scoring Endpoint ---
+
+class AutoScoreLeadsResponse(BaseModel):
+    status: str
+    message: str
+    total_conversations_found: int
+    conversations_processed: int
+    successful_scores: int
+    failed_scores: int
+    skipped_scores: int
+    details: List[Dict[str, Any]]
+
+@router.post("/{bot_id}/auto-score-leads", response_model=AutoScoreLeadsResponse)
+async def auto_score_leads(bot_id: str):
+    """
+    Automatically score leads for conversations that have been inactive for the configured time period.
+    
+    This endpoint:
+    1. Gets the lead scorer configuration to determine inactive time threshold
+    2. Finds all open conversations for the bot
+    3. Filters for conversations with last message older than the configured threshold
+    4. Runs lead scoring on those conversations
+    5. Saves results to bot_crms table
+    6. Returns summary of processing results
+    """
+    try:
+        from app.utils.lead_scorer import process_lead_scoring
+        from datetime import datetime, timedelta
+        
+        print(f"Starting auto lead scoring for bot {bot_id}")
+        
+        # Get the lead scorer configuration to determine inactive time threshold
+        try:
+            config_response = supabase.table("lead_scorer_configs").select("*").eq("bot_id", bot_id).single().execute()
+            if config_response.data:
+                inactive_hours = config_response.data.get("inactive_time", 3)
+            else:
+                inactive_hours = 3  # Default fallback
+        except:
+            inactive_hours = 3  # Default fallback
+        
+        print(f"Using inactive time threshold: {inactive_hours} hours")
+        
+        # Calculate the cutoff time using configured inactive time
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=inactive_hours)
+        cutoff_time_iso = cutoff_time.isoformat()
+        
+        # Find all open conversations for this bot with last message 3+ hours ago
+        conversations_response = supabase.table("conversations").select(
+            "id, status, updated_at"
+        ).eq("bot_id", bot_id).neq("status", "closed").execute()
+        
+        if not conversations_response.data:
+            return AutoScoreLeadsResponse(
+                status="success",
+                message="No open conversations found for this bot",
+                total_conversations_found=0,
+                conversations_processed=0,
+                successful_scores=0,
+                failed_scores=0,
+                skipped_scores=0,
+                details=[]
+            )
+        
+        # Filter conversations that haven't had activity for the configured time period
+        stale_conversations = []
+        for conv in conversations_response.data:
+            # Check if conversation has messages and get the last message time
+            last_message_response = supabase.table("messages").select(
+                "created_at"
+            ).eq("conversation_id", conv["id"]).order("created_at", desc=True).limit(1).execute()
+            
+            if last_message_response.data:
+                last_message_time = datetime.fromisoformat(
+                    last_message_response.data[0]["created_at"].replace('Z', '+00:00')
+                )
+                if last_message_time < cutoff_time:
+                    stale_conversations.append({
+                        "conversation_id": conv["id"],
+                        "bot_id": bot_id
+                    })
+        
+        print(f"Found {len(stale_conversations)} conversations inactive for {inactive_hours}+ hours")
+        
+        if not stale_conversations:
+            return AutoScoreLeadsResponse(
+                status="success",
+                message=f"No conversations found that have been inactive for {inactive_hours}+ hours",
+                total_conversations_found=len(conversations_response.data),
+                conversations_processed=0,
+                successful_scores=0,
+                failed_scores=0,
+                skipped_scores=0,
+                details=[]
+            )
+        
+        # Process lead scoring for the stale conversations
+        results = await process_lead_scoring(stale_conversations)
+        
+        # Close conversations that were successfully scored
+        conversations_closed = 0
+        for detail in results["details"]:
+            if detail.get("status") == "success":
+                conversation_id = detail.get("conversation_id")
+                if conversation_id:
+                    try:
+                        # Update conversation status to closed
+                        close_response = supabase.table("conversations").update({
+                            "status": "closed",
+                            "updated_at": datetime.now(timezone.utc).isoformat()
+                        }).eq("id", conversation_id).execute()
+                        
+                        if close_response.data:
+                            conversations_closed += 1
+                            print(f"✅ Closed conversation {conversation_id} after successful lead scoring")
+                        else:
+                            print(f"⚠️  Failed to close conversation {conversation_id}")
+                    except Exception as close_error:
+                        print(f"❌ Error closing conversation {conversation_id}: {str(close_error)}")
+        
+        print(f"📊 Lead scoring summary: {results['successful']} scored, {conversations_closed} conversations closed")
+        
+        return AutoScoreLeadsResponse(
+            status="success",
+            message=f"Auto lead scoring completed for {len(stale_conversations)} conversations. {conversations_closed} conversations closed.",
+            total_conversations_found=len(conversations_response.data),
+            conversations_processed=results["total_processed"],
+            successful_scores=results["successful"],
+            failed_scores=results["failed"],
+            skipped_scores=results["total_processed"] - results["successful"] - results["failed"],
+            details=results["details"]
+        )
+        
+    except Exception as e:
+        print(f"Error in auto lead scoring for bot {bot_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to auto score leads: {str(e)}"
+        )
+
+# --- End Auto Lead Scoring Endpoint ---
 
 @router.get("/crm/{bot_id}", response_model=PaginatedCRMResponse)
 def get_crm_entries_for_bot(

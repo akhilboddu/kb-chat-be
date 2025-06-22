@@ -8,6 +8,8 @@ class CRMEntry(BaseModel):
     last_name: Optional[str]
     phone_number: Optional[str]
     email: Optional[str]
+    lead_score: Optional[int]
+    chat_summary: Optional[str]
     created_at: Optional[str]
     updated_at: Optional[str]
 
