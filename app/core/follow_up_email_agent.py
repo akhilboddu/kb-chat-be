@@ -5,14 +5,22 @@ import json
 from typing import Dict, Any, Optional
 from datetime import datetime
 
-from langchain_core.prompts import ChatPromptTemplate
+from langchain.agents import AgentExecutor, create_react_agent
+from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from app.core.config import llm
 from app.core import supabase_metadata_manager as db_manager
-from app.core.supabase_kb_manager import kb_manager
+from app.core.tools import get_retriever_tool
 
-FOLLOW_UP_EMAIL_PROMPT_TEMPLATE = """
-You are an expert email marketing assistant specialized in creating personalized follow-up emails. Your task is to analyze a conversation history, customer details, and any previous email context to generate a compelling follow-up email.
+# ReAct Agent Prompt Template for Follow-up Email Generation
+REACT_FOLLOW_UP_EMAIL_PROMPT = """You are an expert email marketing assistant specialized in creating personalized follow-up emails using a ReAct (Reasoning and Acting) approach.
+
+Your task is to:
+1. First, analyze the conversation context and draft a follow-up email
+2. Identify any missing information or areas that need enhancement
+3. Use the knowledge base retriever tool to get relevant information about products, services, pricing, links, etc.
+4. Refine the email with the retrieved information
+5. Output the final email in the required JSON format
 
 CUSTOMER DETAILS:
 - Email: {customer_email}
@@ -31,112 +39,41 @@ COMPANY CONTEXT:
 - Company Name: {company_name}
 - Bot Name: {bot_name}
 
-RELEVANT KNOWLEDGE BASE INFORMATION:
---- KNOWLEDGE BASE CONTEXT ---
-{kb_context}
---- END KNOWLEDGE BASE CONTEXT ---
-
 FOLLOW-UP INSTRUCTIONS:
 {follow_up_instructions}
 
-Based on the conversation history, customer context, and relevant knowledge base information, create a personalized follow-up email that:
+IMPORTANT CONSTRAINTS:
+- You MUST NOT mention any CTAs if you do not have the links needed for the call-to-action
+- Only include actionable items when you have specific links or resources from the knowledge base
+- If you cannot find specific information, be honest about limitations
+- Use the knowledge base to get accurate information about products, services, pricing, and contact details
 
-1. References specific points from the conversation
-2. Addresses any questions or concerns the customer had
-3. Provides value or next steps using information from the knowledge base
-4. Maintains the company's tone and brand voice
-5. Includes a clear call-to-action and gets the links needed for the call-to-action from the knowledge base
-6. Takes into account any previous email interactions
-7. Utilizes relevant product/service information from the knowledge base to enhance the email content
+You have access to the following tools: {tool_names}
 
-The output MUST be a JSON object with the following keys:
+{tools}
+
+Use the following format:
+
+Thought: I need to analyze the conversation and draft a follow-up email
+Action: knowledge_base_retriever
+Action Input: [search query for relevant information]
+Observation: [result_of_action]
+... (this Thought/Action/Action Input/Observation can repeat N times)
+Thought: I now have enough information to create the final email
+Final Answer: [JSON output with email content]
+
+The Final Answer MUST be a JSON object with the following keys:
 1. "subject": A compelling email subject line
 2. "email_body": The complete email body in HTML format
 3. "plain_text_body": The complete email body in plain text format
 4. "key_points": An array of the main points addressed in the email
-5. "call_to_action": The primary call-to-action from the email
+5. "call_to_action": The primary call-to-action from the email (null if no specific actionable links available)
 6. "follow_up_reason": Brief explanation of why this follow-up is being sent
 7. "urgency_level": "low", "medium", or "high" based on conversation context
 
-JSON Output:
-"""
+Begin!
 
-async def get_relevant_kb_context(kb_id: str, conversation_summary: str, customer_email: str = "", n_results: int = 5) -> str:
-    """
-    Retrieves relevant information from the knowledge base based on conversation context.
-    
-    Args:
-        kb_id: The knowledge base ID to search
-        conversation_summary: Summary of the conversation to use as search query
-        customer_email: Customer email for additional context
-        n_results: Number of results to retrieve from KB
-        
-    Returns:
-        Formatted string with relevant KB information
-    """
-    try:
-        # Create search queries based on conversation content
-        search_queries = []
-        
-        # Main query from conversation summary
-        if conversation_summary and conversation_summary.strip():
-            search_queries.append(conversation_summary)
-        
-        # Extract key topics for additional searches
-        conversation_lower = conversation_summary.lower() if conversation_summary else ""
-        
-        # Common business topics to search for
-        business_keywords = [
-            "pricing", "price", "cost", "plan", "subscription",
-            "features", "benefits", "service", "product",
-            "support", "help", "contact", "demo", "trial",
-            "implementation", "setup", "onboarding", "training",
-            "integration", "API", "documentation", "guide",
-            "policy", "terms", "conditions", "refund", "guarantee"
-        ]
-        
-        # Add specific searches for mentioned keywords
-        for keyword in business_keywords:
-            if keyword in conversation_lower:
-                search_queries.append(keyword)
-        
-        # Collect all relevant documents
-        all_docs = []
-        
-        for query in search_queries[:3]:  # Limit to top 3 queries to avoid too many API calls
-            if query.strip():
-                results = kb_manager.get_similar_docs(kb_id, query, n_results=n_results)
-                
-                if results:
-                    for result in results:
-                        # Avoid duplicates by checking if document content already exists
-                        doc_content = result.get('document', '')
-                        if doc_content and not any(doc_content in existing_doc for existing_doc in all_docs):
-                            all_docs.append(doc_content)
-        
-        if not all_docs:
-            return "No relevant information found in the knowledge base."
-        
-        # Format and limit the KB context to avoid token limits
-        formatted_docs = []
-        total_length = 0
-        max_length = 3000  # Limit to prevent prompt from becoming too long
-        
-        for doc in all_docs[:10]:  # Limit to top 10 documents
-            if total_length + len(doc) < max_length:
-                formatted_docs.append(f"• {doc}")
-                total_length += len(doc)
-            else:
-                break
-        
-        kb_context = "\n\n".join(formatted_docs)
-        print(f"KB Context retrieved: {len(formatted_docs)} documents, {total_length} characters")
-        
-        return kb_context
-        
-    except Exception as e:
-        print(f"Error retrieving KB context: {e}")
-        return "Knowledge base information temporarily unavailable."
+{agent_scratchpad}"""
 
 async def generate_follow_up_email(
     bot_id: str, 
@@ -145,7 +82,7 @@ async def generate_follow_up_email(
     custom_instructions: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
     """
-    Generates a personalized follow-up email based on conversation history and customer details.
+    Generates a personalized follow-up email using ReAct Agent pattern.
 
     Args:
         bot_id: The ID of the bot to get configuration from.
@@ -156,7 +93,7 @@ async def generate_follow_up_email(
     Returns:
         A dictionary containing email content and metadata, or None if an error occurs.
     """
-    print(f"Starting follow-up email generation for conversation {conversation_id} of bot {bot_id}")
+    print(f"Starting ReAct follow-up email generation for conversation {conversation_id} of bot {bot_id}")
 
     # 1. Get follow-up configuration from database
     config = db_manager.get_follow_up_config(bot_id) if hasattr(db_manager, 'get_follow_up_config') else None
@@ -203,38 +140,38 @@ async def generate_follow_up_email(
         print(f"Error getting conversation details: {e}")
         customer_name = "Valued Customer"
 
-    # 5. Retrieve relevant knowledge base context
-    print(f"Retrieving knowledge base context for KB: {kb_id}")
-    kb_context = await get_relevant_kb_context(
-        kb_id=kb_id, 
-        conversation_summary=history_data["history"],
-        customer_email=history_data.get("customer_email", "")
-    )
-
-    # 6. Set up follow-up instructions
+    # 5. Set up follow-up instructions
     default_instructions = """
     Create a professional, helpful follow-up email that:
     - Shows genuine interest in the customer's needs
-    - Provides additional value or information from the knowledge base
+    - Provides additional value or information using the knowledge base
     - Maintains a warm but professional tone
-    - Includes next steps or resources
+    - Includes next steps or resources when available
     - Encourages continued engagement
     - Uses relevant product/service information to enhance the email
     """
     
     follow_up_instructions = custom_instructions or default_instructions
 
-    # 7. Set up previous email context
+    # 6. Set up previous email context
     email_context = previous_email_context or "This is the first email in the conversation thread."
 
-    # 8. Create the prompt and chain
-    prompt = ChatPromptTemplate.from_template(FOLLOW_UP_EMAIL_PROMPT_TEMPLATE)
-    chain = prompt | llm | StrOutputParser()
+    # 7. Create tools for the ReAct agent (simplified to just KB retriever)
+    tools = [
+        get_retriever_tool(kb_id)
+    ]
 
-    # 9. Invoke the chain with all the context
+    # 8. Create the ReAct agent
+    prompt = PromptTemplate.from_template(REACT_FOLLOW_UP_EMAIL_PROMPT)
+    
+    agent = create_react_agent(llm, tools, prompt)
+    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True, max_iterations=5)
+
+    # 9. Invoke the ReAct agent
     try:
-        print(f"Invoking LLM for follow-up email generation on conversation {conversation_id}...")
-        raw_output = await chain.ainvoke({
+        print(f"Invoking ReAct agent for follow-up email generation on conversation {conversation_id}...")
+        
+        agent_input = {
             "chat_summary": history_data["history"],
             "customer_email": history_data.get("customer_email", ""),
             "customer_phone_number": history_data.get("customer_phone_number", ""),
@@ -242,11 +179,13 @@ async def generate_follow_up_email(
             "previous_email_context": email_context,
             "company_name": bot_info.get("company", "Our Company"),
             "bot_name": bot_info.get("name", "Assistant"),
-            "kb_context": kb_context,
             "follow_up_instructions": follow_up_instructions,
-        })
+        }
         
-        print(f"Raw LLM Output: {raw_output}")
+        result = await agent_executor.ainvoke(agent_input)
+        raw_output = result.get("output", "")
+        
+        print(f"Raw Agent Output: {raw_output}")
 
         # 10. Clean and parse the JSON output
         cleaned_output = raw_output.strip()
@@ -270,130 +209,20 @@ async def generate_follow_up_email(
             json_output["bot_id"] = bot_id
             json_output["kb_id"] = kb_id
             json_output["customer_email"] = history_data.get("customer_email", "")
-            json_output["kb_context_used"] = len(kb_context) > 50  # Indicates if KB context was meaningful
+            json_output["generation_method"] = "react_agent"
             
             print(f"Successfully generated follow-up email for conversation {conversation_id}")
             return json_output
         else:
             missing_fields = [field for field in required_fields if field not in json_output]
-            print(f"Error: LLM output for {conversation_id} was missing fields: {missing_fields}")
+            print(f"Error: Agent output for {conversation_id} was missing fields: {missing_fields}")
             return None
 
     except json.JSONDecodeError as e:
-        print(f"Error: Failed to decode JSON from LLM output for conversation {conversation_id}: {e}")
+        print(f"Error: Failed to decode JSON from agent output for conversation {conversation_id}: {e}")
         return None
     except Exception as e:
         print(f"An unexpected error occurred during follow-up email generation for conversation {conversation_id}: {e}")
-        return None
-
-
-async def generate_follow_up_email_from_summary(
-    customer_email: str,
-    customer_name: str,
-    chat_summary: str,
-    company_name: str,
-    bot_name: str,
-    kb_id: Optional[str] = None,
-    previous_email_context: Optional[str] = None,
-    custom_instructions: Optional[str] = None
-) -> Optional[Dict[str, Any]]:
-    """
-    Generates a follow-up email from provided summary data (without needing conversation ID).
-    
-    Args:
-        customer_email: Customer's email address
-        customer_name: Customer's name
-        chat_summary: Summary of the conversation
-        company_name: Name of the company
-        bot_name: Name of the bot/assistant
-        kb_id: Optional knowledge base ID for context retrieval
-        previous_email_context: Optional context from previous emails
-        custom_instructions: Optional custom instructions for the email
-        
-    Returns:
-        A dictionary containing email content and metadata, or None if an error occurs.
-    """
-    print(f"Generating follow-up email from summary for customer: {customer_email}")
-    
-    # Retrieve knowledge base context if KB ID is provided
-    kb_context = "No additional knowledge base information available."
-    if kb_id:
-        print(f"Retrieving knowledge base context for KB: {kb_id}")
-        kb_context = await get_relevant_kb_context(
-            kb_id=kb_id, 
-            conversation_summary=chat_summary,
-            customer_email=customer_email
-        )
-    
-    # Set up default instructions
-    default_instructions = """
-    Create a professional, helpful follow-up email that:
-    - Shows genuine interest in the customer's needs
-    - Provides additional value or information from the knowledge base
-    - Maintains a warm but professional tone
-    - Includes next steps or resources
-    - Encourages continued engagement
-    - Uses relevant product/service information to enhance the email
-    """
-    
-    follow_up_instructions = custom_instructions or default_instructions
-    email_context = previous_email_context or "This is the first email in the conversation thread."
-    
-    # Create the prompt and chain
-    prompt = ChatPromptTemplate.from_template(FOLLOW_UP_EMAIL_PROMPT_TEMPLATE)
-    chain = prompt | llm | StrOutputParser()
-    
-    try:
-        print(f"Invoking LLM for follow-up email generation from summary...")
-        raw_output = await chain.ainvoke({
-            "chat_summary": chat_summary,
-            "customer_email": customer_email,
-            "customer_phone_number": "",  # Not available in summary mode
-            "customer_name": customer_name,
-            "previous_email_context": email_context,
-            "company_name": company_name,
-            "bot_name": bot_name,
-            "kb_context": kb_context,
-            "follow_up_instructions": follow_up_instructions,
-        })
-        
-        print(f"Raw LLM Output: {raw_output}")
-
-        # Clean and parse the JSON output
-        cleaned_output = raw_output.strip()
-        if cleaned_output.startswith("```json"):
-            cleaned_output = cleaned_output[7:]
-        if cleaned_output.endswith("```"):
-            cleaned_output = cleaned_output[:-3]
-        cleaned_output = cleaned_output.strip()
-
-        # Remove trailing commas from the JSON object before parsing
-        cleaned_output = cleaned_output.rstrip("}").rstrip().rstrip(",") + "}"
-
-        json_output = json.loads(cleaned_output)
-        
-        # Validate required fields
-        required_fields = ["subject", "email_body", "plain_text_body", "key_points", "call_to_action", "follow_up_reason", "urgency_level"]
-        if all(field in json_output for field in required_fields):
-            # Add metadata
-            json_output["generated_at"] = datetime.utcnow().isoformat()
-            json_output["customer_email"] = customer_email
-            json_output["generation_method"] = "summary"
-            json_output["kb_id"] = kb_id
-            json_output["kb_context_used"] = len(kb_context) > 50 if kb_id else False
-            
-            print(f"Successfully generated follow-up email from summary for customer: {customer_email}")
-            return json_output
-        else:
-            missing_fields = [field for field in required_fields if field not in json_output]
-            print(f"Error: LLM output was missing fields: {missing_fields}")
-            return None
-
-    except json.JSONDecodeError as e:
-        print(f"Error: Failed to decode JSON from LLM output: {e}")
-        return None
-    except Exception as e:
-        print(f"An unexpected error occurred during follow-up email generation: {e}")
         return None
 
 
@@ -401,47 +230,27 @@ if __name__ == "__main__":
     import asyncio
 
     async def main_test():
-        """A test function to run the follow-up email agent."""
+        """A test function to run the ReAct follow-up email agent."""
         # Test with conversation ID
         test_bot_id = "18eb9b0c-d283-4781-a727-6140d940db42"
         test_conversation_id = "e2df092c-6726-4e14-aead-35d4f8e711ae"
         
-        print(f"--- Testing Follow-Up Email Agent with KB Integration for Bot ID: {test_bot_id} ---")
+        print(f"--- Testing ReAct Follow-Up Email Agent for Bot ID: {test_bot_id} ---")
         result = await generate_follow_up_email(
             bot_id=test_bot_id, 
             conversation_id=test_conversation_id,
             previous_email_context="This is the first email in the conversation thread.",
-            custom_instructions="Focus on using relevant information from the knowledge base to provide helpful resources and next steps."
+            custom_instructions="Use the ReAct approach to first draft an email, then use the knowledge base to enhance it with specific information about courses, pricing, and actionable next steps."
         )
 
         if result:
-            print("\n--- Follow-Up Email Result ---")
+            print("\n--- ReAct Follow-Up Email Result ---")
             print(json.dumps(result, indent=2))
             print("----------------------------")
         else:
-            print("\n--- Follow-Up Email Generation Failed ---")
+            print("\n--- ReAct Follow-Up Email Generation Failed ---")
             print("The agent did not return a valid email. Check the logs above for errors.")
             print("----------------------------------------")
-            
-        # Test with summary data including KB integration
-        print("\n--- Testing Follow-Up Email Agent with Summary Data and KB Integration ---")
-        summary_result = await generate_follow_up_email_from_summary(
-            customer_email="test@example.com",
-            customer_name="John Smith",
-            chat_summary="The user showed high interest by asking about courses and wanting to apply for a specific bootcamp. They also expressed a clear need by indicating their desire to enroll. The user provided an email address.",
-            company_name="Zaio",
-            bot_name="Abi",
-            kb_id=test_bot_id,  # Use bot_id as kb_id for testing
-            previous_email_context="This is the first email in the conversation thread",
-            custom_instructions="Use knowledge base information to provide specific details about courses, pricing, and enrollment process."
-        )
-        
-        if summary_result:
-            print("\n--- Summary-Based Follow-Up Email Result ---")
-            print(json.dumps(summary_result, indent=2))
-            print("------------------------------------------")
-        else:
-            print("\n--- Summary-Based Follow-Up Email Generation Failed ---")
 
     # Run the async test function
     asyncio.run(main_test()) 
