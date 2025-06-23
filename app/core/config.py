@@ -29,22 +29,8 @@ lc_embedding_function = HuggingFaceEmbeddings(
 
 # --- LLM Initialization ---
 llm = None
-# Prioritize Google Gemini if API key is available
-if GOOGLE_API_KEY:
-    try:
-        # Explicitly pass the key, though it often reads from env var too
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-lite", google_api_key=GOOGLE_API_KEY
-        )
-        print(f"LLM: Initialized Google Gemini Pro (gemini-2.0-flash-lite)")
-    except Exception as e:
-        print(
-            f"Warning: Failed to initialize Google Gemini even though key was found: {e}"
-        )
-        llm = None  # Ensure llm is None if initialization fails
-
-# Fallback to OPENAI if Gemini is not initialized and OPENAI_API_KEY and OPENAI_MODEL are available
-if llm is None and OPENAI_API_KEY and OPENAI_MODEL:
+# Prioritize OpenAI if API key is available
+if OPENAI_API_KEY and OPENAI_MODEL:
     try:
         OPENAI_MODEL = "gpt-4"  # Define model name here
         llm = ChatOpenAI(
@@ -52,12 +38,26 @@ if llm is None and OPENAI_API_KEY and OPENAI_MODEL:
             api_key=OPENAI_API_KEY,
             # temperature=0.7 # Example: You can uncomment and set temperature if needed
         )
-        print(f"LLM: Initialized {OPENAI_MODEL} via OpenAI wrapper pointing to")
+        print(f"LLM: Initialized {OPENAI_MODEL} via OpenAI (PRIMARY)")
     except Exception as e:
         print(f"Warning: Failed to initialize OpenAI: {e}")
         llm = None  # Ensure llm is None if initialization fails
 
-# Fallback to DeepSeek if Gemini is not initialized and DeepSeek keys are available
+# Fallback to Google Gemini if OpenAI is not initialized and API key is available
+if llm is None and GOOGLE_API_KEY:
+    try:
+        # Explicitly pass the key, though it often reads from env var too
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash-lite", google_api_key=GOOGLE_API_KEY
+        )
+        print(f"LLM: Initialized Google Gemini Pro (gemini-2.0-flash-lite) as FALLBACK")
+    except Exception as e:
+        print(
+            f"Warning: Failed to initialize Google Gemini even though key was found: {e}"
+        )
+        llm = None  # Ensure llm is None if initialization fails
+
+# Fallback to DeepSeek if both OpenAI and Gemini are not initialized and DeepSeek keys are available
 if llm is None and DEEPSEEK_API_KEY and DEEPSEEK_API_BASE:
     try:
         DEEPSEEK_MODEL_NAME = "deepseek-chat"  # Define model name here
@@ -68,7 +68,7 @@ if llm is None and DEEPSEEK_API_KEY and DEEPSEEK_API_BASE:
             # temperature=0.7 # Example: You can uncomment and set temperature if needed
         )
         print(
-            f"LLM: Initialized {DEEPSEEK_MODEL_NAME} via OpenAI wrapper pointing to {DEEPSEEK_API_BASE}"
+            f"LLM: Initialized {DEEPSEEK_MODEL_NAME} via OpenAI wrapper pointing to {DEEPSEEK_API_BASE} as FALLBACK"
         )
     except Exception as e:
         print(f"Warning: Failed to initialize DeepSeek: {e}")
