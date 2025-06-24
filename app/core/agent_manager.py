@@ -1,5 +1,4 @@
 # agent_manager.py
-
 import os
 import re
 from typing import List, Optional, Dict, Any, Union
@@ -18,6 +17,7 @@ from app.core.tools import (
     # get_knowledge_update_tool, # This seems unused, can be removed if not needed
     # get_answering_tool, # This seems unused, can be removed if not needed
     get_web_search_tool,
+    get_response_quality_checker_tool,
 )
 from app.core import supabase_metadata_manager as db_manager  # Import db_manager
 
@@ -306,6 +306,14 @@ def create_agent_executor(
             print(f"Web search tool is disabled for bot_id: {bot_info['id']}")
     else:
         print(f"Warning: Could not find bot info for kb_id: {kb_id}. Web search tool will be disabled.")
+    
+    # 4. Add the response quality checker tool (always included)
+    quality_checker_tool = get_response_quality_checker_tool()
+    if quality_checker_tool:
+        tools_list.append(quality_checker_tool)
+        print(f"Response quality checker tool enabled and added for kb_id: {kb_id}")
+    else:
+        print(f"Warning: Response quality checker tool could not be created - Gemini may not be available")
 
     # Get tool names
     tool_names = [tool.name for tool in tools_list]

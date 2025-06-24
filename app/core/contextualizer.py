@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 class Contextualizer:
     """
     Generates contextual descriptions for document chunks.
-    Primary: Google Gemini Flash (lightning fast, supports batch processing)
+    Primary: Google Gemini Flash (lightning fast, supports batch processing)  
     Fallbacks: Anthropic Claude → OpenAI GPT-3.5/4
     Implements caching to reduce API calls and costs by 90%.
     """
@@ -361,7 +361,7 @@ Keep it concise and factual. Do not include the chunk content itself in your res
         # Try providers in order: Gemini → Anthropic → OpenAI
         contexts = None
         
-        # 1. Try Gemini (Primary)
+        # 1. Try Gemini Flash (Primary - fastest)
         if self.use_gemini:
             try:
                 contexts = self._call_gemini_batch(prompts)
@@ -383,7 +383,7 @@ Keep it concise and factual. Do not include the chunk content itself in your res
                 contexts = self._call_openai_batch(prompts)
                 logger.info("✅ Used OpenAI for context generation")
             except Exception as e:
-                logger.warning(f"⚠️ OpenAI batch failed, trying Anthropic: {e}")
+                logger.error(f"❌ OpenAI batch failed: {e}")
         
         # 4. Final fallback - use cached single calls
         if contexts is None:
@@ -418,19 +418,30 @@ Keep it concise and factual. Do not include the chunk content itself in your res
         
         # Try providers in order: Gemini → Anthropic → OpenAI
         
-        # 1. Try Gemini (Primary)
+        # 1. Try Gemini Flash (Primary)
         if self.use_gemini:
             try:
-                response = self.gemini_model.generate_content(
-                    prompt,
-                    generation_config={
-                        "max_output_tokens": 150,
-                        "temperature": 0.3,
-                        "top_p": 0.8,
-                        "top_k": 40
-                    },
-                    request_options={"timeout": 30}
-                )
+                # Timeout-protected single call (30 s)
+                import signal
+
+                def timeout_handler(signum, frame):
+                    raise TimeoutError("Gemini single call exceeded 30 seconds")
+
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(30)
+                try:
+                    response = self.gemini_model.generate_content(
+                        prompt,
+                        generation_config={
+                            "max_output_tokens": 150,
+                            "temperature": 0.3,
+                            "top_p": 0.8,
+                            "top_k": 40
+                        },
+                        request_options={"timeout": 30}
+                    )
+                finally:
+                    signal.alarm(0)
                 
                 if response and response.text:
                     context = response.text.strip()
@@ -440,7 +451,7 @@ Keep it concise and factual. Do not include the chunk content itself in your res
                     return context
                     
             except Exception as e:
-                logger.warning(f"⚠️ Gemini call failed: {e}")
+                logger.warning(f"⚠️ Gemini single call failed: {e}")
         
         # 2. Try Anthropic (Secondary fallback)
         if self.use_anthropic:
@@ -461,8 +472,9 @@ Keep it concise and factual. Do not include the chunk content itself in your res
         # 3. Try OpenAI (Tertiary fallback)
         if self.use_openai:
             try:
+                model = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
                 response = self.openai_client.chat.completions.create(
-                    model=os.getenv("OPENAI_MODEL", "gpt-3.5-turbo"),
+                    model=model,
                     max_tokens=150,
                     temperature=0.3,
                     messages=[
@@ -475,7 +487,7 @@ Keep it concise and factual. Do not include the chunk content itself in your res
                     return response.choices[0].message.content.strip()
                     
             except Exception as e:
-                logger.warning(f"⚠️ OpenAI call failed: {e}")
+                logger.error(f"❌ OpenAI call failed: {e}")
         
         # Final fallback
         return "This section contains information from the document."
@@ -502,7 +514,7 @@ Keep it concise and factual. Do not include the chunk content itself in your res
             "gemini_available": self.use_gemini,
             "anthropic_available": self.use_anthropic,
             "openai_available": self.use_openai,
-            "primary_provider": "gemini" if self.use_gemini else ("anthropic" if self.use_anthropic else "openai"),
+            "primary_provider": "gemini" if self.use_gemini else ("anthropic" if self.use_anthropic else ("openai" if self.use_openai else "none")),
             "batch_size": self.batch_size
         }
 
