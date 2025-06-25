@@ -35,7 +35,7 @@ class Scraper:
         self.api_key = os.getenv("FIRECRAWL_API_KEY")
         if not self.api_key:
             raise ValueError("FIRECRAWL_API_KEY environment variable is not set")
-        
+        print(f"FIRECRAWL_API_KEY: {self.api_key}")
         self.api_base_url = "https://api.firecrawl.dev/v1"
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",

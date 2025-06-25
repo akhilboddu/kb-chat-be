@@ -1362,6 +1362,121 @@ def get_bot_id_from_conversation_id(conversation_id: str):
         return ""
 
 
+@router.post("/agents/{kb_id}/voice-chat", response_model=ChatResponse)
+async def voice_chat_endpoint(
+    kb_id: str,
+    request: ChatRequest,
+):
+    """
+    Simplified voice chat endpoint that doesn't require database conversation tracking.
+    Perfect for voice AI demonstrations.
+    """
+    print(f"Received voice chat request for kb_id: {kb_id}, message: {request.message}")
+    
+    try:
+        # Create a temporary memory for this voice session
+        memory = ConversationBufferMemory(
+            memory_key="chat_history", return_messages=True
+        )
+        
+        # Create customer context for voice user
+        customer_context = {
+            "customer_name": "Voice Customer",
+            "customer_email": "voice@ai.demo",
+            "bot_name": "Voice Assistant",
+            "company_name": "Your Company"
+        }
+        
+        # Create agent executor
+        agent_executor = agent_manager.create_agent_executor(
+            kb_id=kb_id, 
+            memory=memory, 
+            customer_context=customer_context
+        )
+        
+        # Format history
+        memory_variables = memory.load_memory_variables({})
+        history_string = memory_variables.get("chat_history", "")
+        if not isinstance(history_string, str):
+            formatted_history = []
+            for msg in history_string:
+                if isinstance(msg, HumanMessage):
+                    formatted_history.append(f"Human: {msg.content}")
+                elif isinstance(msg, AIMessage):
+                    formatted_history.append(f"AI: {msg.content}")
+            history_string = "\n".join(formatted_history)
+        
+        # Prepare input
+        input_data = {"input": request.message, "chat_history": history_string}
+        
+        # Invoke agent
+        response = await asyncio.to_thread(agent_executor.invoke, input_data)
+        agent_output = response.get("output", "")
+        
+        if agent_output:
+            cleaned_output = clean_agent_output(agent_output)
+            cleaned_output = auto_add_handoff_if_needed(cleaned_output)
+            
+            # For voice, remove handoff markers and keep it simple
+            if "(needs help)" in cleaned_output:
+                cleaned_output = cleaned_output.replace("(needs help)", "").strip()
+                cleaned_output += " I'm still learning about this. Is there anything else I can help you with?"
+            
+            return ChatResponse(content=cleaned_output, type="answer", kb_id=kb_id)
+        else:
+            return ChatResponse(
+                content="I'm sorry, I didn't catch that. Could you please repeat?",
+                type="answer",
+                kb_id=kb_id
+            )
+            
+    except Exception as e:
+        print(f"Error in voice chat: {e}")
+        import traceback
+        traceback.print_exc()
+        return ChatResponse(
+            content="I'm having trouble processing that right now. Please try again.",
+            type="answer",
+            kb_id=kb_id
+        )
+
+
+@router.get("/stream-token/{user_id}")
+async def get_stream_token(user_id: str):
+    """
+    Generate a Stream token for voice calls.
+    In production, this should validate the user and use proper authentication.
+    """
+    try:
+        # For development, return a simple token structure
+        # In production, you would use the Stream SDK to generate a proper token
+        import time
+        import json
+        import base64
+        
+        # Create a simple JWT-like token for development
+        header = {"alg": "HS256", "typ": "JWT"}
+        payload = {
+            "user_id": user_id,
+            "iat": int(time.time()),
+            "exp": int(time.time()) + 3600  # 1 hour expiry
+        }
+        
+        # Encode header and payload
+        header_encoded = base64.urlsafe_b64encode(json.dumps(header).encode()).decode().rstrip("=")
+        payload_encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+        
+        # For development, use a simple signature
+        signature = "dev_signature"
+        
+        token = f"{header_encoded}.{payload_encoded}.{signature}"
+        
+        return {"token": token, "user_id": user_id}
+    except Exception as e:
+        print(f"Error generating Stream token: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate token")
+
+
 @router.post("/send-msg-demobot", response_model=ChatResponse)
 async def send_message_to_demo_bot(request: DemoChatRequest):
     """
