@@ -107,3 +107,5 @@ class DemoChatRequest(BaseModel):
     """Request body for demo bot chat interactions."""
     message: str = Field(..., description="User message to the demo bot")
     url: HttpUrl = Field(..., description="URL of the website the demo bot is associated with")
+    conversationContext: Optional[List[dict]] = Field(None, description="Previous conversation messages for context")
+    conversationId: Optional[str] = Field(None, description="Conversation ID for maintaining context")

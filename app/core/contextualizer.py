@@ -86,6 +86,7 @@ Keep it concise and factual. Do not include the chunk content itself in your res
         # Dynamic batch sizing based on environment
         self.batch_size = int(os.getenv("CONTEXT_BATCH_SIZE", str(batch_size)))
         self.enable_delays = os.getenv("ENABLE_CONTEXT_DELAYS", "false").lower() == "true"
+        self.disable_context = os.getenv("DISABLE_CONTEXT_GENERATION", "false").lower() == "true"
         
         # Gemini setup (Primary)
         self.use_gemini = prefer_gemini and GEMINI_AVAILABLE
@@ -154,17 +155,33 @@ Keep it concise and factual. Do not include the chunk content itself in your res
             
             # Process all prompts in a single batch
             contexts = []
-            for prompt in prompts:
+            for i, prompt in enumerate(prompts):
                 try:
-                    response = self.gemini_model.generate_content(
-                        prompt,
-                        generation_config={
-                            "max_output_tokens": 150,
-                            "temperature": 0.3,
-                            "top_p": 0.8,
-                            "top_k": 40
-                        }
-                    )
+                    # Add timeout wrapper using signal (Unix systems only)
+                    import signal
+                    
+                    def timeout_handler(signum, frame):
+                        raise TimeoutError("Gemini API call exceeded 30 seconds")
+                    
+                    # Set timeout signal
+                    signal.signal(signal.SIGALRM, timeout_handler)
+                    signal.alarm(30)  # 30 second timeout
+                    
+                    try:
+                        response = self.gemini_model.generate_content(
+                            prompt,
+                            generation_config={
+                                "max_output_tokens": 150,
+                                "temperature": 0.3,
+                                "top_p": 0.8,
+                                "top_k": 40
+                            },
+                            request_options={
+                                "timeout": 30  # 30 second timeout instead of 600s
+                            }
+                        )
+                    finally:
+                        signal.alarm(0)  # Disable the alarm
                     
                     if response and response.text:
                         context = response.text.strip()
@@ -175,9 +192,14 @@ Keep it concise and factual. Do not include the chunk content itself in your res
                     else:
                         contexts.append("This section contains relevant information from the document.")
                         
-                except Exception as e:
-                    logger.warning(f"⚠️ Gemini single prompt failed: {e}")
+                except (Exception, TimeoutError) as e:
+                    logger.warning(f"⚠️ Gemini prompt {i+1}/{len(prompts)} failed: {e}")
                     contexts.append("This section contains relevant information from the document.")
+                    
+                    # If we're getting consistent failures, break early and use fallback
+                    if i > 5 and len([c for c in contexts if "relevant information" in c]) > i * 0.5:
+                        logger.error(f"❌ Too many Gemini failures ({len([c for c in contexts if 'relevant information' in c])}/{i+1}), switching to fallback")
+                        raise Exception("Gemini API consistently failing - switching to fallback provider")
                     
                 # Optional delay only if enabled via environment variable
                 if self.enable_delays:
@@ -319,6 +341,11 @@ Keep it concise and factual. Do not include the chunk content itself in your res
         if not chunks:
             return []
         
+        # Check if context generation is disabled
+        if self.disable_context:
+            logger.info("⚠️ Context generation disabled via DISABLE_CONTEXT_GENERATION=true")
+            return ["This section contains relevant information from the document."] * len(chunks)
+        
         logger.info(f"🎯 Starting batch context generation for {len(chunks)} chunks")
         start_time = time.time()
         
@@ -394,15 +421,27 @@ Keep it concise and factual. Do not include the chunk content itself in your res
         # 1. Try Gemini Flash (Primary)
         if self.use_gemini:
             try:
-                response = self.gemini_model.generate_content(
-                    prompt,
-                    generation_config={
-                        "max_output_tokens": 150,
-                        "temperature": 0.3,
-                        "top_p": 0.8,
-                        "top_k": 40
-                    }
-                )
+                # Timeout-protected single call (30 s)
+                import signal
+
+                def timeout_handler(signum, frame):
+                    raise TimeoutError("Gemini single call exceeded 30 seconds")
+
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(30)
+                try:
+                    response = self.gemini_model.generate_content(
+                        prompt,
+                        generation_config={
+                            "max_output_tokens": 150,
+                            "temperature": 0.3,
+                            "top_p": 0.8,
+                            "top_k": 40
+                        },
+                        request_options={"timeout": 30}
+                    )
+                finally:
+                    signal.alarm(0)
                 
                 if response and response.text:
                     context = response.text.strip()
