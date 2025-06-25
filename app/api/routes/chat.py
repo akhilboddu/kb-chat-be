@@ -180,6 +180,7 @@ async def chat_endpoint(
     request: ChatRequest,
     store_history: bool = Query(True, description="When false, skip persisting messages"),
     customer_context: Optional[Dict[str, Any]] = None,
+    custom_prompt: Optional[str] = None,
 ):
     """
     HTTP endpoint for stateful, non-streaming chat interactions with an agent,
@@ -809,6 +810,13 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     user_id = bots_data["user_id"]
     print(user_id, "user_id")
     kb_id = bots_data["kb_id"]
+    
+    # Get custom prompt if configured
+    custom_prompt = bots_data.get("custom_prompt")
+    if custom_prompt:
+        print(f"Found custom prompt for bot {bot_id}")
+    else:
+        print(f"No custom prompt configured for bot {bot_id}, using default")
 
     # Get user data and conversation data
     userData = supabase.auth.admin.get_user_by_id(user_id)
@@ -860,6 +868,7 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
         request,
         store_history=False,  # Prevent duplicate DB insert – we already saved the user row above
         customer_context=customer_context if 'customer_context' in locals() else None,
+        custom_prompt=custom_prompt,
     )
 
     # save user's message and bot's response to supabase
@@ -1037,6 +1046,13 @@ async def bot_chat_websocket_endpoint(bot_id: str, request: ChatRequest, websock
             await websocket.send_json({"type": "error", "content": "Conversation not found"})
             return
             
+        # Get custom prompt if configured
+        custom_prompt = bot_data.get("custom_prompt")
+        if custom_prompt:
+            print(f"Found custom prompt for bot {bot_id}")
+        else:
+            print(f"No custom prompt configured for bot {bot_id}, using default")
+
         # Get chat response using the standard chat endpoint
         import time
         start_time = time.time()
@@ -1052,7 +1068,8 @@ async def bot_chat_websocket_endpoint(bot_id: str, request: ChatRequest, websock
                 "customer_phone": conversation_response.data[0].get("customer_phone"),
                 "bot_name": bot_data.get("name", "Assistant"),
                 "company_name": bot_data.get("company", "our company")
-            }
+            },
+            custom_prompt=custom_prompt,
         )
         
         processing_time = time.time() - start_time
@@ -1264,6 +1281,43 @@ async def list_bot_conversations_endpoint(
         total_pages = math.ceil(total_count / page_size) if total_count > 0 else 1
 
         conversations = response.data  # Last message fields already included by the view
+
+        # Post-process conversations to exclude page visits from last_message
+        for conversation in conversations:
+            if conversation.get('last_message'):
+                # Check if the last message is a page visit by looking for page visit indicators
+                last_msg = conversation['last_message']
+                if (last_msg and 
+                    (last_msg.startswith('📄 **Visited Page**:') or 
+                     last_msg.startswith('🔄 **Navigated to**:') or 
+                     last_msg.startswith('⬅️ **Browser Navigation**:') or 
+                     last_msg.startswith('👁️ **Returned to**:') or 
+                     last_msg.startswith('👋 **Left Page**:') or 
+                     last_msg.startswith('🚪 **Exiting**:') or 
+                     last_msg.startswith('🌐 **Page Activity**:'))):
+                    
+                    # Get the actual last non-page-visit message
+                    try:
+                        last_msg_response = (
+                            supabase.table("messages")
+                            .select("content, created_at")
+                            .eq("conversation_id", conversation['id'])
+                            .neq("role", "page_visit")
+                            .order("created_at", desc=True)
+                            .limit(1)
+                            .execute()
+                        )
+                        
+                        if last_msg_response.data and len(last_msg_response.data) > 0:
+                            conversation['last_message'] = last_msg_response.data[0]['content']
+                            conversation['last_message_time'] = last_msg_response.data[0]['created_at']
+                        else:
+                            # No non-page-visit messages found
+                            conversation['last_message'] = "No messages yet"
+                            
+                    except Exception as e:
+                        print(f"Error fetching last non-page-visit message for conversation {conversation['id']}: {e}")
+                        # Keep the original message if there's an error
 
         return PaginatedListBotConversationsResponse(
             conversations=conversations,
@@ -1677,6 +1731,8 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
 
             message = data.get("message")
             reply_to_message_id = data.get("reply_to_message_id")
+            role = data.get('role', 'user')  # Default to 'user' if not provided - MOVED UP
+            
             if not message:
                 await websocket.send_json({"error": "Missing message"})
                 continue
@@ -1691,14 +1747,44 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
             status = conversation_response.data[0]["status"]
             bot_id = conversation_response.data[0]["bot_id"] if conversation_response.data else None
 
-             
-           
+            # If conversation is closed and user sends a message, reopen it to "ai"
+            if status == "closed" and role == "user":
+                supabase.table("conversations").update({"status": "ai"}).eq(
+                    "id", conversation_id
+                ).execute()
+                status = "ai"  # Update local status variable
+                print(f"Reopened closed conversation {conversation_id} to 'ai' status")
 
             print("status------>", status)
             print("bot_id------>", bot_id)
 
-
-            role = data.get('role', 'user')  # Default to 'user' if not provided
+            # Handle page visit messages
+            if role == 'page_visit':
+                page_data = data.get('page_data', {})
+                
+                # Save page visit message to database
+                page_visit_response = supabase.table("messages").insert({
+                    "conversation_id": conversation_id,
+                    "content": message,
+                    "role": "page_visit",
+                    "read": True,  # Page visits are automatically marked as read
+                }).execute()
+                
+                if page_visit_response.data:
+                    message_id = page_visit_response.data[0]["id"]
+                    
+                    # Broadcast page visit message to all connections
+                    await broadcast_to_all_connections(conversation_id, {
+                        "type": "message",
+                        "id": message_id,
+                        "content": message,
+                        "role": "page_visit",
+                        "page_data": page_data,
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    
+                    print(f"Page visit tracked: {page_data.get('url', 'Unknown URL')}")
+                continue
 
             if status == "human":
                 if role == "human":
@@ -1899,12 +1985,13 @@ async def get_conversations_by_email(
         )
 
         conversations = response.data if hasattr(response, "data") else []
-        # For each conversation, fetch the last message
+        # For each conversation, fetch the last non-page-visit message
         for conv in conversations:
             last_msg_resp = (
                 supabase.table("messages")
                 .select("content,created_at")
                 .eq("conversation_id", conv["id"])
+                .neq("role", "page_visit")  # Exclude page visit messages
                 .order("created_at", desc=True)
                 .limit(1)
                 .execute()
@@ -1913,7 +2000,7 @@ async def get_conversations_by_email(
                 conv["last_message"] = last_msg_resp.data[0]["content"]
                 conv["last_message_time"] = last_msg_resp.data[0]["created_at"]
             else:
-                conv["last_message"] = None
+                conv["last_message"] = "No messages yet"
                 conv["last_message_time"] = None
         return {"conversations": conversations}
     except Exception as e:

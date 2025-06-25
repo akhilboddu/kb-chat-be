@@ -127,6 +127,56 @@ def delete_uploaded_files(kb_id: str) -> bool:
 
 
 # === CONVERSATION HISTORY FUNCTIONS ===
+async def get_formatted_conversation_history_and_customer_details(conversation_id: str) -> Optional[str]:
+    """
+    Retrieves and formats the full conversation history into a single string.
+
+    Args:
+        conversation_id: The unique conversation ID.
+
+    Returns:
+        A formatted string of the conversation history, or None if not found.
+    """
+    try:
+        result = (
+            supabase.table("messages")
+            .select("role, content, created_at")
+            .eq("conversation_id", conversation_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
+
+        user_details = (
+            supabase.table("conversations")
+            .select("customer_email, customer_phone")
+            .eq("id", conversation_id)
+            .execute()
+        )
+        customer_email = user_details.data[0].get("customer_email")
+        customer_phone_number = user_details.data[0].get("customer_phone")
+
+        if not result.data:
+            return None
+
+        # Mapping from DB role to a human-readable prefix
+        role_map = {
+            "user": "Human",
+            "bot": "AI",
+            "human_agent": "Human Agent"
+        }
+
+        formatted_history = []
+        for msg in result.data:
+            role = role_map.get(msg["role"], "Unknown")
+            formatted_history.append(f"{role}: {msg['content']}")
+        
+        return {"history": "\\n".join(formatted_history), "customer_email": customer_email, "customer_phone_number": customer_phone_number}
+
+    except Exception as e:
+        print(f"Error retrieving formatted conversation history for {conversation_id}: {e}")
+        return None
+
+
 def add_conversation_message(conversation_id: str, message_type: str, content: str) -> bool:
     """Adds a message to the conversation history for a given conversation_id.
     
@@ -182,7 +232,8 @@ def get_conversation_history(conversation_id: str) -> List[Dict[str, Any]]:
         role_to_type_mapping = {
             "user": "human",
             "bot": "ai", 
-            "human": "human_agent"
+            "human": "human_agent",
+            "page_visit": "page_visit"
         }
         
         messages = []
@@ -321,6 +372,43 @@ def upsert_agent_config(kb_id: str, config_data: Dict[str, Any]) -> bool:
         return True
     except Exception as e:
         print(f"Error upserting agent config for {kb_id}: {e}")
+        return False
+
+
+def save_web_search_config(bot_id: str, config_data: Dict[str, Any]) -> bool:
+    """
+    Saves or updates the web search configuration for a specific bot.
+    Uses 'upsert' to create or update the record based on the bot_id.
+
+    Args:
+        bot_id: The UUID of the bot.
+        config_data: A dictionary containing the web search configuration.
+
+    Returns:
+        True if the operation was successful, False otherwise.
+    """
+    try:
+        # Prepare the data for upsert
+        # The bot_id is included to match the record for updating
+        data_to_upsert = {
+            "bot_id": bot_id,
+            **config_data
+        }
+
+        # Perform the upsert operation
+        # Supabase's upsert will use the primary key or a unique column
+        # to decide whether to INSERT or UPDATE. Our unique index on `bot_id`
+        # makes it the perfect candidate for the `on_conflict` parameter.
+        (supabase.table('web_search_configs')
+         .upsert(data_to_upsert, on_conflict='bot_id')
+         .execute())
+
+        print(f"Successfully saved web search configuration for bot_id: {bot_id}")
+        return True
+    except Exception as e:
+        print(f"Error saving web search configuration for bot {bot_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -540,4 +628,120 @@ def get_db():
 def init_db():
     """Legacy function - no longer needed as tables are created via Supabase migrations."""
     print("init_db() called but not needed - Supabase tables should be created via migrations")
-    pass 
+    pass
+
+
+def get_bot_by_bot_id(bot_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieves bot details using its knowledge base ID.
+
+    Args:
+        kb_id: The knowledge base ID associated with the bot.
+
+    Returns:
+        A dictionary containing the bot's details, or None if not found.
+    """
+    if not bot_id:
+        return None
+        
+    try:
+        # The .single() method will raise an error if more than one row is found,
+        # which is good for ensuring data integrity. It returns data=None if no rows are found.
+        result = supabase.table('bots').select('*').eq('id', bot_id).single().execute()
+        return result.data
+    except Exception as e:
+        print(f"Error fetching bot by bot_id '{bot_id}': {e}")
+        # This can happen if no rows are found or multiple rows are found.
+        # Returning None is a safe default.
+        return None 
+
+
+def get_web_search_config(bot_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieves the web search configuration for a specific bot.
+
+    Args:
+        bot_id: The UUID of the bot.
+
+    Returns:
+        A dictionary containing the web search configuration, or None if not found.
+    """
+    if not bot_id:
+        return None
+
+    try:
+        # Use .single() to fetch exactly one record or raise an error if 0 or more than 1 are found.
+        # This is safe because we have a unique constraint on bot_id.
+        result = supabase.table('web_search_configs').select('*').eq('bot_id', bot_id).single().execute()
+        return result.data
+    except Exception as e:
+        print(f"Could not fetch web search config for bot {bot_id} (this may be expected if none is set): {e}")
+        # It's common for a config not to exist, so we just return None.
+        return None 
+
+
+def save_lead_scorer_config(bot_id: str, config_data: Dict[str, Any]) -> bool:
+    """
+    Saves or updates the lead scorer configuration for a specific bot.
+    Uses 'upsert' to create or update the record based on the bot_id.
+
+    Args:
+        bot_id: The UUID of the bot.
+        config_data: A dictionary containing the lead scorer configuration.
+
+    Returns:
+        True if the operation was successful, False otherwise.
+    """
+    try:
+        # Prepare the data for upsert
+        # The bot_id is included to match the record for updating
+        data_to_upsert = {
+            "bot_id": bot_id,
+            **config_data
+        }
+
+        # Perform the upsert operation
+        # Supabase's upsert will use the primary key or a unique column
+        # to decide whether to INSERT or UPDATE. Our unique index on `bot_id`
+        # makes it the perfect candidate for the `on_conflict` parameter.
+        (supabase.table('lead_scorer_configs')
+         .upsert(data_to_upsert, on_conflict='bot_id')
+         .execute())
+
+        print(f"Successfully saved lead scorer configuration for bot_id: {bot_id}")
+        return True
+    except Exception as e:
+        print(f"Error saving lead scorer configuration for bot {bot_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def get_lead_scorer_config(bot_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieves the lead scorer configuration for a specific bot.
+
+    Args:
+        bot_id: The UUID of the bot.
+
+    Returns:
+        A dictionary containing the lead scorer configuration, or None if not found.
+    """
+    if not bot_id:
+        return None
+
+    try:
+        # Use .single() to fetch exactly one record or raise an error if 0 or more than 1 are found.
+        # This is safe because we have a unique constraint on bot_id.
+        result = supabase.table('lead_scorer_configs').select('*').eq('bot_id', bot_id).single().execute()
+        return result.data
+    except Exception as e:
+        print(f"Could not fetch lead scorer config for bot {bot_id} (this may be expected if none is set): {e}")
+        # It's common for a config not to exist, so we just return None.
+        return None
+
+
+def clear_conversation_history(kb_id: str) -> bool:
+    """DEPRECATED: No longer used with Supabase as conversations are tied to IDs, not KBs."""
+    print(f"WARNING: clear_conversation_history is deprecated and does nothing.")
+    return True 
