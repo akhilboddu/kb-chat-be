@@ -1416,13 +1416,128 @@ def get_bot_id_from_conversation_id(conversation_id: str):
         return ""
 
 
+@router.post("/agents/{kb_id}/voice-chat", response_model=ChatResponse)
+async def voice_chat_endpoint(
+    kb_id: str,
+    request: ChatRequest,
+):
+    """
+    Simplified voice chat endpoint that doesn't require database conversation tracking.
+    Perfect for voice AI demonstrations.
+    """
+    print(f"Received voice chat request for kb_id: {kb_id}, message: {request.message}")
+    
+    try:
+        # Create a temporary memory for this voice session
+        memory = ConversationBufferMemory(
+            memory_key="chat_history", return_messages=True
+        )
+        
+        # Create customer context for voice user
+        customer_context = {
+            "customer_name": "Voice Customer",
+            "customer_email": "voice@ai.demo",
+            "bot_name": "Voice Assistant",
+            "company_name": "Your Company"
+        }
+        
+        # Create agent executor
+        agent_executor = agent_manager.create_agent_executor(
+            kb_id=kb_id, 
+            memory=memory, 
+            customer_context=customer_context
+        )
+        
+        # Format history
+        memory_variables = memory.load_memory_variables({})
+        history_string = memory_variables.get("chat_history", "")
+        if not isinstance(history_string, str):
+            formatted_history = []
+            for msg in history_string:
+                if isinstance(msg, HumanMessage):
+                    formatted_history.append(f"Human: {msg.content}")
+                elif isinstance(msg, AIMessage):
+                    formatted_history.append(f"AI: {msg.content}")
+            history_string = "\n".join(formatted_history)
+        
+        # Prepare input
+        input_data = {"input": request.message, "chat_history": history_string}
+        
+        # Invoke agent
+        response = await asyncio.to_thread(agent_executor.invoke, input_data)
+        agent_output = response.get("output", "")
+        
+        if agent_output:
+            cleaned_output = clean_agent_output(agent_output)
+            cleaned_output = auto_add_handoff_if_needed(cleaned_output)
+            
+            # For voice, remove handoff markers and keep it simple
+            if "(needs help)" in cleaned_output:
+                cleaned_output = cleaned_output.replace("(needs help)", "").strip()
+                cleaned_output += " I'm still learning about this. Is there anything else I can help you with?"
+            
+            return ChatResponse(content=cleaned_output, type="answer", kb_id=kb_id)
+        else:
+            return ChatResponse(
+                content="I'm sorry, I didn't catch that. Could you please repeat?",
+                type="answer",
+                kb_id=kb_id
+            )
+            
+    except Exception as e:
+        print(f"Error in voice chat: {e}")
+        import traceback
+        traceback.print_exc()
+        return ChatResponse(
+            content="I'm having trouble processing that right now. Please try again.",
+            type="answer",
+            kb_id=kb_id
+        )
+
+
+@router.get("/stream-token/{user_id}")
+async def get_stream_token(user_id: str):
+    """
+    Generate a Stream token for voice calls.
+    In production, this should validate the user and use proper authentication.
+    """
+    try:
+        # For development, return a simple token structure
+        # In production, you would use the Stream SDK to generate a proper token
+        import time
+        import json
+        import base64
+        
+        # Create a simple JWT-like token for development
+        header = {"alg": "HS256", "typ": "JWT"}
+        payload = {
+            "user_id": user_id,
+            "iat": int(time.time()),
+            "exp": int(time.time()) + 3600  # 1 hour expiry
+        }
+        
+        # Encode header and payload
+        header_encoded = base64.urlsafe_b64encode(json.dumps(header).encode()).decode().rstrip("=")
+        payload_encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+        
+        # For development, use a simple signature
+        signature = "dev_signature"
+        
+        token = f"{header_encoded}.{payload_encoded}.{signature}"
+        
+        return {"token": token, "user_id": user_id}
+    except Exception as e:
+        print(f"Error generating Stream token: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate token")
+
+
 @router.post("/send-msg-demobot", response_model=ChatResponse)
 async def send_message_to_demo_bot(request: DemoChatRequest):
     """
     Endpoint for sending messages to a demo bot associated with a specific URL.
     The endpoint will:
     1. Find the demo bot's knowledge base using the URL
-    2. Process the message using the AI
+    2. Process the message using the AI with conversation context
     3. Return the response
     """
     try:
@@ -1442,24 +1557,82 @@ async def send_message_to_demo_bot(request: DemoChatRequest):
         kb_id = demo_bot_response.data[0]["kb_id"]
         
         # 2. Create a ChatRequest for the existing chat endpoint
+        conversation_id = request.conversationId or f"demo_{kb_id}"
         chat_request = ChatRequest(
             message=request.message,
-            conversation_id=f"demo_{kb_id}"  # Use a consistent conversation ID for demo bots
+            conversation_id=conversation_id
         )
         
-        # 3. Use the existing chat endpoint logic
-        response = await chat_endpoint(kb_id, chat_request)
+        # 3. Create memory with conversation context if provided
+        memory = ConversationBufferMemory(
+            memory_key="chat_history", return_messages=True
+        )
         
-        # 4. If the response is a handoff, add the additional message
-        if response.type == "handoff":
-            handoff_message = (
-                "\n\nOur AI was not able to answer this and this is where a human hand off would be triggered - "
-                "some one from your team can respond to the user and add this information to the knowledge base. "
-                "Sign up for a free trail to fully experience the Magic of deskForce ✨😃"
+        # Populate memory from conversation context if provided
+        if request.conversationContext:
+            print(f"Populating demo bot memory with {len(request.conversationContext)} messages")
+            for msg in request.conversationContext:
+                if msg.get("role") == "user":
+                    memory.chat_memory.add_user_message(msg.get("content", ""))
+                elif msg.get("role") == "bot":
+                    memory.chat_memory.add_ai_message(msg.get("content", ""))
+        
+        # 4. Create agent executor with populated memory
+        agent_executor = agent_manager.create_agent_executor(kb_id=kb_id, memory=memory)
+        
+        # 5. Format history for prompt
+        memory_variables = memory.load_memory_variables({})
+        history_string = memory_variables.get("chat_history", "")
+        if not isinstance(history_string, str):
+            formatted_history = []
+            for msg in history_string:
+                if isinstance(msg, HumanMessage):
+                    formatted_history.append(f"Human: {msg.content}")
+                elif isinstance(msg, AIMessage):
+                    formatted_history.append(f"AI: {msg.content}")
+            history_string = "\n".join(formatted_history)
+        
+        # 6. Prepare agent input with conversation history
+        input_data = {"input": request.message, "chat_history": history_string}
+        
+        # 7. Invoke agent with context
+        print(f"Invoking demo bot agent ({kb_id}) with conversation context")
+        import asyncio
+        response = await asyncio.to_thread(agent_executor.invoke, input_data)
+        
+        # 8. Process response
+        agent_output = response.get("output")
+        if agent_output:
+            from app.utils.text_processing import clean_agent_output, auto_add_handoff_if_needed
+            cleaned_output = clean_agent_output(agent_output)
+            
+            # Apply automatic handoff detection
+            cleaned_output = auto_add_handoff_if_needed(cleaned_output)
+            
+            # Check for handoff marker and determine response type
+            handoff_marker = "(needs help)"
+            if handoff_marker in cleaned_output:
+                final_content = cleaned_output.replace(handoff_marker, "").strip()
+                response_type = "handoff"
+                
+                # Add the demo-specific handoff message
+                handoff_message = (
+                    "\n\nOur AI was not able to answer this and this is where a human hand off would be triggered - "
+                    "some one from your team can respond to the user and add this information to the knowledge base. "
+                    "Sign up for a free trail to fully experience the Magic of deskForce ✨😃"
+                )
+                final_content = final_content + handoff_message
+            else:
+                final_content = cleaned_output
+                response_type = "answer"
+            
+            return ChatResponse(content=final_content, type=response_type)
+        else:
+            # No output from agent
+            return ChatResponse(
+                content="I'm sorry, I couldn't process your request right now. Please try again.",
+                type="answer"
             )
-            response.content = response.content + handoff_message
-        
-        return response
         
     except HTTPException as http_exc:
         raise http_exc

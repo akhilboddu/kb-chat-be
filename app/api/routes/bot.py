@@ -10,22 +10,43 @@ from app.models.scrape import ScrapeStatusResponse
 from app.core import kb_manager, supabase_metadata_manager as db_manager
 from app.core.supabase_client import supabase
 from fastapi import BackgroundTasks
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, HttpUrl, Field
 from typing import List, Optional, Dict, Any
 from app.models.crm import CRMEntry, PaginatedCRMResponse
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
 from dateutil.parser import isoparse  # more tolerant ISO-8601 parser
+import hashlib
+import logging
+import os
+
+# Create logger instance
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/bots", tags=["bots"])
 
 # New model for demo bot requests
 class DemoBotRequest(BaseModel):
-    url: HttpUrl
-    name: Optional[str] = None
-    description: Optional[str] = None
-    max_pages: Optional[int] = 1
+    url: str = Field(..., description="The URL to scrape for the demo bot")
+    max_pages: int = Field(default=5, ge=1, le=20, description="Maximum number of pages to scrape")
 
+# New model for demo bot metadata response
+class DemoBotMetaResponse(BaseModel):
+    kb_id: str
+    status: str
+    name: Optional[str] = None
+    created_at: Optional[str] = None
+
+class ScrapeURLRequest(BaseModel):
+    url: str
+    max_pages: int = 5
+
+class CustomPromptRequest(BaseModel):
+    custom_prompt: Optional[str] = Field(None, description="Custom system prompt for the bot. Set to null to use default prompt.")
+
+class CustomPromptResponse(BaseModel):
+    custom_prompt: Optional[str] = Field(None, description="Current custom prompt for the bot")
+    has_custom_prompt: bool = Field(description="Whether the bot has a custom prompt configured")
 
 # KB Management Compatibility Endpoints
 @router.get("/{bot_id}/kb/sources")
@@ -674,14 +695,23 @@ async def create_demo_bot(
     4. If doesn't exist, creates new KB and demo bot
     5. Initiates scraping of the URL
     """
+    logger.info(
+        f"[DEMO-BOT] Incoming request – url={request.url}, max_pages={request.max_pages}"
+    )
     try:
+        # Normalize URL - add protocol if missing
+        url = str(request.url)
+        if not url.startswith('http'):
+            url = f"https://{url}"
+            
         # Extract domain from URL
-        parsed_url = urlparse(str(request.url))
+        parsed_url = urlparse(url)
         domain = parsed_url.netloc.replace('www.', '')
         
         # Check if demo bot already exists
         existing_bot = supabase.table("demo_bots").select("*").eq("url", domain).execute()
         
+        logger.info(f"[DEMO-BOT] Existing bot rows found: {len(existing_bot.data) if existing_bot.data else 0}")
         if existing_bot.data:
             bot = existing_bot.data[0]
             try:
@@ -699,8 +729,8 @@ async def create_demo_bot(
                 # Delete old knowledge base
                 kb_manager.delete_kb(old_kb_id)
                 
-                # Create new knowledge base
-                kb_id = f"demo_{hash(domain)}"
+                # Create new knowledge base with deterministic ID
+                kb_id = f"demo_{hashlib.sha1(domain.encode()).hexdigest()[:10]}"
                 kb_collection = kb_manager.create_or_get_kb(
                     kb_id=kb_id,
                     name=f"Demo KB for {domain}"
@@ -721,8 +751,11 @@ async def create_demo_bot(
                 
                 # Start scraping in background
                 scrape_request = ScrapeURLRequest(
-                    url=str(request.url),
+                    url=url,  # Use normalized URL
                     max_pages=request.max_pages
+                )
+                logger.info(
+                    f"[DEMO-BOT] Recreated KB {kb_id}. Queuing scrape (max_pages={request.max_pages})"
                 )
                 background_tasks.add_task(
                     scrape_url_and_populate_kb,
@@ -742,8 +775,8 @@ async def create_demo_bot(
                     message="Using existing demo bot"
                 )
         
-        # No existing bot found, create new one
-        kb_id = f"demo_{hash(domain)}"
+        # No existing bot found, create new one with deterministic ID
+        kb_id = f"demo_{hashlib.sha1(domain.encode()).hexdigest()[:10]}"
         
         # Create new knowledge base
         kb_collection = kb_manager.create_or_get_kb(
@@ -760,8 +793,8 @@ async def create_demo_bot(
         # Create demo bot entry
         demo_bot_data = {
             "url": domain,
-            "name": request.name or f"Demo Bot for {domain}",
-            "description": request.description,
+            "name": f"Demo Bot for {domain}",
+            "description": "",
             "kb_id": kb_id,
             "status": "processing",
             "max_pages": request.max_pages,
@@ -771,7 +804,11 @@ async def create_demo_bot(
             }
         }
         
-        demo_bot_response = supabase.table("demo_bots").insert(demo_bot_data).execute()
+        logger.info(f"[DEMO-BOT] Creating new demo bot record for domain {domain}, kb_id={kb_id}")
+        demo_bot_response = supabase.table("demo_bots").upsert(
+            demo_bot_data,
+            on_conflict="url"
+        ).execute()
         
         if not demo_bot_response.data:
             # Clean up the KB if demo bot creation fails
@@ -783,9 +820,10 @@ async def create_demo_bot(
         
         # Start scraping in background
         scrape_request = ScrapeURLRequest(
-            url=str(request.url),
+            url=url,  # Use normalized URL
             max_pages=request.max_pages
         )
+        logger.info(f"[DEMO-BOT] Queuing initial scrape task (max_pages={request.max_pages}) for KB {kb_id}")
         background_tasks.add_task(
             scrape_url_and_populate_kb,
             kb_id,
@@ -799,6 +837,7 @@ async def create_demo_bot(
         )
         
     except Exception as e:
+        logger.exception("[DEMO-BOT] Unhandled error while creating demo bot")
         print(f"Error creating demo bot: {str(e)}")
         raise HTTPException(
             status_code=500,
@@ -947,4 +986,309 @@ async def delete_bot(bot_id: str):
         raise HTTPException(
             status_code=500,
             detail=f"Failed to delete bot: {str(e)}"
+        )
+
+# New endpoint to get demo bot metadata
+@router.get("/demo-bot/meta")
+async def get_demo_bot_meta(url: str) -> DemoBotMetaResponse:
+    """
+    Get metadata for a demo bot by URL (read-only, no side effects)
+    """
+    try:
+        # Extract domain from URL - handle both with and without protocol
+        if url.startswith('http'):
+            parsed_url = urlparse(url)
+            domain = parsed_url.netloc.replace('www.', '')
+        else:
+            # Handle cases where URL doesn't have protocol
+            # Clean up the URL and extract domain
+            clean_url = url.replace('www.', '')
+            domain = clean_url.split('/')[0]
+        
+        # Look up demo bot
+        existing_bot = supabase.table("demo_bots").select("*").eq("url", domain).execute()
+        
+        if not existing_bot.data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No demo bot found for URL: {domain}"
+            )
+        
+        bot = existing_bot.data[0]
+        
+        return DemoBotMetaResponse(
+            kb_id=bot['kb_id'],
+            status=bot.get('status', 'unknown'),
+            name=bot.get('name'),
+            created_at=bot.get('created_at')
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting demo bot meta: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get demo bot metadata: {str(e)}"
+        )
+
+
+@router.get("/{bot_id}/custom-prompt", response_model=CustomPromptResponse)
+async def get_bot_custom_prompt(bot_id: str):
+    """
+    Retrieve the custom prompt configuration for a specific bot.
+    """
+    try:
+        result = supabase.table("bots").select("custom_prompt").eq("id", bot_id).single().execute()
+        
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Bot not found")
+        
+        custom_prompt = result.data.get("custom_prompt")
+        
+        return CustomPromptResponse(
+            custom_prompt=custom_prompt,
+            has_custom_prompt=bool(custom_prompt and custom_prompt.strip())
+        )
+        
+    except Exception as e:
+        print(f"Error retrieving custom prompt for bot {bot_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve custom prompt: {str(e)}"
+        )
+
+
+@router.put("/{bot_id}/custom-prompt", response_model=StatusResponse)
+async def update_bot_custom_prompt(bot_id: str, request: CustomPromptRequest):
+    """
+    Update the custom prompt for a specific bot.
+    Set custom_prompt to null to revert to the default prompt.
+    """
+    try:
+        # First verify the bot exists
+        bot_check = supabase.table("bots").select("id").eq("id", bot_id).single().execute()
+        
+        if not bot_check.data:
+            raise HTTPException(status_code=404, detail="Bot not found")
+        
+        # Update the custom prompt
+        result = supabase.table("bots").update({
+            "custom_prompt": request.custom_prompt,
+            "updated_at": datetime.now().isoformat()
+        }).eq("id", bot_id).execute()
+        
+        if request.custom_prompt and request.custom_prompt.strip():
+            message = "Custom prompt updated successfully"
+        else:
+            message = "Custom prompt cleared - bot will use default prompt"
+            
+        return StatusResponse(message=message, status="success")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating custom prompt for bot {bot_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update custom prompt: {str(e)}"
+        )
+
+@router.post("/generate-prompt")
+async def generate_prompt(request: dict):
+    """
+    Generate a custom AI prompt based on company description and agent goals.
+    """
+    try:
+        company_description = request.get("company_description", "").strip()
+        agent_goals = request.get("agent_goals", "").strip()
+        company_name = request.get("company_name", "Your Company")
+        bot_name = request.get("bot_name", "Assistant")
+        
+        if not company_description or not agent_goals:
+            raise HTTPException(
+                status_code=400,
+                detail="Both company_description and agent_goals are required"
+            )
+        
+        # Create the prompt generation request
+        generation_prompt = f"""You are an expert AI prompt engineer specializing in creating system prompts for customer service and sales chatbots that do not hallucinate.
+
+Your task is to create a comprehensive, professional system prompt based on the following information:
+
+**Company Description:**
+{company_description}
+
+**Desired Agent Behavior:**
+{agent_goals}
+
+**Company Name:** {company_name}
+**Bot Name:** {bot_name}
+
+Please generate a complete system prompt that includes the following sections:
+
+**Role Definition**: Clearly define who the AI is (e.g., "You are a sales assistant for [Company]")
+**Company Context**: Incorporate the company's business and value proposition
+**Customer Context**: Required Placeholders {{customer_name}}, {{customer_email}} - make sure to include this in the prompt or else the agent will not know the customer's name and email
+**Tone & Style**: Specify the communication style (professional, friendly, casual, etc.)
+**Key Objectives**: What should the AI focus on (sales, support, information, etc.)
+**Conversation Flow**: How should conversations progress for example (qualify → recommend → close)
+
+**CRITICAL: You MUST include these exact sections with all points exactly as written:**
+
+### 🚨 Urgency & Escalation (needs help)
+
+You *MUST* use (needs help) if:
+
+•⁠  ⁠The user asks to speak to a human, agent, or someone from the team
+•⁠  ⁠The query is too complex, unclear, or falls outside your capabilities
+•⁠  ⁠The user expresses dissatisfaction, frustration, confusion, or urgency
+•⁠  ⁠The user has made a payment, submitted an application, or taken action — and is now waiting or stuck (e.g. "I paid but didn't get access", "I uploaded my documents but haven't heard back")
+•⁠  ⁠The conversation involves errors, delays, or unmet expectations (e.g. late delivery, access issues, missing service, lack of response)
+•⁠  ⁠The user is ready to *make a payment, **sign a contract, or **take a major action* but needs help
+•⁠  ⁠You cannot confidently answer based on knowledge base
+
+Say something like:
+	⁠"Thanks for flagging this — I'm escalating it to the team so they can jump in and resolve this for you asap. (needs help)"
+
+📌 Urgency detection guideline:
+If the user's message includes keywords like paid, submitted, uploaded, sent, waiting, not received, delay, urgent, speak to someone, not working, treat it as time-sensitive and use (needs help).
+
+### 🚫 What You Must Avoid
+
+•⁠  ⁠Guessing technical/legal info
+•⁠  ⁠Sounding like you're "looking something up"
+•⁠  ⁠Giving incorrect prices or guarantees
+•⁠  ⁠Admitting you're AI or saying "I don't know"
+•⁠  ⁠Greeting the customer again if you've already greeted them
+•⁠  ⁠Introducing yourself multiple times
+•⁠  ⁠Giving passive or vague responses to urgent issues (like payment, delay, or missing access)
+•⁠  ⁠Ignoring requests to speak to a human
+•⁠  ⁠Saying you are checking the knowledge base or mention "According to the knowledge base" in your answer.
+•⁠  ⁠**NEVER give a Final Answer without first using the response_quality_checker tool**
+
+**Important Requirements:**
+- Make it specific to this company and use case
+- Include practical conversation examples where helpful
+- Focus on sales/lead generation if that's mentioned in goals
+- Include customer service elements if support is mentioned
+- Keep it professional but personable
+- DO NOT include tool usage instructions or technical implementation details (these are added automatically)
+- MUST include the exact "🚨 Urgency & Escalation (needs help)" and "🚫 What You Must Avoid" sections above word-for-word
+
+Generate a complete, ready-to-use system prompt:
+
+OUTPUT FORMAT: ONLY RETURN THE PROMPT.
+
+
+"""
+
+        # Try to use OpenAI for generation, with fallback to template
+        try:
+            import os
+            from openai import OpenAI
+            
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError("OpenAI API key not configured")
+            
+            client = OpenAI(api_key=api_key)
+            
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are an expert AI prompt engineer specializing in creating system prompts for customer service and sales chatbots. Generate professional, effective prompts that are tailored to the specific company and use case."},
+                    {"role": "user", "content": generation_prompt}
+                ],
+                temperature=0.7,
+                max_tokens=2500
+            )
+            
+            generated_prompt = response.choices[0].message.content.strip()
+            
+            return {
+                "success": True,
+                "generated_prompt": generated_prompt,
+                "company_description": company_description,
+                "agent_goals": agent_goals,
+                "generation_method": "ai_generated"
+            }
+            
+        except Exception as e:
+            print(f"Error generating prompt with OpenAI: {e}")
+            
+            # Fallback: Create a structured prompt template
+            fallback_prompt = f"""You are {{{bot_name}}}, a knowledgeable and helpful team member at {{{company_name}}}. 
+
+## About {{{company_name}}}
+{company_description}
+
+## Your Role & Objectives
+{agent_goals}
+
+## Communication Style
+- Maintain a professional yet friendly tone
+- Be helpful, informative, and solution-oriented  
+- Use the customer's name ({{{customer_name}}}) when appropriate
+- Stay focused on achieving the objectives outlined above
+
+## Conversation Flow
+1. **Welcome & Understand**: Greet customers warmly and understand their needs
+2. **Inform & Guide**: Provide relevant information about our products/services
+3. **Recommend & Assist**: Make appropriate recommendations based on their requirements
+4. **Close or Escalate**: Guide toward next steps or escalate when needed
+
+### 🚨 Urgency & Escalation (needs help)
+
+You *MUST* use (needs help) if:
+
+•⁠  ⁠The user asks to speak to a human, agent, or someone from the team
+•⁠  ⁠The query is too complex, unclear, or falls outside your capabilities
+•⁠  ⁠The user expresses dissatisfaction, frustration, confusion, or urgency
+•⁠  ⁠The user has made a payment, submitted an application, or taken action — and is now waiting or stuck (e.g. "I paid but didn't get access", "I uploaded my documents but haven't heard back")
+•⁠  ⁠The conversation involves errors, delays, or unmet expectations (e.g. late delivery, access issues, missing service, lack of response)
+•⁠  ⁠The user is ready to *make a payment, **sign a contract, or **take a major action* but needs help
+•⁠  ⁠You cannot confidently answer based on knowledge base
+
+Say something like:
+	⁠"Thanks for flagging this — I'm escalating it to the team so they can jump in and resolve this for you asap. (needs help)"
+
+📌 Urgency detection guideline:
+If the user's message includes keywords like paid, submitted, uploaded, sent, waiting, not received, delay, urgent, speak to someone, not working, treat it as time-sensitive and use (needs help).
+
+### 🚫 What You Must Avoid
+
+•⁠  ⁠Guessing technical/legal info
+•⁠  ⁠Sounding like you're "looking something up"
+•⁠  ⁠Giving incorrect prices or guarantees
+•⁠  ⁠Admitting you're AI or saying "I don't know"
+•⁠  ⁠Greeting the customer again if you've already greeted them
+•⁠  ⁠Introducing yourself multiple times
+•⁠  ⁠Giving passive or vague responses to urgent issues (like payment, delay, or missing access)
+•⁠  ⁠Ignoring requests to speak to a human
+•⁠  ⁠Saying you are checking the knowledge base or mention "According to the knowledge base" in your answer.
+•⁠  ⁠**NEVER give a Final Answer without first using the response_quality_checker tool**
+
+## Customer Context
+- Customer Name: {{{customer_name}}}
+- Customer Email: {{{customer_email}}} (do not reveal this information)
+
+Remember: Your goal is to be genuinely helpful while representing {{{company_name}}} professionally and working toward the objectives described above."""
+
+            return {
+                "success": True,
+                "generated_prompt": fallback_prompt,
+                "company_description": company_description,
+                "agent_goals": agent_goals,
+                "generation_method": "template_fallback",
+                "note": "Generated using template due to AI generation unavailability"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in generate_prompt: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate prompt: {str(e)}"
         )
