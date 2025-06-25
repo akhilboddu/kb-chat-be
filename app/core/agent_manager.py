@@ -1,5 +1,4 @@
 # agent_manager.py
-
 import os
 import re
 from typing import List, Optional, Dict, Any, Union
@@ -15,8 +14,10 @@ from langchain.agents.output_parsers import ReActSingleInputOutputParser
 from app.core.config import llm
 from app.core.tools import (
     get_retriever_tool,
-    get_knowledge_update_tool,
-    get_answering_tool,
+    # get_knowledge_update_tool, # This seems unused, can be removed if not needed
+    # get_answering_tool, # This seems unused, can be removed if not needed
+    get_web_search_tool,
+    get_response_quality_checker_tool,
 )
 from app.core import supabase_metadata_manager as db_manager  # Import db_manager
 
@@ -200,14 +201,41 @@ class EnhancedAgentExecutor:
         return getattr(self.agent_executor, name)
 
 
+def get_bot_business_context(kb_id: str) -> Dict[str, Any]:
+    """
+    Retrieve business context for a bot from the database.
+    
+    Args:
+        kb_id: Knowledge base ID
+        
+    Returns:
+        Dictionary containing business context
+    """
+    # Hardcoded Zaio business context since Supabase doesn't contain this data
+    zaio_business_context = {
+        'company_name': 'Zaio',
+        'industry': 'Edtech',
+        'products': ['Full Stack Bootcamp', 'Data Science Bootcamp', 'Cyber Security Bootcamp'],
+        'services': ['Full Stack Development Training', 'Data Science Training', 'Cyber Security Training'],
+        'bot_name': 'Zaio Assistant',
+        'business_keywords': [
+            'zaio', 'edtech', 'full stack', 'data science', 'cyber security', 'bootcamp', 'training', 
+            'coding', 'programming', 'education', 'tech education', 'developer', 'programmer', 
+            'salary', 'earnings', 'income', 'pay', 'compensation', 'job market', 'career', 'employment'
+        ]
+    }
+    
+    return zaio_business_context
+
 def create_agent_executor(
-    kb_id: str, memory: Optional[BaseMemory] = None, customer_context: Optional[Dict[str, Any]] = None
+    kb_id: str, memory: Optional[BaseMemory] = None, bot_id: str = "18eb9b0c-d283-4781-a727-6140d940db42", customer_context: Optional[Dict[str, Any]] = None
 ) -> Union[AgentExecutor, EnhancedAgentExecutor]:
     """
     Creates an AgentExecutor for a specific knowledge base, optionally with memory.
 
     Args:
         kb_id: The unique identifier for the knowledge base.
+        bot_id: The unique identifier for the bot.
         memory: Optional LangChain memory object.
         customer_context: Optional dictionary containing customer information (name, email, phone)
 
@@ -217,10 +245,45 @@ def create_agent_executor(
     if not llm:
         raise ValueError("LLM not initialized. Check .env configuration.")
 
-    # --- Fetch Agent Configuration ---
+    # --- Fetch Agent Configuration from DB ---
     print(f"Fetching agent config for kb_id: {kb_id}")
+    
+    # First, try to get custom prompt from bots table if bot_id is provided
+    custom_prompt_from_bot = None
+    if bot_id:
+        bot_info = db_manager.get_bot_by_bot_id(bot_id)
+        if bot_info:
+            custom_prompt_from_bot = bot_info.get("custom_prompt")
+            if custom_prompt_from_bot and custom_prompt_from_bot.strip():
+                print(f"Found custom prompt for bot {bot_id}")
+            else:
+                print(f"No custom prompt found for bot {bot_id}, using agent config")
+    
+    # Get the agent config (for max_iterations and fallback prompt)
     agent_config = db_manager.get_agent_config(kb_id)
-    system_prompt_template = agent_config["system_prompt"]
+    
+    # Use custom prompt from bot if available, otherwise use agent config prompt
+    if custom_prompt_from_bot and custom_prompt_from_bot.strip():
+        # For custom prompts, append the tools and ReAct formatting from the default prompt
+        from app.core.prompts import DEFAULT_SYSTEM_PROMPT
+        
+        # Extract the tools and ReAct formatting section from the default prompt
+        default_prompt = DEFAULT_SYSTEM_PROMPT
+        tools_section_start = default_prompt.find("## 🛠 TOOLS:")
+        
+        if tools_section_start != -1:
+            tools_and_react_section = default_prompt[tools_section_start:]
+            # Combine custom prompt with tools/ReAct formatting
+            system_prompt_template = f"{custom_prompt_from_bot.strip()}\n\n---\n\n{tools_and_react_section}"
+            print(f"Using custom prompt from bot table with appended tools/ReAct formatting for bot_id: {bot_id}")
+        else:
+            # Fallback if tools section not found
+            system_prompt_template = custom_prompt_from_bot
+            print(f"Warning: Could not find tools section in default prompt, using custom prompt as-is for bot_id: {bot_id}")
+    else:
+        system_prompt_template = agent_config["system_prompt"]
+        print(f"Using default prompt from agent config for kb_id: {kb_id}")
+    
     max_iterations_config = agent_config["max_iterations"]
     
     # --- Format customer context into the prompt ---
@@ -255,17 +318,42 @@ def create_agent_executor(
         system_prompt_template = system_prompt_template.replace("{company_name}", "our company")
     # --- End Format ---
 
-    # 1. Get tools specific to this kb_id
+    # --- Get Tools ---
+    
+    # 1. Get the retriever tool (always included)
     retriever_tool = get_retriever_tool(kb_id)
-    # update_tool = get_knowledge_update_tool(kb_id) # We might not give the agent direct update ability initially
-    # answering_tool = get_answering_tool(llm) # The ReAct agent directly uses the LLM for answering
+    tools_list = [retriever_tool]
+    
+    # 2. Get Bot Info and dynamically build Web Search Tool
+    bot_info = db_manager.get_bot_by_bot_id(bot_id)
+    
+    if bot_info:
+        # Fetch the client's saved web search configuration from the database
+        web_search_config_data = db_manager.get_web_search_config(bot_info['id'])
 
-    # Combine tools the agent can use
-    # tools_list = [retriever_tool, update_tool, answering_tool]
-    tools_list = [retriever_tool]  # Start simple: only retrieval allowed
+        # 3. Dynamically create and add the web search tool if it's enabled
+        web_search_tool = get_web_search_tool(config_data=web_search_config_data)
+        
+        if web_search_tool:
+            tools_list.append(web_search_tool)
+            print(f"Web search tool enabled and added for bot_id: {bot_info['id']}")
+        else:
+            print(f"Web search tool is disabled for bot_id: {bot_info['id']}")
+    else:
+        print(f"Warning: Could not find bot info for kb_id: {kb_id}. Web search tool will be disabled.")
+    
+    # 4. Add the response quality checker tool (always included)
+    quality_checker_tool = get_response_quality_checker_tool()
+    if quality_checker_tool:
+        tools_list.append(quality_checker_tool)
+        print(f"Response quality checker tool enabled and added for kb_id: {kb_id}")
+    else:
+        print(f"Warning: Response quality checker tool could not be created - Gemini may not be available")
 
     # Get tool names
     tool_names = [tool.name for tool in tools_list]
+
+    print(f"Tool names: {tool_names}")
 
     # 2. Create the ReAct-compatible prompt template
     # Ensure the prompt includes all required ReAct variables

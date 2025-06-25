@@ -82,6 +82,53 @@ async def setup_whatsapp_integration(bot_id: str, request: WhatsAppEmbeddedSignu
         "webhook_verify_token": webhook_verify_token
     }).execute()
 
+    # First API call: Register phone number with PIN
+    register_url = f"https://graph.facebook.com/v19.0/{request.phone_number_id}/register"
+    register_headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+    register_payload = {
+        "messaging_product": "whatsapp",
+        "pin": "123456"
+    }
+
+    logger.info(f"🔍 Making first API call to register phone number: {register_url}")
+    register_response = requests.post(register_url, headers=register_headers, json=register_payload)
+    
+    if register_response.status_code != 200:
+        error_text = register_response.text
+        logger.error(f"❌ Phone number registration failed: {error_text}")
+        raise HTTPException(status_code=400, detail=f"Phone number registration failed: {error_text}")
+    
+    register_result = register_response.json()
+    if not register_result.get('success'):
+        logger.error(f"❌ Phone number registration returned success=false: {register_result}")
+        raise HTTPException(status_code=400, detail="Phone number registration failed: success=false")
+    
+    logger.info(f"✅ Phone number registration successful: {register_result}")
+
+    # Second API call: Subscribe app to WABA
+    subscribe_url = f"https://graph.facebook.com/v19.0/{request.waba_id}/subscribed_apps"
+    subscribe_params = {
+        "access_token": access_token
+    }
+
+    logger.info(f"🔍 Making second API call to subscribe app to WABA: {subscribe_url}")
+    subscribe_response = requests.post(subscribe_url, params=subscribe_params)
+    
+    if subscribe_response.status_code != 200:
+        error_text = subscribe_response.text
+        logger.error(f"❌ App subscription failed: {error_text}")
+        raise HTTPException(status_code=400, detail=f"App subscription failed: {error_text}")
+    
+    subscribe_result = subscribe_response.json()
+    if not subscribe_result.get('success'):
+        logger.error(f"❌ App subscription returned success=false: {subscribe_result}")
+        raise HTTPException(status_code=400, detail="App subscription failed: success=false")
+    
+    logger.info(f"✅ App subscription successful: {subscribe_result}")
+
     logger.info(f"WhatsApp integration successfully set up for bot: {bot_id}")
 
     return WhatsAppSetupResponse(
@@ -90,7 +137,7 @@ async def setup_whatsapp_integration(bot_id: str, request: WhatsAppEmbeddedSignu
         redirect_uri=request.redirect_uri,
         appid=request.appid,
         status="success",
-        message="WhatsApp integration configured successfully! Please configure the webhook URL in your Meta Developer Console."
+        message="WhatsApp integration configured successfully!"
     )
 
         

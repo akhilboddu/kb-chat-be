@@ -27,6 +27,8 @@ class Conversation(BaseModel):
     last_message: Optional[str] = None
     last_message_time: Optional[datetime.datetime] = None
     handoff_requests: Optional[int] = 0
+    lead_score: Optional[int] = None
+    conversation_summary: Optional[str] = None
 
 class PaginatedListBotConversationsResponse(BaseModel):
     """Response model for listing all conversations for a bot with pagination."""
