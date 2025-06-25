@@ -272,6 +272,7 @@ Please evaluate the AI response on these criteria:
 3. COMPLETENESS: Does it provide a helpful and complete answer?
 4. APPROPRIATENESS: Is the tone and content suitable for the question?
 5. CORRECTNESS: Check if any links are provided and if they are correct by using the web_search tool.
+6. GUAGE SENTIMENT: If the response is not positive, make sure to include a (needs help) in the response.
 
 If the answer has a (needs help) - this means that we need to tigger a handoff, make sure you keep it in the answer.
 

@@ -247,8 +247,43 @@ def create_agent_executor(
 
     # --- Fetch Agent Configuration from DB ---
     print(f"Fetching agent config for kb_id: {kb_id}")
+    
+    # First, try to get custom prompt from bots table if bot_id is provided
+    custom_prompt_from_bot = None
+    if bot_id:
+        bot_info = db_manager.get_bot_by_bot_id(bot_id)
+        if bot_info:
+            custom_prompt_from_bot = bot_info.get("custom_prompt")
+            if custom_prompt_from_bot and custom_prompt_from_bot.strip():
+                print(f"Found custom prompt for bot {bot_id}")
+            else:
+                print(f"No custom prompt found for bot {bot_id}, using agent config")
+    
+    # Get the agent config (for max_iterations and fallback prompt)
     agent_config = db_manager.get_agent_config(kb_id)
-    system_prompt_template = agent_config["system_prompt"]
+    
+    # Use custom prompt from bot if available, otherwise use agent config prompt
+    if custom_prompt_from_bot and custom_prompt_from_bot.strip():
+        # For custom prompts, append the tools and ReAct formatting from the default prompt
+        from app.core.prompts import DEFAULT_SYSTEM_PROMPT
+        
+        # Extract the tools and ReAct formatting section from the default prompt
+        default_prompt = DEFAULT_SYSTEM_PROMPT
+        tools_section_start = default_prompt.find("## 🛠 TOOLS:")
+        
+        if tools_section_start != -1:
+            tools_and_react_section = default_prompt[tools_section_start:]
+            # Combine custom prompt with tools/ReAct formatting
+            system_prompt_template = f"{custom_prompt_from_bot.strip()}\n\n---\n\n{tools_and_react_section}"
+            print(f"Using custom prompt from bot table with appended tools/ReAct formatting for bot_id: {bot_id}")
+        else:
+            # Fallback if tools section not found
+            system_prompt_template = custom_prompt_from_bot
+            print(f"Warning: Could not find tools section in default prompt, using custom prompt as-is for bot_id: {bot_id}")
+    else:
+        system_prompt_template = agent_config["system_prompt"]
+        print(f"Using default prompt from agent config for kb_id: {kb_id}")
+    
     max_iterations_config = agent_config["max_iterations"]
     
     # --- Format customer context into the prompt ---
