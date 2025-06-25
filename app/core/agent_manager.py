@@ -228,7 +228,7 @@ def get_bot_business_context(kb_id: str) -> Dict[str, Any]:
     return zaio_business_context
 
 def create_agent_executor(
-    kb_id: str, memory: Optional[BaseMemory] = None, bot_id: str = "18eb9b0c-d283-4781-a727-6140d940db42", customer_context: Optional[Dict[str, Any]] = None
+    kb_id: str, memory: Optional[BaseMemory] = None, bot_id: str = None, customer_context: Optional[Dict[str, Any]] = None
 ) -> Union[AgentExecutor, EnhancedAgentExecutor]:
     """
     Creates an AgentExecutor for a specific knowledge base, optionally with memory.

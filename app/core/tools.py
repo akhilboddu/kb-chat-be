@@ -271,8 +271,9 @@ Please evaluate the AI response on these criteria:
 2. CONVERSATION FLOW: Does it fit naturally with the conversation context?
 3. COMPLETENESS: Does it provide a helpful and complete answer?
 4. APPROPRIATENESS: Is the tone and content suitable for the question?
-5. CORRECTNESS: Check if any links are provided and if they are correct by using the web_search tool.
-6. GUAGE SENTIMENT: If the response is not positive, make sure to include a (needs help) in the response.
+5. TONE & STYLE: Does the reply sound like a friendly, helpful human sales representative (not a robotic FAQ bot)? Look for conversational language, warmth, personality, and natural sales flow. AVOID robotic phrases like "I see...", "I am looking into...", "Let me check our knowledge base", or "I'm searching for information". A real sales employee would speak naturally and directly address the customer's needs while maintaining professionalism.
+6. CORRECTNESS: Check if any links are provided and if they are correct by using the web_search tool.
+7. GUAGE SENTIMENT: If the response is not positive, make sure to include a (needs help) in the response.
 
 If the answer has a (needs help) - this means that we need to tigger a handoff, make sure you keep it in the answer.
 

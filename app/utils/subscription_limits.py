@@ -45,12 +45,23 @@ async def get_bot_and_user(bot_id: str) -> Optional[Dict[str, Any]]:
         if not user_id:
             logger.error(f"No user_id found for bot: {bot_id}")
             return None
-        user_resp = supabase.table("subscriptions").select("*").eq("user_id", user_id).single().execute()
+        user_resp = supabase.table("subscriptions").select("*").eq("user_id", user_id).execute()
         print(f"user_resp: {user_resp}")
         if not user_resp.data:
-            logger.error(f"User profile not found for user: {user_id}")
-            return None
-        user_data = user_resp.data
+            logger.warning(f"No subscription found for user: {user_id}, using TRIAL defaults")
+            # Create default trial subscription data
+            user_data = {
+                "user_id": user_id,
+                "plan_name": "trial", 
+                "status": "active"
+            }
+        else:
+            # Fix: user_resp.data is a LIST, get the first item
+            user_data = user_resp.data[0] if user_resp.data else {
+                "user_id": user_id,
+                "plan_name": "trial", 
+                "status": "active"
+            }
         return {"bot": bot_data, "user": user_data}
     except Exception as e:
         logger.error(f"Error fetching bot/user: {str(e)}")
