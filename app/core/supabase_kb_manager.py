@@ -833,6 +833,70 @@ class KBManager:
             print(f"Error during cleanup for KB {kb_id}: {e}")
             raise e
 
+    def get_kb_details(self, kb_id: str) -> Dict[str, Any]:
+        """Return basic metadata about a knowledge base or demo bot.
+
+        The lookup order is:
+        1. demo_bots table (for publicly available demo assistants)
+        2. bots table (production user-owned assistants)
+        3. knowledge_bases table (fallback – only name is guaranteed)
+
+        Args:
+            kb_id: The knowledge-base identifier (e.g. "demo_905ccde801" or "abc123").
+
+        Returns:
+            Dictionary with at least keys: kb_id, name, company_name, custom_prompt.
+            Missing fields are filled with sensible defaults so the caller can assume
+            the keys exist.
+        """
+        try:
+            # 1) Demo bots – identified by the deliberate "demo_" prefix
+            if kb_id.startswith("demo_"):
+                demo_res = self.supabase.table("demo_bots").select("name,url,status").eq("kb_id", kb_id).limit(1).execute()
+                if demo_res.data:
+                    demo_row = demo_res.data[0]
+                    # Derive company name from URL's domain part if not explicitly set
+                    company = demo_row.get("name") or (demo_row.get("url", "").split("//")[-1].split("/")[0].title() if demo_row.get("url") else "Demo Company")
+                    return {
+                        "kb_id": kb_id,
+                        "name": demo_row.get("name", "Demo Assistant"),
+                        "company_name": company,
+                        "custom_prompt": None,
+                    }
+
+            # 2) Regular bots – join metadata from bots table
+            bot_res = self.supabase.table("bots").select("name,company,custom_prompt").eq("kb_id", kb_id).limit(1).execute()
+            if bot_res.data:
+                bot_row = bot_res.data[0]
+                return {
+                    "kb_id": kb_id,
+                    "name": bot_row.get("name", "AI Assistant"),
+                    "company_name": bot_row.get("company", "Company"),
+                    "custom_prompt": bot_row.get("custom_prompt"),
+                }
+
+            # 3) Fallback – only the KB row itself exists
+            kb_res = self.supabase.table("knowledge_bases").select("name").eq("kb_id", kb_id).limit(1).execute()
+            if kb_res.data:
+                kb_row = kb_res.data[0]
+                return {
+                    "kb_id": kb_id,
+                    "name": kb_row.get("name", "AI Assistant"),
+                    "company_name": "Company",
+                    "custom_prompt": None,
+                }
+
+        except Exception as e:
+            print(f"Error getting KB details for {kb_id}: {e}")
+
+        # Absolute fallback – return minimal defaults to keep caller alive
+        return {
+            "kb_id": kb_id,
+            "name": "AI Assistant",
+            "company_name": "Company",
+            "custom_prompt": None,
+        }
+
 
 # Singleton instance
 kb_manager = KBManager() 

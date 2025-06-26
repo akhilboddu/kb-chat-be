@@ -10,6 +10,7 @@ from app.api.routes.payment import router as payment_router
 from app.api.routes.subscriptions import subscriptions_router
 from app.api.routes.whatsapp import router as whatsapp_router
 from app.api.routes.kb import router as kb_router
+from app.api.routes.voice import router as voice_router
 
 router = APIRouter()
 
@@ -25,3 +26,4 @@ router.include_router(subscriptions_router)
 router.include_router(online_status_router)
 router.include_router(whatsapp_router)
 router.include_router(kb_router)
+router.include_router(voice_router)
