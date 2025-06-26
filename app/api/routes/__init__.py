@@ -11,6 +11,8 @@ from app.api.routes.subscriptions import subscriptions_router
 from app.api.routes.whatsapp import router as whatsapp_router
 from app.api.routes.kb import router as kb_router
 from app.api.routes.voice import router as voice_router
+from app.api.routes.voice_agent import router as voice_agent_router
+from app.api.routes.voice_agent_sdk import router as voice_agent_sdk_router
 
 router = APIRouter()
 
@@ -27,3 +29,5 @@ router.include_router(online_status_router)
 router.include_router(whatsapp_router)
 router.include_router(kb_router)
 router.include_router(voice_router)
+router.include_router(voice_agent_router)
+router.include_router(voice_agent_sdk_router)

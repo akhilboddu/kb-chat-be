@@ -11,6 +11,7 @@ from app.core import agent_manager
 from app.core.supabase_kb_manager import KBManager
 from app.core.prompts import DEFAULT_SYSTEM_PROMPT
 from app.utils.cache_utils import get_cached_response, set_cached_response
+import random
 
 # Import SDK-based services
 from app.services.stt_deepgram import DeepgramStreamer
@@ -183,6 +184,27 @@ class VoiceAssistantSession:
             
         self.is_processing = True
         try:
+            # -------------------------------------------
+            # QUICK FILLER RESPONSE TO REDUCE PERCEIVED LATENCY
+            # -------------------------------------------
+            # Send a short filler phrase so the user hears an immediate reply
+            filler_phrases = [
+                "Let me see...",
+                "Hmm...",
+                "Okay...",
+                "Sure...",
+                "Right...",
+            ]
+
+            filler_task = None
+            if self.tts and self.is_connected:
+                try:
+                    filler_phrase = random.choice(filler_phrases)
+                    # Fire and forget – we'll await later to avoid overlap
+                    filler_task = asyncio.create_task(self.stream_tts_filler(filler_phrase))
+                except Exception as e:
+                    logger.warning(f"Filler TTS failed: {e}")
+
             # Check cache first for common queries
             cached_response = None
             if len(text.strip()) > 10:
@@ -236,6 +258,13 @@ class VoiceAssistantSession:
                 "text": ai_response
             })
             
+            # Ensure filler speech has completed to avoid audio overlap
+            if filler_task and not filler_task.done():
+                try:
+                    await filler_task
+                except Exception:
+                    pass  # Ignore filler errors
+
             # Stream to TTS using SDK
             await self.stream_tts_response(ai_response)
             
@@ -279,8 +308,49 @@ class VoiceAssistantSession:
         except Exception as e:
             logger.error(f"❌ TTS streaming failed: {e}")
             self.is_speaking = False
-            # Fallback to error message
-            await self.send_error_response()
+            
+            # Check if it's a quota exceeded error
+            error_str = str(e)
+            if "quota_exceeded" in error_str:
+                logger.warning("⚠️ ElevenLabs quota exceeded - sending text-only response")
+                # Don't try to send another TTS error message, just notify the user
+                await self.safe_send_json({
+                    "type": "tts_unavailable",
+                    "message": "Voice synthesis temporarily unavailable (quota exceeded). Text responses will continue."
+                })
+            else:
+                # For other errors, send error response but without TTS to avoid loops
+                await self.safe_send_json({
+                    "type": "ai_response", 
+                    "text": "Sorry, I encountered an error with voice synthesis. I'll continue with text responses."
+                })
+
+    async def stream_tts_filler(self, text: str):
+        """Stream a short filler phrase using turbo mode for lower latency"""
+        if not self.is_connected or not self.tts:
+            return
+            
+        try:
+            logger.info(f"🏃 Streaming filler TTS (turbo): '{text}'")
+            self.is_speaking = True
+            
+            # Use turbo mode for filler phrases
+            await self.tts.speak(text, self._send_audio_chunk, use_turbo=True)
+            
+            # Send final marker
+            await self.safe_send_json({
+                "type": "audio",
+                "audio": "",
+                "isFinal": True,
+                "format": "mp3"
+            })
+            
+            self.is_speaking = False
+            logger.info("✅ Filler TTS completed")
+            
+        except Exception as e:
+            logger.warning(f"Filler TTS failed (non-critical): {e}")
+            self.is_speaking = False
 
     async def _send_audio_chunk(self, b64_chunk: str):
         """Callback for sending audio chunks from TTS"""
@@ -298,7 +368,7 @@ class VoiceAssistantSession:
         """Send initial greeting"""
         try:
             bot_data = await self.get_bot_data()
-            greeting = f"Hello! I'm {bot_data.get('name', 'your assistant')} from {bot_data.get('company', 'the company')}. How can I help you today?"
+            greeting = f"Helloooo!! How can I help you today?"
             
             logger.info("🗣️ Sending greeting...")
             
@@ -321,11 +391,8 @@ class VoiceAssistantSession:
             "text": error_message
         })
         
-        if self.tts:
-            try:
-                await self.stream_tts_response(error_message)
-            except:
-                pass  # Don't cascade errors
+        # Don't try TTS for error messages to avoid cascading failures
+        logger.info("Sent text-only error response (TTS disabled for errors)")
 
     async def get_bot_data(self):
         """Fetch bot configuration from database"""

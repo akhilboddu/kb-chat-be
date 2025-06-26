@@ -10,16 +10,19 @@ class ElevenLabsTTS:
         self.model = model
         self.logger = logging.getLogger(__name__)
     
-    async def speak(self, text: str, send_chunk_callback):
+    async def speak(self, text: str, send_chunk_callback, use_turbo: bool = False):
         """Convert text to speech and stream audio chunks"""
         try:
             self.logger.info(f"🔊 Starting TTS for: '{text[:50]}...'")
+            
+            # Use turbo model for short phrases to reduce latency
+            model_to_use = "eleven_turbo_v2" if use_turbo else self.model
             
             # Generate streaming audio
             audio_stream = self.client.text_to_speech.stream(
                 text=text,
                 voice_id=self.voice_id,
-                model_id=self.model,
+                model_id=model_to_use,
                 output_format="mp3_44100_128"
             )
             
