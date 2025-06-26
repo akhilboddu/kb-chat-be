@@ -262,7 +262,7 @@ def create_agent_executor(
     # Get the agent config (for max_iterations and fallback prompt)
     agent_config = db_manager.get_agent_config(kb_id)
     
-    # Use custom prompt from bot if available, otherwise use agent config prompt
+    # Use custom prompt from bot if available, otherwise use agent config prompt or DEFAULT_SYSTEM_PROMPT
     if custom_prompt_from_bot and custom_prompt_from_bot.strip():
         # For custom prompts, append the tools and ReAct formatting from the default prompt
         from app.core.prompts import DEFAULT_SYSTEM_PROMPT
@@ -280,6 +280,11 @@ def create_agent_executor(
             # Fallback if tools section not found
             system_prompt_template = custom_prompt_from_bot
             print(f"Warning: Could not find tools section in default prompt, using custom prompt as-is for bot_id: {bot_id}")
+    elif bot_id is None:
+        # No bot_id provided (demo case) - use DEFAULT_SYSTEM_PROMPT from prompts.py
+        from app.core.prompts import DEFAULT_SYSTEM_PROMPT
+        system_prompt_template = DEFAULT_SYSTEM_PROMPT
+        print(f"Using DEFAULT_SYSTEM_PROMPT from prompts.py for demo kb_id: {kb_id}")
     else:
         system_prompt_template = agent_config["system_prompt"]
         print(f"Using default prompt from agent config for kb_id: {kb_id}")
