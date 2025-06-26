@@ -170,10 +170,12 @@ async def bot_knowledge_endpoint(bot_id: str, request: AddKnowledgeRequest):
         # Add to knowledge base with metadata
         from datetime import datetime
         source_name = f"Human input - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        if request.source_type == "learning":
+            source_name = f"Learning - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         success = kb_manager.add_to_kb(
             kb_id=kb_id, 
             text_to_add=request.knowledge_text, 
-            knowledge_source="human conversation",
+            knowledge_source=request.source_type or "human conversation",
             source_name=source_name
         )
 
@@ -358,6 +360,82 @@ async def update_lead_scorer_config(bot_id: str, config: LeadScorerConfigModel):
         raise HTTPException(status_code=500, detail=f"Failed to save lead scorer configuration: {str(e)}")
 
 # --- End Lead Scorer Configuration ---
+
+# --- Follow Up Configuration ---
+
+class FollowUpConfigModel(BaseModel):
+    is_enabled: bool
+    follow_up_method: str  # 'deskforce' or 'gmail'
+    max_follow_ups: int = 3
+    stop_on_reply: bool = True
+
+@router.get("/{bot_id}/follow_up_config", response_model=FollowUpConfigModel)
+async def get_follow_up_config(bot_id: str):
+    """
+    Retrieves the follow-up configuration for a specific bot.
+    If no config exists, returns a default configuration.
+    """
+    try:
+        response = supabase.table("follow_up_configs").select("*").eq("bot_id", bot_id).single().execute()
+
+        if response.data:
+            # Config found, return it
+            return FollowUpConfigModel(**response.data)
+        else:
+            # No config found, return a default config to ensure the frontend works correctly.
+            default_config = {
+                "is_enabled": False,
+                "follow_up_method": "gmail",
+                "max_follow_ups": 3,
+                "stop_on_reply": True,
+            }
+            return FollowUpConfigModel(**default_config)
+
+    except Exception as e:
+        # Don't return 404 for 'not found', as we provide a default.
+        # Only raise 500 for actual database errors.
+        if "Multiple rows returned" in str(e):
+             raise HTTPException(status_code=500, detail="Data integrity error: Found multiple follow-up configurations for this bot.")
+        print(f"Error fetching follow-up config for bot {bot_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"An internal error occurred while fetching the follow-up configuration.")
+
+@router.put("/{bot_id}/follow_up_config", response_model=StatusResponse)
+async def update_follow_up_config(bot_id: str, config: FollowUpConfigModel):
+    """
+    Updates or creates the follow-up configuration for a specific bot.
+    """
+    try:
+        # Check if bot exists
+        bot_response = supabase.table("bots").select("id").eq("id", bot_id).execute()
+        if not bot_response.data:
+            raise HTTPException(status_code=404, detail="Bot not found")
+        
+        # Prepare config data for database
+        config_data = {
+            "bot_id": bot_id,
+            "is_enabled": config.is_enabled,
+            "follow_up_method": config.follow_up_method,
+            "max_follow_ups": config.max_follow_ups,
+            "stop_on_reply": config.stop_on_reply,
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        
+        # Upsert configuration
+        supabase.table("follow_up_configs").upsert(config_data).execute()
+        
+        return StatusResponse(
+            status="success",
+            message="Follow-up configuration saved successfully."
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error saving follow-up config for bot {bot_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to save follow-up configuration: {str(e)}")
+
+# --- End Follow Up Configuration ---
 
 # --- Lead Scoring Endpoint ---
 
