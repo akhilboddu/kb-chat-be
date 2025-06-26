@@ -170,10 +170,12 @@ async def bot_knowledge_endpoint(bot_id: str, request: AddKnowledgeRequest):
         # Add to knowledge base with metadata
         from datetime import datetime
         source_name = f"Human input - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        if request.source_type == "learning":
+            source_name = f"Learning - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         success = kb_manager.add_to_kb(
             kb_id=kb_id, 
             text_to_add=request.knowledge_text, 
-            knowledge_source="human conversation",
+            knowledge_source=request.source_type or "human conversation",
             source_name=source_name
         )
 

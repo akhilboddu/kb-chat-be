@@ -162,7 +162,7 @@ async def get_formatted_conversation_history_and_customer_details(conversation_i
         role_map = {
             "user": "Human",
             "bot": "AI",
-            "human_agent": "Human Agent"
+            "human": "Human Agent"
         }
 
         formatted_history = []
