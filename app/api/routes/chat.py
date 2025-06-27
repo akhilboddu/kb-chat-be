@@ -1166,6 +1166,14 @@ async def create_bot_conversation_endpoint(
     try:
         from app.core.supabase_client import supabase
 
+        # First check if the bot exists
+        bot_check = supabase.table("bots").select("id").eq("id", bot_id).execute()
+        if not bot_check.data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Bot with ID {bot_id} not found"
+            )
+
         # Convert datetime to ISO format string for JSON serialization
         current_time = datetime.now().isoformat()
 

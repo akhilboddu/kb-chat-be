@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from .scrape import scrape_url_and_populate_kb
 from app.models.scrape import ScrapeURLRequest
 
@@ -9,6 +9,8 @@ from app.models.bot import (
 from app.models.scrape import ScrapeStatusResponse
 from app.core import kb_manager, supabase_metadata_manager as db_manager
 from app.core.supabase_client import supabase
+from app.services.auth_service import get_user_from_token
+from app.services.agent_service import AgentService
 from fastapi import BackgroundTasks
 from pydantic import BaseModel, HttpUrl, Field
 from typing import List, Optional, Dict, Any
@@ -19,11 +21,122 @@ from dateutil.parser import isoparse  # more tolerant ISO-8601 parser
 import hashlib
 import logging
 import os
+import uuid
 
 # Create logger instance
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/bots", tags=["bots"])
+
+
+def convert_user_id_to_uuid(user_id: str) -> str:
+    """Convert Google OAuth user ID to deterministic UUID for database compatibility"""
+    if user_id.isdigit():  # Google user ID (numeric string)
+        # Create a deterministic UUID from the Google user ID
+        namespace = uuid.UUID('6ba7b810-9dad-11d1-80b4-00c04fd430c8')  # DNS namespace
+        user_uuid = str(uuid.uuid5(namespace, f"google_user_{user_id}"))
+        logger.debug(f"Converting Google user ID {user_id} to UUID: {user_uuid}")
+        return user_uuid
+    else:
+        return user_id  # Already a UUID
+
+
+@router.post("/create", response_model=dict)
+async def create_bot(request: Request, agent_request: Optional[dict] = None):
+    """Create a new bot with proper authentication and user association"""
+    try:
+        logger.info("Bot creation request received")
+        
+        # Get auth token from cookie
+        auth_token = request.cookies.get("auth_token")
+        logger.info(f"Auth token present: {bool(auth_token)}")
+        
+        if not auth_token:
+            logger.warning("No auth token found in request cookies")
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        
+        # Validate token and get user info
+        try:
+            user_info = get_user_from_token(auth_token)
+            user_id = user_info["id"]
+            logger.info(f"Creating new bot for user: {user_id}")
+        except Exception as auth_error:
+            logger.error(f"Auth validation failed: {str(auth_error)}")
+            raise
+        
+        # Extract agent name from request if provided
+        agent_name = None
+        if agent_request and "name" in agent_request:
+            agent_name = agent_request["name"]
+        
+        # Create agent using existing service
+        try:
+            agent_response = AgentService.create_agent(agent_name)
+            logger.info(f"Agent created successfully: {agent_response.kb_id}")
+        except Exception as agent_error:
+            logger.error(f"Agent creation failed: {str(agent_error)}")
+            raise HTTPException(status_code=500, detail=f"Failed to create agent: {str(agent_error)}")
+        
+        # Create bot record in Supabase with user association
+        try:
+            # Handle Google OAuth user IDs (numeric strings) vs UUID format
+            user_uuid = convert_user_id_to_uuid(user_id)
+            logger.info(f"Using user UUID: {user_uuid}")
+            
+            bot_data = {
+                "kb_id": agent_response.kb_id,
+                "name": agent_response.name or "New Bot",
+                "user_id": user_uuid,
+                "company": "",  # Will be filled when bot is configured
+                "color": "#3B82F6",  # Default blue color
+                "is_live": False,  # Default to draft
+                "onboarding_status": "pending",  # Track onboarding completion
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            
+            result = supabase.table("bots").insert(bot_data).execute()
+            
+            if not result.data:
+                logger.error("Failed to create bot record: No data returned")
+                raise HTTPException(status_code=500, detail="Failed to create bot record")
+            
+            created_bot = result.data[0]
+            bot_id = created_bot.get('id', 'unknown')
+            logger.info(f"Bot record created successfully: {bot_id}")
+            
+        except Exception as db_error:
+            logger.error(f"Database error creating bot: {str(db_error)}")
+            # Try to clean up the agent if bot record creation failed
+            try:
+                # Note: We might want to add a cleanup method to AgentService
+                pass
+            except:
+                pass
+            raise HTTPException(status_code=500, detail=f"Failed to create bot record: {str(db_error)}")
+        
+        # Return response compatible with frontend expectations
+        response_data = {
+            "id": created_bot.get("id"),
+            "kb_id": agent_response.kb_id,
+            "name": agent_response.name or "New Bot",
+            "message": agent_response.message,
+            "user_id": user_id,
+            "company": created_bot.get("company", ""),
+            "color": created_bot.get("color", "#3B82F6"),
+            "is_live": created_bot.get("is_live", False),
+            "created_at": created_bot.get("created_at")
+        }
+        
+        logger.info(f"Bot creation completed successfully for user {user_id}")
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Bot creation exception: {str(e)}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Failed to create bot: {str(e)}")
 
 # New model for demo bot requests
 class DemoBotRequest(BaseModel):
@@ -47,6 +160,44 @@ class CustomPromptRequest(BaseModel):
 class CustomPromptResponse(BaseModel):
     custom_prompt: Optional[str] = Field(None, description="Current custom prompt for the bot")
     has_custom_prompt: bool = Field(description="Whether the bot has a custom prompt configured")
+
+
+@router.get("/{bot_id}", response_model=dict)
+async def get_bot(bot_id: str, request: Request):
+    """Get bot details by ID"""
+    try:
+        # Get auth token from cookie
+        auth_token = request.cookies.get("auth_token")
+        
+        if not auth_token:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        
+        # Validate token and get user info
+        try:
+            user_info = get_user_from_token(auth_token)
+            user_id = user_info["id"]
+            user_uuid = convert_user_id_to_uuid(user_id)
+        except Exception as auth_error:
+            logger.error(f"Auth validation failed: {str(auth_error)}")
+            raise HTTPException(status_code=401, detail="Authentication failed")
+        
+        # Get bot details and verify ownership
+        result = supabase.table("bots").select("*").eq("id", bot_id).eq("user_id", user_uuid).execute()
+        
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Bot not found or access denied")
+        
+        bot_data = result.data[0]
+        logger.info(f"Bot retrieved successfully: {bot_id}")
+        
+        return bot_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get bot exception: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get bot: {str(e)}")
+
 
 # KB Management Compatibility Endpoints
 @router.get("/{bot_id}/kb/sources")
@@ -860,6 +1011,73 @@ async def create_demo_bot(
             status_code=500,
             detail=f"Failed to create demo bot: {str(e)}"
         )
+
+
+@router.put("/{bot_id}", response_model=dict)
+async def update_bot(bot_id: str, request: Request, bot_update: Optional[dict] = None):
+    """Update bot details like name, company, color, and is_live status"""
+    try:
+        # Get auth token from cookie
+        auth_token = request.cookies.get("auth_token")
+        
+        if not auth_token:
+            logger.warning("No auth token found in request cookies")
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        
+        # Validate token and get user info
+        try:
+            user_info = get_user_from_token(auth_token)
+            user_id = user_info["id"]
+            logger.info(f"Updating bot {bot_id} for user: {user_id}")
+        except Exception as auth_error:
+            logger.error(f"Auth validation failed: {str(auth_error)}")
+            raise
+        
+        # Convert user_id to UUID for database compatibility
+        user_uuid = convert_user_id_to_uuid(user_id)
+        
+        # Check if bot exists and belongs to user
+        bot_check = supabase.table("bots").select("id, user_id").eq("id", bot_id).eq("user_id", user_uuid).execute()
+        
+        if not bot_check.data:
+            raise HTTPException(status_code=404, detail="Bot not found or access denied")
+        
+        # Prepare update data
+        update_data = {}
+        if bot_update:
+            if "name" in bot_update:
+                update_data["name"] = bot_update["name"]
+            if "company" in bot_update:
+                update_data["company"] = bot_update["company"]
+            if "color" in bot_update:
+                update_data["color"] = bot_update["color"]
+            if "is_live" in bot_update:
+                update_data["is_live"] = bot_update["is_live"]
+            if "onboarding_status" in bot_update:
+                update_data["onboarding_status"] = bot_update["onboarding_status"]
+        
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No valid fields to update")
+        
+        # Update the bot
+        result = supabase.table("bots").update(update_data).eq("id", bot_id).execute()
+        
+        if not result.data:
+            logger.error("Failed to update bot: No data returned")
+            raise HTTPException(status_code=500, detail="Failed to update bot")
+        
+        updated_bot = result.data[0]
+        logger.info(f"Bot {bot_id} updated successfully")
+        
+        return updated_bot
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Bot update exception: {str(e)}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Failed to update bot: {str(e)}")
 
 
 @router.delete("/{bot_id}", response_model=StatusResponse)

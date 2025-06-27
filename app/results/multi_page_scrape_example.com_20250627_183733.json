@@ -1,0 +1,72 @@
+{
+  "scrape_metadata": {
+    "url": "https://example.com/",
+    "base_domain": "example.com",
+    "pages_scraped": 3,
+    "scrape_time": "2025-06-27T18:37:30.673034",
+    "processing_time_seconds": 21.799387216567993
+  },
+  "raw_data": [
+    {
+      "markdown": "# Example Domain\n\nThis domain is for use in illustrative examples in documents. You may use this\ndomain in literature without prior coordination or asking for permission.\n\n[More information...](https://www.iana.org/domains/example)",
+      "metadata": {
+        "title": "Example Domain",
+        "viewport": "width=device-width, initial-scale=1",
+        "scrapeId": "f3f01d0b-cf11-49a6-bd4f-c2e8360aff45",
+        "sourceURL": "https://example.com/",
+        "url": "https://example.com/",
+        "statusCode": 200,
+        "contentType": "text/html",
+        "proxyUsed": "basic",
+        "creditsUsed": 1
+      },
+      "html": "<!DOCTYPE html><html>\n\n<body>\n<div>\n    <h1>Example Domain</h1>\n    <p>This domain is for use in illustrative examples in documents. You may use this\n    domain in literature without prior coordination or asking for permission.</p>\n    <p><a href=\"https://www.iana.org/domains/example\">More information...</a></p>\n</div>\n\n\n</body></html>"
+    },
+    {
+      "markdown": "# Example Domain\n\nThis domain is for use in illustrative examples in documents. You may use this\ndomain in literature without prior coordination or asking for permission.\n\n[More information...](https://www.iana.org/domains/example)",
+      "metadata": {
+        "viewport": "width=device-width, initial-scale=1",
+        "title": "Example Domain",
+        "scrapeId": "3e254507-e90a-4286-a45d-6de7bfd6e296",
+        "sourceURL": "https://example.com/?lang=en",
+        "url": "https://example.com/?lang=en",
+        "statusCode": 200,
+        "contentType": "text/html",
+        "proxyUsed": "basic",
+        "creditsUsed": 1
+      },
+      "html": "<!DOCTYPE html><html>\n\n<body>\n<div>\n    <h1>Example Domain</h1>\n    <p>This domain is for use in illustrative examples in documents. You may use this\n    domain in literature without prior coordination or asking for permission.</p>\n    <p><a href=\"https://www.iana.org/domains/example\">More information...</a></p>\n</div>\n\n\n</body></html>"
+    },
+    {
+      "markdown": "# Example Domain\n\nThis domain is for use in illustrative examples in documents. You may use this\ndomain in literature without prior coordination or asking for permission.\n\n[More information...](https://www.iana.org/domains/example)",
+      "metadata": {
+        "title": "Example Domain",
+        "viewport": "width=device-width, initial-scale=1",
+        "scrapeId": "2e4ff6fa-3ac5-4b81-9bd0-0125d3ab0eb7",
+        "sourceURL": "https://example.com/?code=90d6f7d3-6410-4ddc-8a65-0c536a4c1d2c",
+        "url": "https://example.com/?code=90d6f7d3-6410-4ddc-8a65-0c536a4c1d2c",
+        "statusCode": 200,
+        "contentType": "text/html",
+        "proxyUsed": "basic",
+        "creditsUsed": 1
+      },
+      "html": "<!DOCTYPE html><html>\n\n<body>\n<div>\n    <h1>Example Domain</h1>\n    <p>This domain is for use in illustrative examples in documents. You may use this\n    domain in literature without prior coordination or asking for permission.</p>\n    <p><a href=\"https://www.iana.org/domains/example\">More information...</a></p>\n</div>\n\n\n</body></html>"
+    }
+  ],
+  "business_profile": {
+    "raw_content": {
+      "text_content": [
+        "This domain is for use in illustrative examples in documents. You may use this\ndomain in literature without prior coordination or asking for permission.",
+        "[More information...](https://www.iana.org/domains/example)"
+      ],
+      "urls": [],
+      "social_links": {}
+    },
+    "structured_content": "## Example Domain Usage\n\nThis domain is provided for illustrative examples in documentation. You are authorized to use this domain in your written materials without prior coordination or permission.\n\n*   **Source:** [More information...](https://www.iana.org/domains/example)",
+    "metadata": {
+      "total_paragraphs": 2,
+      "total_urls": 0,
+      "total_social_links": 0
+    }
+  }
+}

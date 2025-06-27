@@ -13,6 +13,7 @@ from app.core.config import llm
 from app.api.routes import router
 from app.api.routes import health as health_routes
 from app.worker.celery_app import celery_app
+from app.middleware.rate_limit import RateLimitMiddleware
 from datetime import datetime
 
 # Configure logging
@@ -68,17 +69,24 @@ def create_app() -> FastAPI:
     print(f"CORS Origins configured: {origins}")  # Debug logging
     redisConnection.connect()
 
+    # Add rate limiting middleware
+    app.add_middleware(RateLimitMiddleware, 
+                      calls=100, 
+                      period=60, 
+                      auth_calls=10, 
+                      auth_period=60)
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Allow all origins
-        allow_credentials=False,  # Must be False when using "*" for origins
+        allow_origins=origins,  # Use the configured origins list instead of "*"
+        allow_credentials=True,  # Support httpOnly cookies
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["content-type", "content-length"],
+        expose_headers=["content-type", "content-length", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset"],
     )
 
-    # Mount all routes from the router
-    app.include_router(router)
+    # Mount all routes from the router with /api prefix
+    app.include_router(router, prefix="/api")
     
     # Mount comprehensive health check routes
     app.include_router(health_routes.router, prefix="")

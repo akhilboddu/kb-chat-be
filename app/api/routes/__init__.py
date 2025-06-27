@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from app.api.routes.anon_notifications import router as anon_router
 from app.api.routes.agent import router as agent_router
+from app.api.routes.auth import router as auth_router
 from app.api.routes.chat import router as chat_router
 from app.api.routes.file import router as file_router
 from app.api.routes.online_status import router as online_status_router
@@ -19,6 +20,7 @@ from app.api.routes.voice_agent_sdk import router as voice_agent_sdk_router
 router = APIRouter()
 
 # Include all routers with their prefix paths
+router.include_router(auth_router)  # Add auth router first for priority
 router.include_router(chat_router)
 router.include_router(file_router)
 router.include_router(scrape_router)
