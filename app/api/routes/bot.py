@@ -311,11 +311,11 @@ async def get_lead_scorer_config(bot_id: str):
     If no config exists, returns a default configuration.
     """
     try:
-        response = supabase.table("lead_scorer_configs").select("*").eq("bot_id", bot_id).single().execute()
+        response = supabase.table("lead_scorer_configs").select("*").eq("bot_id", bot_id).execute()
 
-        if response.data:
+        if response.data and len(response.data) > 0:
             # Config found, return it
-            return LeadScorerConfigModel(**response.data)
+            return LeadScorerConfigModel(**response.data[0])
         else:
             # No config found, return a default config to ensure the frontend works correctly.
             default_config = {
@@ -335,12 +335,23 @@ Return a JSON object with two keys: 'score' (the total score) and 'reason' (a br
             return LeadScorerConfigModel(**default_config)
 
     except Exception as e:
-        # Don't return 404 for 'not found', as we provide a default.
-        # Only raise 500 for actual database errors.
-        if "Multiple rows returned" in str(e):
-             raise HTTPException(status_code=500, detail="Data integrity error: Found multiple lead scorer configurations for this bot.")
         print(f"Error fetching lead scorer config for bot {bot_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"An internal error occurred while fetching the lead scorer configuration.")
+        # Return default config instead of raising error - this ensures frontend always gets a response
+        default_config = {
+            "is_enabled": False,
+            "scoring_guide": """Analyze the entire conversation to determine if the user is a qualified lead. A qualified lead shows strong interest, has a clear need for our products/services, and has provided contact information.
+
+SCORING CRITERIA:
+- High Interest (5 points): Asks specific questions about pricing, features, or implementation. Uses phrases like "I need this" or "How can I start?".
+- Clear Need (3 points): Clearly describes a problem that our product/service solves.
+- Contact Info Provided (2 points): User voluntarily provides an email or phone number.
+- Budget Mentioned (1 point): User mentions a budget that aligns with our pricing.
+
+OUTPUT FORMAT:
+Return a JSON object with two keys: 'score' (the total score) and 'reason' (a brief summary of why the score was given).""",
+            "inactive_time": 3,
+        }
+        return LeadScorerConfigModel(**default_config)
 
 @router.put("/{bot_id}/lead_scorer_config", response_model=StatusResponse)
 async def update_lead_scorer_config(bot_id: str, config: LeadScorerConfigModel):
@@ -376,11 +387,11 @@ async def get_follow_up_config(bot_id: str):
     If no config exists, returns a default configuration.
     """
     try:
-        response = supabase.table("follow_up_configs").select("*").eq("bot_id", bot_id).single().execute()
+        response = supabase.table("follow_up_configs").select("*").eq("bot_id", bot_id).execute()
 
-        if response.data:
+        if response.data and len(response.data) > 0:
             # Config found, return it
-            return FollowUpConfigModel(**response.data)
+            return FollowUpConfigModel(**response.data[0])
         else:
             # No config found, return a default config to ensure the frontend works correctly.
             default_config = {
@@ -392,12 +403,15 @@ async def get_follow_up_config(bot_id: str):
             return FollowUpConfigModel(**default_config)
 
     except Exception as e:
-        # Don't return 404 for 'not found', as we provide a default.
-        # Only raise 500 for actual database errors.
-        if "Multiple rows returned" in str(e):
-             raise HTTPException(status_code=500, detail="Data integrity error: Found multiple follow-up configurations for this bot.")
         print(f"Error fetching follow-up config for bot {bot_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"An internal error occurred while fetching the follow-up configuration.")
+        # Return default config instead of raising error - this ensures frontend always gets a response
+        default_config = {
+            "is_enabled": False,
+            "follow_up_method": "gmail",
+            "max_follow_ups": 3,
+            "stop_on_reply": True,
+        }
+        return FollowUpConfigModel(**default_config)
 
 @router.put("/{bot_id}/follow_up_config", response_model=StatusResponse)
 async def update_follow_up_config(bot_id: str, config: FollowUpConfigModel):
@@ -549,12 +563,13 @@ async def auto_score_leads(bot_id: str):
         
         # Get the lead scorer configuration to determine inactive time threshold
         try:
-            config_response = supabase.table("lead_scorer_configs").select("*").eq("bot_id", bot_id).single().execute()
-            if config_response.data:
-                inactive_hours = config_response.data.get("inactive_time", 3)
+            config_response = supabase.table("lead_scorer_configs").select("*").eq("bot_id", bot_id).execute()
+            if config_response.data and len(config_response.data) > 0:
+                inactive_hours = config_response.data[0].get("inactive_time", 3)
             else:
                 inactive_hours = 3  # Default fallback
-        except:
+        except Exception as e:
+            print(f"Error fetching lead scorer config: {e}")
             inactive_hours = 3  # Default fallback
         
         print(f"Using inactive time threshold: {inactive_hours} hours")

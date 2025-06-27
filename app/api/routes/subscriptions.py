@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from realtime import logging
+import logging
 
 from app.utils.verification import get_current_user
 

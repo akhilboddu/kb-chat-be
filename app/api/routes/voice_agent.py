@@ -259,21 +259,38 @@ class DeepgramVoiceAgentSession:
         except Exception as e:
             logger.error(f"❌ Error handling Deepgram audio: {e}")
 
+    def is_connection_open(self):
+        """Check if the Deepgram WebSocket connection is open"""
+        if not self.deepgram_ws:
+            return False
+        try:
+            # For websockets library, check the state
+            from websockets.protocol import State
+            return self.deepgram_ws.state == State.OPEN
+        except Exception:
+            # Fallback: assume closed if we can't check state
+            return False
+
     async def process_audio_stream(self, audio_data: bytes):
         """Forward audio to Deepgram Voice Agent"""
         try:
-            if self.deepgram_ws and not self.deepgram_ws.closed:
-                await self.deepgram_ws.send(audio_data)
-                logger.debug(f"📤 Forwarded audio to Deepgram: {len(audio_data)} bytes")
+            if self.deepgram_ws and self.is_connection_open():
+                try:
+                    await self.deepgram_ws.send(audio_data)
+                    logger.debug(f"📤 Forwarded audio to Deepgram: {len(audio_data)} bytes")
+                except Exception as send_error:
+                    # Connection might be closed, mark as disconnected
+                    if "closed" in str(send_error).lower() or "connection" in str(send_error).lower():
+                        self.is_connected = False
+                        logger.warning("🔌 Deepgram connection closed during audio send")
+                    else:
+                        raise send_error
             else:
-                logger.warning(f"❌ Deepgram Voice Agent connection not available - ws: {self.deepgram_ws}, closed: {self.deepgram_ws.closed if self.deepgram_ws else 'N/A'}")
+                logger.warning(f"❌ Deepgram Voice Agent connection not available - ws: {self.deepgram_ws}, is_open: {self.is_connection_open()}")
         except Exception as e:
             logger.error(f"❌ Error forwarding audio to Deepgram: {e}")
-            # Check if connection is still alive
-            if self.deepgram_ws:
-                logger.error(f"WebSocket state: closed={self.deepgram_ws.closed}")
-            else:
-                logger.error("WebSocket is None")
+            # Mark as disconnected on persistent errors
+            self.is_connected = False
 
     async def safe_send_json(self, data):
         """Safely send JSON to WebSocket with error handling"""
