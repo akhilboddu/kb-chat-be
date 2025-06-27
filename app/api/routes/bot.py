@@ -1527,3 +1527,133 @@ Remember: Your goal is to be genuinely helpful while representing {{{company_nam
             status_code=500,
             detail=f"Failed to generate prompt: {str(e)}"
         )
+
+
+# =============================================================================
+# PUBLIC WIDGET ENDPOINTS 
+# These endpoints are public as widgets are embedded on external sites
+# =============================================================================
+
+@router.get("/{bot_id}/config")
+async def get_bot_config(bot_id: str):
+    """Public endpoint for widget to fetch bot configuration"""
+    try:
+        logger.info(f"Fetching config for bot: {bot_id}")
+        
+        # Get bot details from database
+        result = supabase.table("bots").select("name, company, color").eq("id", bot_id).execute()
+        
+        if not result.data:
+            logger.warning(f"Bot not found: {bot_id}")
+            raise HTTPException(status_code=404, detail="Bot not found")
+        
+        bot_data = result.data[0]
+        logger.info(f"Bot config retrieved successfully: {bot_id}")
+        
+        return {
+            "name": bot_data.get("name", "Support Bot"),
+            "company": bot_data.get("company", "Your Company"), 
+            "color": bot_data.get("color", "#3b82f6")
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching bot config: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch bot config: {str(e)}")
+
+
+@router.post("/{bot_id}/conversations")
+async def create_bot_conversation(
+    bot_id: str, 
+    customer_name: str = Query(..., description="Customer name"),
+    customer_email: str = Query(..., description="Customer email")
+):
+    """Public endpoint for widget to create new conversation"""
+    try:
+        logger.info(f"Creating conversation for bot {bot_id}, customer: {customer_email}")
+        
+        # Verify bot exists
+        bot_result = supabase.table("bots").select("id, name").eq("id", bot_id).execute()
+        if not bot_result.data:
+            logger.warning(f"Bot not found: {bot_id}")
+            raise HTTPException(status_code=404, detail="Bot not found")
+        
+        # Create conversation record
+        conversation_data = {
+            "bot_id": bot_id,
+            "customer_name": customer_name,
+            "customer_email": customer_email,
+            "status": "ai",  # Default to AI status
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        result = supabase.table("conversations").insert(conversation_data).execute()
+        
+        if not result.data:
+            logger.error("Failed to create conversation: No data returned")
+            raise HTTPException(status_code=500, detail="Failed to create conversation")
+        
+        conversation_id = result.data[0]["id"]
+        logger.info(f"Conversation created successfully: {conversation_id}")
+        
+        return {"conversation_id": conversation_id}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating conversation: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create conversation: {str(e)}")
+
+
+@router.get("/{bot_id}/conversations/by-email/{email}")
+async def get_conversations_by_email(bot_id: str, email: str):
+    """Public endpoint for widget to fetch conversations by email"""
+    try:
+        logger.info(f"Fetching conversations for bot {bot_id}, email: {email}")
+        
+        # Verify bot exists
+        bot_result = supabase.table("bots").select("id, name, company").eq("id", bot_id).execute()
+        if not bot_result.data:
+            logger.warning(f"Bot not found: {bot_id}")
+            raise HTTPException(status_code=404, detail="Bot not found")
+        
+        bot_data = bot_result.data[0]
+        
+        # Get conversations for this email and bot
+        result = supabase.table("conversations").select(
+            "id, created_at, customer_name, customer_email, status"
+        ).eq("bot_id", bot_id).eq("customer_email", email).order("created_at", desc=True).execute()
+        
+        conversations = []
+        for conv in result.data or []:
+            # Get the last message for preview
+            last_msg_result = supabase.table("messages").select("content").eq(
+                "conversation_id", conv["id"]
+            ).order("created_at", desc=True).limit(1).execute()
+            
+            last_message = "No messages yet"
+            if last_msg_result.data:
+                last_message = last_msg_result.data[0]["content"]
+                # Truncate for preview
+                if len(last_message) > 100:
+                    last_message = last_message[:100] + "..."
+            
+            conversations.append({
+                "id": conv["id"],
+                "created_at": conv["created_at"],
+                "company": bot_data.get("company", ""),
+                "last_message": last_message,
+                "status": conv.get("status", "ai")
+            })
+        
+        logger.info(f"Found {len(conversations)} conversations for {email}")
+        
+        return {"conversations": conversations}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching conversations by email: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch conversations: {str(e)}")
