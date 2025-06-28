@@ -1589,7 +1589,7 @@ async def get_bot_config(bot_id: str):
         logger.info(f"Fetching config for bot: {bot_id}")
         
         # Get bot details from database
-        result = supabase.table("bots").select("name, company, color").eq("id", bot_id).execute()
+        result = supabase.table("bots").select("name, company, color, is_live").eq("id", bot_id).execute()
         
         if not result.data:
             logger.warning(f"Bot not found: {bot_id}")
@@ -1600,8 +1600,9 @@ async def get_bot_config(bot_id: str):
         
         return {
             "name": bot_data.get("name", "Support Bot"),
-            "company": bot_data.get("company", "Your Company"), 
-            "color": bot_data.get("color", "#3b82f6")
+            "company": bot_data.get("company", "Your Company"),
+            "color": bot_data.get("color", "#3b82f6"),
+            "status": "live" if bot_data.get("is_live", False) else "draft"
         }
         
     except HTTPException:
