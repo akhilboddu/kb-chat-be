@@ -28,6 +28,54 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/bots", tags=["bots"])
 
+# -----------------------------------------------------------------------------
+# Utility endpoint – Get current user's live bot count (defined early to avoid
+# conflicts with dynamic /{bot_id} routes)
+# -----------------------------------------------------------------------------
+
+@router.get("/live-count", response_model=dict)
+async def get_live_bot_count(request: Request):
+    """Return the number of live bots the authenticated user currently has."""
+    try:
+        auth_token = request.cookies.get("auth_token")
+        if not auth_token:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+
+        try:
+            user_info = get_user_from_token(auth_token)
+            user_id = user_info["id"]
+        except Exception as auth_error:
+            logger.error(
+                f"Auth validation failed while fetching live bot count: {auth_error}"
+            )
+            raise HTTPException(status_code=401, detail="Authentication failed")
+
+        user_uuid = convert_user_id_to_uuid(user_id)
+
+        try:
+            result = (
+                supabase.table("bots")
+                .select("id", count="exact")
+                .eq("user_id", user_uuid)
+                .eq("is_live", True)
+                .execute()
+            )
+            live_count = (
+                result.count if hasattr(result, "count") and result.count is not None else 0
+            )
+        except Exception as db_error:
+            logger.error(f"Database error while counting live bots: {db_error}")
+            raise HTTPException(status_code=500, detail="Database query failed")
+
+        return {"live_bot_count": live_count}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in /bots/live-count: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Failed to fetch live bot count")
 
 def convert_user_id_to_uuid(user_id: str) -> str:
     """Convert Google OAuth user ID to deterministic UUID for database compatibility"""
