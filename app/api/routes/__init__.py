@@ -16,6 +16,7 @@ from app.api.routes.auto_learning import router as auto_learning_router
 from app.api.routes.voice import router as voice_router
 from app.api.routes.voice_agent import router as voice_agent_router
 from app.api.routes.voice_agent_sdk import router as voice_agent_sdk_router
+from app.api.routes.profile import router as profile_router
 
 router = APIRouter()
 
@@ -38,4 +39,5 @@ router.include_router(auto_learning_router)
 router.include_router(voice_router)
 router.include_router(voice_agent_router)
 router.include_router(voice_agent_sdk_router)
+router.include_router(profile_router)
 

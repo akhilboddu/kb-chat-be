@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 import logging
 import uuid
+from datetime import datetime, timedelta
 
 from app.core.supabase_client import supabase
 from app.models.subscription import SubscriptionResponse, BotResponse, DashboardStatsResponse
@@ -92,13 +93,22 @@ async def get_subscription_info(request: Request):
         if not result.data:
             logger.info("No subscription found, returning default free subscription")
             # Return default/free subscription if none found
-            default_sub = SubscriptionResponse(
-                id="free",
-                user_id=user_uuid,
-                plan_name="free",
-                status="active"
-            )
-            logger.info(f"Default subscription: {default_sub.model_dump()}")
+            from datetime import datetime, timedelta
+            now_iso = datetime.utcnow().isoformat()
+            default_sub = {
+                "id": "free",
+                "user_id": user_uuid,
+                "plan_name": "free",
+                "status": "active",
+                "price": 0,
+                "billing_cycle": "annual",
+                "start_date": now_iso,
+                "end_date": None,
+                "auto_renew": False,
+                "created_at": now_iso,
+                "updated_at": now_iso,
+            }
+            logger.info(f"Default subscription payload: {default_sub}")
             return default_sub
         
         subscription_data = result.data[0]

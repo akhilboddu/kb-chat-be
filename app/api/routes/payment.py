@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Body, Query
+from fastapi import APIRouter, HTTPException, Body, Query, Request
 from .scrape import scrape_url_and_populate_kb
 from app.models.scrape import ScrapeURLRequest
 
@@ -15,6 +15,9 @@ import httpx
 from app.models.payment import CheckSubscriptionResponse
 from datetime import datetime, timedelta
 from typing import Optional
+import uuid
+from app.services.auth_service import get_user_from_token
+from app.models.payment import PaymentMethodResponse, PaymentMethodCreate, InvoiceResponse
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 
@@ -132,3 +135,120 @@ async def check_subscription(
             "message": f"Error verifying payment: {str(e)}",
             "data": None,
         }
+
+# ---------------------------------------------
+# Utility
+# ---------------------------------------------
+
+def convert_user_id_to_uuid(user_id: str) -> str:
+    """Convert Google OAuth numeric ID to deterministic UUID so it matches DB."""
+    if str(user_id).isdigit():
+        namespace = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+        return str(uuid.uuid5(namespace, f"google_user_{user_id}"))
+    return user_id
+
+# ---------------------------------------------
+# Payment-methods endpoints
+# ---------------------------------------------
+
+@router.get("/methods", response_model=list[PaymentMethodResponse])
+async def list_payment_methods(request: Request):
+    """Return all payment methods for the current user (default first)."""
+    # Authenticate via secure session cookie
+    auth_token = request.cookies.get("auth_token")
+    if not auth_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        user = get_user_from_token(auth_token)
+    except Exception as ex:
+        raise HTTPException(status_code=401, detail="Invalid token") from ex
+
+    user_uuid = convert_user_id_to_uuid(user["id"])
+
+    try:
+        result = (
+            supabase.table("payment_methods")
+            .select("*")
+            .eq("user_id", user_uuid)
+            .order("is_default", desc=True)
+            .execute()
+        )
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"Database error: {ex}") from ex
+
+    return result.data or []
+
+@router.post("/methods", response_model=PaymentMethodResponse)
+async def create_payment_method(payload: PaymentMethodCreate, request: Request):
+    """Insert a new payment method for the user."""
+    auth_token = request.cookies.get("auth_token")
+    if not auth_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        user = get_user_from_token(auth_token)
+    except Exception as ex:
+        raise HTTPException(status_code=401, detail="Invalid token") from ex
+
+    user_uuid = convert_user_id_to_uuid(user["id"])
+
+    insert_data = {
+        "user_id": user_uuid,
+        "provider": "demo",  # Replace with real provider identifier in production
+        "last_four": payload.last_four,
+        "card_type": payload.card_type,
+        "exp_month": payload.exp_month,
+        "exp_year": payload.exp_year,
+        "is_default": payload.is_default,
+    }
+
+    try:
+        result = (
+            supabase.table("payment_methods")
+            .insert(insert_data)
+            .select("*")
+            .single()
+            .execute()
+        )
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"Database error: {ex}") from ex
+
+    # Optionally update users_metadata payment_status
+    try:
+        supabase.table("users_metadata").update({"payment_status": "ACTIVE"}).eq("id", user_uuid).execute()
+    except Exception:
+        pass
+
+    return result.data
+
+# ---------------------------------------------
+# Invoices endpoint
+# ---------------------------------------------
+
+@router.get("/invoices", response_model=list[InvoiceResponse])
+async def list_invoices(request: Request):
+    """Return all invoices for the current user."""
+    auth_token = request.cookies.get("auth_token")
+    if not auth_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        user = get_user_from_token(auth_token)
+    except Exception as ex:
+        raise HTTPException(status_code=401, detail="Invalid token") from ex
+
+    user_uuid = convert_user_id_to_uuid(user["id"])
+
+    try:
+        result = (
+            supabase.table("invoices")
+            .select("*")
+            .eq("user_id", user_uuid)
+            .order("invoice_date", desc=True)
+            .execute()
+        )
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"Database error: {ex}") from ex
+
+    return result.data or []

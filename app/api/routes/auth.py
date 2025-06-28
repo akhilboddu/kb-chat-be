@@ -13,6 +13,8 @@ from app.services.auth_service import (
 )
 import logging
 from typing import Optional
+import uuid
+import datetime as _dt
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +316,40 @@ async def create_google_session(request_data: dict, response: Response):
             path="/",  # Ensure cookie is available for all paths
             domain=None  # Don't set domain for localhost
         )
+        
+        # ------------------------------
+        # Upsert an entry into user_profiles so that /api/profile can return
+        # display_name and avatar for Google OAuth accounts whose Auth ID is
+        # a numeric Google ID. We generate the same deterministic UUID that
+        # profile.py expects.
+        # ------------------------------
+        try:
+            google_id = str(user_data.get("id"))
+            # Generate deterministic UUID for numeric IDs only
+            if google_id.isdigit():
+                namespace = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+                user_uuid = str(uuid.uuid5(namespace, f"google_user_{google_id}"))
+            else:
+                user_uuid = google_id
+
+            meta = user_data.get("user_metadata", {}) or {}
+            display_name = meta.get("full_name") or meta.get("name")
+            avatar_url = meta.get("avatar_url") or meta.get("picture")
+
+            profile_payload = {
+                "id": user_uuid,
+                "email": user_data.get("email"),
+                "display_name": display_name,
+                "avatar_url": avatar_url,
+                "bio": None,
+                "payment_status": "TRIAL",
+                "updated_at": _dt.datetime.utcnow().isoformat()
+            }
+
+            # Upsert (insert or update on conflict by id)
+            supabase.table("user_profiles").upsert(profile_payload, on_conflict="id").execute()
+        except Exception as upsert_err:
+            logger.warning(f"User profile upsert failed (non-fatal): {upsert_err}")
         
         logger.info(f"Successfully created backend session for: {user_data.get('email')}")
         

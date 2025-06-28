@@ -8,6 +8,11 @@ class SubscriptionResponse(BaseModel):
     user_id: str
     plan_name: str
     status: str
+    price: float | None = None
+    billing_cycle: str | None = None
+    start_date: datetime | None = None
+    end_date: datetime | None = None
+    auto_renew: bool | None = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     stripe_subscription_id: Optional[str] = None

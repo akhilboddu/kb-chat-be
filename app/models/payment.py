@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional, Dict, List, Any, Union
+from datetime import datetime
 
 class PayStackLog(BaseModel):
     start_time: int
@@ -79,4 +80,34 @@ class PayStackResponse(BaseModel):
 class CheckSubscriptionResponse(BaseModel):
     success: bool
     message: str
-    data: Optional[PayStackData] = None 
+    data: Optional[PayStackData] = None
+
+# New models used by /payments endpoints
+
+class PaymentMethodResponse(BaseModel):
+    id: str
+    provider: str
+    last_four: str
+    card_type: str | None = None
+    exp_month: int | None = None
+    exp_year: int | None = None
+    is_default: bool = False
+    created_at: datetime | None = None
+
+class PaymentMethodCreate(BaseModel):
+    last_four: str
+    card_type: str | None = None
+    exp_month: int | None = None
+    exp_year: int | None = None
+    is_default: bool = True
+
+class InvoiceResponse(BaseModel):
+    id: str
+    invoice_number: str | None = None
+    amount: float
+    currency: str
+    status: str
+    invoice_date: datetime
+    due_date: datetime | None = None
+    payment_date: datetime | None = None
+    description: str | None = None 

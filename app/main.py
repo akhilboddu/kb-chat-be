@@ -69,11 +69,11 @@ def create_app() -> FastAPI:
     print(f"CORS Origins configured: {origins}")  # Debug logging
     redisConnection.connect()
 
-    # Add rate limiting middleware
+    # Add rate limiting middleware (relaxed for development)
     app.add_middleware(RateLimitMiddleware, 
-                      calls=100, 
+                      calls=500, 
                       period=60, 
-                      auth_calls=10, 
+                      auth_calls=100, 
                       auth_period=60)
 
     app.add_middleware(
