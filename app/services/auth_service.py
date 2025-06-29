@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from fastapi import HTTPException
 import logging
+import uuid
+from app.core.supabase_client import supabase
 
 logger = logging.getLogger(__name__)
 
@@ -128,12 +130,41 @@ def refresh_session(refresh_token: str, user: Dict[str, Any]) -> str:
         raise HTTPException(status_code=401, detail="Failed to refresh session")
 
 
+def _convert_user_id_to_uuid(user_id: str) -> str:
+    """Convert a numeric Google user ID string to a deterministic UUID (matches storage in DB)."""
+    if user_id and str(user_id).isdigit():
+        namespace = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+        return str(uuid.uuid5(namespace, f"google_user_{user_id}"))
+    return user_id
+
+
 def get_user_from_token(token: str) -> Dict[str, Any]:
-    """Extract user information from a valid token"""
+    """Extract user information from a valid token and enrich with subscription plan id"""
     payload = validate_session(token)
+    raw_user_id = payload.get("user_id")
+    user_id = _convert_user_id_to_uuid(raw_user_id)
+
+    # Default to None
+    subscription_plan_id = None
+    try:
+        # Quick lookup of active subscription to fetch plan_id
+        result = (
+            supabase.table("subscriptions")
+            .select("plan_id")
+            .eq("user_id", user_id)
+            .eq("status", "active")
+            .single()
+            .execute()
+        )
+        if result.data and result.data.get("plan_id"):
+            subscription_plan_id = result.data["plan_id"]
+    except Exception as e:
+        logger.warning(f"Could not fetch subscription plan for user {user_id}: {e}")
+
     return {
-        "id": payload.get("user_id"),
-        "email": payload.get("email")
+        "id": user_id,
+        "email": payload.get("email"),
+        "subscription_plan": subscription_plan_id,
     }
 
 

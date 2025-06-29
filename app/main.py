@@ -14,6 +14,7 @@ from app.api.routes import router
 from app.api.routes import health as health_routes
 from app.worker.celery_app import celery_app
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.middleware.quota_guard import QuotaGuardMiddleware
 from datetime import datetime
 
 # Configure logging
@@ -75,6 +76,9 @@ def create_app() -> FastAPI:
                       period=60, 
                       auth_calls=100, 
                       auth_period=60)
+    
+    # Add quota guard middleware (disabled by default, enable with ENABLE_QUOTA_GUARD=true)
+    app.add_middleware(QuotaGuardMiddleware)
 
     app.add_middleware(
         CORSMiddleware,

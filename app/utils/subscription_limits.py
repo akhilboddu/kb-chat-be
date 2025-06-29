@@ -1,34 +1,34 @@
+"""Utility helpers for enforcing subscription-based usage limits.
+
+NOTE 2025-06-29 – This module used to duplicate the logic that already
+exists in ``SubscriptionService``.  To enforce a *single* source of truth,
+all limit retrieval is now delegated to ``SubscriptionService`` which, in
+turn, reads the authoritative ``plans`` table in Supabase.
+"""
+
 from typing import Dict, Any, Optional, Tuple
 from fastapi import HTTPException
 from app.core.supabase_client import supabase
 from app.utils.logging import get_logger
+from app.services.subscription_service import SubscriptionService
 from datetime import datetime, timezone
 
 logger = get_logger(__name__)
 
-async def get_plan_limits(plan_name: str) -> Dict[str, Any]:
+# ---------------------------------------------------------------------------
+# Single source of truth helper
+# ---------------------------------------------------------------------------
+
+_subscription_service = SubscriptionService()
+
+def _get_limits_for_user(user_id: str) -> Dict[str, Any]:
+    """Wrapper around ``SubscriptionService.get_plan_limits`` that converts
+    the returned ``PlanLimits`` pydantic model into a plain dictionary usable
+    inside this legacy helper module.
     """
-    Fetch plan limits from the 'plans' table in Supabase.
-    Args:
-        plan_name: The name of the plan (e.g., "Trial", "STARTER", "Pro", "Enterprise")
-    Returns:
-        Dict containing the plan limits
-    """
-    try:
-        plan_name_norm = plan_name
-        print(f"THIS IS THE PLAN NAME NORM: {plan_name_norm}")
-        response = supabase.table("plans").select("*").execute()
-        if not response.data:
-            logger.warning(f"No plans found in table, using default limits")
-            return {"messages": 100, "conversations": 20, "live_bots": 1}
-        for plan in response.data:
-            if plan.get("name", "") == plan_name_norm:
-                return plan
-        logger.warning(f"Plan '{plan_name}' not found, using default limits")
-        return {"messages": 100, "conversations": 20, "live_bots": 1}
-    except Exception as e:
-        logger.error(f"Error fetching plan limits: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error fetching subscription limits")
+
+    limits_obj = _subscription_service.get_plan_limits(user_id)
+    return limits_obj.dict() if hasattr(limits_obj, "dict") else dict(limits_obj)
 
 async def get_bot_and_user(bot_id: str) -> Optional[Dict[str, Any]]:
     """
@@ -112,16 +112,19 @@ async def check_subscription_limits(bot_id: str, conversation_id: str) -> Tuple[
     try:
         # Get bot and user info
         info = await get_bot_and_user(bot_id)
-        print(f"info: {info}")
+        logger.debug(f"Subscription limits – bot/user info: {info}")
+
         if not info:
             return True, "Bot or user not found"
+
         user_id = info["bot"].get("user_id")
-        user_profile = info["user"]
-        subscription_tier = user_profile.get("plan_name", "Trial")
-        print(f"THIS IS THE SUBSCRIPTION TIER: {subscription_tier}")
-        # Get plan limits from database
-        limits = await get_plan_limits(subscription_tier)
-        print(f"THIS IS THE LIMITS: {limits}")
+
+        # Fetch authoritative limits for this *user* (plan is inferred from
+        # their active subscription).  This guarantees we hit the single
+        # source of truth (plans table) via SubscriptionService.
+        limits = _get_limits_for_user(user_id)
+
+        logger.debug(f"Authoritative plan limits for user {user_id}: {limits}")
         # --- MONTHLY LIMITS LOGIC ---
         # Only count messages/conversations from the 1st of the current month (UTC) to now
         now = datetime.now(timezone.utc)
@@ -130,12 +133,24 @@ async def check_subscription_limits(bot_id: str, conversation_id: str) -> Tuple[
         message_count = await get_message_count(user_id, start_of_month.isoformat())
         # Get conversation count for current month
         conversation_count = await get_conversation_count(user_id, start_of_month.isoformat())
+        # The PlanLimits model uses camel-case keys (maxMessages, …)
+        # Convert to lower snake for backwards-compat readability.
+        max_messages = limits.get("maxMessages", 100)
+        max_conversations = limits.get("maxConversations", 20)
+
         # Check message limit
-        if message_count >= int(limits.get("messages", 100)):
-            return True, f"You have reached your monthly message limit of {limits.get('messages', 100)} messages. Please upgrade your subscription to continue."
+        if message_count >= int(max_messages):
+            return True, (
+                f"You have reached your monthly message limit of {max_messages} "
+                "messages. Please upgrade your subscription to continue."
+            )
+
         # Check conversation limit
-        if conversation_count >= int(limits.get("conversations", 20)):
-            return True, f"You have reached your monthly conversation limit of {limits.get('conversations', 20)} conversations. Please upgrade your subscription to continue."
+        if conversation_count >= int(max_conversations):
+            return True, (
+                f"You have reached your monthly conversation limit of {max_conversations} "
+                "conversations. Please upgrade your subscription to continue."
+            )
         return False, None
     except Exception as e:
         logger.error(f"Error checking subscription limits: {str(e)}")
@@ -152,7 +167,7 @@ async def enforce_subscription_limits(bot_id: str, conversation_id: str) -> None
     """
     limit_exceeded, error_message = await check_subscription_limits(bot_id, conversation_id)
     if limit_exceeded:
-        print(f"limit_exceeded: {limit_exceeded}")
+        logger.debug(f"Subscription limit exceeded? {limit_exceeded}")
         raise HTTPException(
             status_code=403,
             detail=error_message or "Subscription limit exceeded"
