@@ -81,27 +81,96 @@ class SubscriptionService:
             maxKnowledgeSources=2,
             maxTeamMembers=1
         )
-    
-    def check_quota(self, user_id: str, resource: str, current_usage: int) -> tuple[bool, Optional[int]]:
+
+    # ------------------------------------------------------------------
+    # New helpers to fetch limits directly from a plan id (when we already
+    # know the user's active plan, e.g. embedded in the JWT token).
+    # ------------------------------------------------------------------
+
+    def get_plan_limits_by_plan_id(self, plan_id: str | None) -> Optional[PlanLimits]:
+        """Return PlanLimits for a specific plan id.
+
+        Args:
+            plan_id: UUID of the plan in the `plans` table.
+
+        Returns:
+            PlanLimits instance or ``None`` if not found / error.
         """
-        Check if user has exceeded quota for a resource
-        Returns: (is_within_limit, limit_value)
+        if not plan_id:
+            return None
+
+        try:
+            plan_resp = (
+                self.supabase
+                .table("plans")
+                .select("key, limits, messages, conversations, live_bots, team_members")
+                .eq("id", plan_id)
+                .single()
+                .execute()
+            )
+
+            if not plan_resp.data:
+                return None
+
+            plan = plan_resp.data
+
+            # Ensure we always have a limits object
+            limits_dict = plan.get("limits") or {
+                "maxMessages": plan.get("messages", 50),
+                "maxConversations": plan.get("conversations", 10),
+                "maxBots": plan.get("live_bots", 1) * 3,
+                "maxLiveBots": plan.get("live_bots", 1),
+                "maxKnowledgeSources": self._get_knowledge_source_limit(plan.get("key", "TRIAL")),
+                "maxTeamMembers": plan.get("team_members", 1),
+            }
+
+            return PlanLimits(**limits_dict)
+
+        except Exception as e:
+            logger.error(f"Error fetching plan limits for plan_id={plan_id}: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Updated quota check that can work with either a user_id OR a known
+    # plan_id that was embedded in the auth token (saves a DB round-trip
+    # and avoids issues when user_id mappings differ).
+    # ------------------------------------------------------------------
+
+    def check_quota(
+        self,
+        user_id: str,
+        resource: str,
+        current_usage: int,
+        *,
+        plan_id: str | None = None,
+    ) -> tuple[bool, Optional[int]]:
+        """Check if usage is within limits.
+
+        If *plan_id* is provided we fetch limits directly from that plan;
+        otherwise we fall back to looking up the user's active subscription.
         """
-        limits = self.get_plan_limits(user_id)
+
+        limits: Optional[PlanLimits]
+
+        if plan_id:
+            limits = self.get_plan_limits_by_plan_id(plan_id)
+        else:
+            limits = self.get_plan_limits(user_id)
+
         if not limits:
-            return True, None  # No limits found, allow by default
-        
-        limit_map = {
-            'messages': limits.maxMessages,
-            'conversations': limits.maxConversations,
-            'bots': limits.maxBots,
-            'live_bots': limits.maxLiveBots,
-            'knowledge_sources': limits.maxKnowledgeSources,
-            'team_members': limits.maxTeamMembers
-        }
-        
-        limit = limit_map.get(resource)
-        if limit is None or limit == -1:  # -1 means unlimited
             return True, None
-            
+
+        limit_map = {
+            "messages": limits.maxMessages,
+            "conversations": limits.maxConversations,
+            "bots": limits.maxBots,
+            "live_bots": limits.maxLiveBots,
+            "knowledge_sources": limits.maxKnowledgeSources,
+            "team_members": limits.maxTeamMembers,
+        }
+
+        limit = limit_map.get(resource)
+        if limit is None or limit == -1:
+            return True, None
+
         return current_usage < limit, limit

@@ -206,3 +206,40 @@ def create_ses_template_client():
 #     conversation_id="123",
 # )
 
+
+# ---------------------------------------------------------------------------
+# Team invitation email
+# ---------------------------------------------------------------------------
+
+
+def send_team_invitation_email(invitee_email: str, inviter_email: str, sign_up_url: str):
+    """Send an invitation email to a prospective team member."""
+    try:
+        subject = "You have been invited to join deskForce"
+        html_body = f"""
+        <html>
+          <body>
+            <p>Hello,</p>
+            <p>{inviter_email} has invited you to join their team on deskForce.</p>
+            <p>Please click the link below to accept the invitation and create your account:</p>
+            <p><a href='{sign_up_url}' style='color:#1a73e8'>Accept Invitation</a></p>
+            <p>If you did not expect this invitation, you can safely ignore this email.</p>
+            <p>— deskForce Team</p>
+          </body>
+        </html>
+        """
+        ses_client.send_email(
+            Source=SENDER_EMAIL,
+            Destination={"ToAddresses": [invitee_email]},
+            Message={
+                "Subject": {"Data": subject},
+                "Body": {
+                    "Html": {"Data": html_body},
+                    "Text": {"Data": f"You have been invited to deskForce. Join here: {sign_up_url}"},
+                },
+            },
+        )
+        print(f"Invitation email sent to {invitee_email}")
+    except Exception as e:
+        print(f"Error sending invitation email: {e}")
+

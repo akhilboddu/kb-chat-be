@@ -54,12 +54,13 @@ class QuotaGuardMiddleware(BaseHTTPMiddleware):
             try:
                 user_info = get_user_from_token(auth_token)
                 user_id = user_info["id"]
+                plan_id = user_info.get("subscription_plan")
             except Exception:
                 # Invalid token, let endpoint handle it
                 return await call_next(request)
             
             # Check quotas based on endpoint
-            quota_error = await self._check_endpoint_quotas(request, user_id)
+            quota_error = await self._check_endpoint_quotas(request, user_id, plan_id)
             
             if quota_error:
                 return JSONResponse(
@@ -78,11 +79,22 @@ class QuotaGuardMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
             
         except Exception as e:
+            # Log the error and ensure we still return a valid response object
+            # Calling `call_next` again inside the except block can lead to
+            # "RuntimeError: No response returned" if the request/response
+            # cycle is already in an invalid state. Instead, we fall back to a
+            # generic 500 response so that downstream middleware (e.g. CORS)
+            # can still add the required headers.
             logger.error(f"Quota guard middleware error: {str(e)}")
-            # Don't block on errors, let request through
-            return await call_next(request)
+
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "detail": "Internal server error while validating subscription quotas."
+                },
+            )
     
-    async def _check_endpoint_quotas(self, request: Request, user_id: str) -> dict:
+    async def _check_endpoint_quotas(self, request: Request, user_id: str, plan_id: str | None) -> dict:
         """Check quotas for specific endpoints"""
         
         path = request.url.path
@@ -90,29 +102,29 @@ class QuotaGuardMiddleware(BaseHTTPMiddleware):
         
         # Message creation endpoints
         if path.startswith("/api/chat/") and method == "POST":
-            return await self._check_messages_quota(user_id)
+            return await self._check_messages_quota(user_id, plan_id)
         
         # Bot creation endpoint
         if path == "/api/agent" and method == "POST":
-            return await self._check_bots_quota(user_id)
+            return await self._check_bots_quota(user_id, plan_id)
         
         # Bot activation endpoint
         if path.endswith("/activate") and method == "POST":
-            return await self._check_live_bots_quota(user_id)
+            return await self._check_live_bots_quota(user_id, plan_id)
         
         # Team member invitation
         if path.startswith("/api/team/invite") and method == "POST":
-            return await self._check_team_members_quota(user_id)
+            return await self._check_team_members_quota(user_id, plan_id)
         
         # Knowledge source upload
         if path.startswith("/api/knowledge") and method == "POST":
             bot_id = self._extract_bot_id_from_path(path)
             if bot_id:
-                return await self._check_knowledge_sources_quota(user_id, bot_id)
+                return await self._check_knowledge_sources_quota(user_id, bot_id, plan_id)
         
         return None
     
-    async def _check_messages_quota(self, user_id: str) -> dict:
+    async def _check_messages_quota(self, user_id: str, plan_id: str | None) -> dict:
         """Check if user has exceeded messages quota"""
         try:
             # Get current month's message count
@@ -140,7 +152,7 @@ class QuotaGuardMiddleware(BaseHTTPMiddleware):
             current_messages = messages_result.count or 0
             
             # Check quota
-            within_limit, limit = await self.subscription_service.check_quota(user_id, "messages", current_messages)
+            within_limit, limit = self.subscription_service.check_quota(user_id, "messages", current_messages, plan_id=plan_id)
             
             if not within_limit:
                 return {
@@ -155,13 +167,13 @@ class QuotaGuardMiddleware(BaseHTTPMiddleware):
             
         return None
     
-    async def _check_bots_quota(self, user_id: str) -> dict:
+    async def _check_bots_quota(self, user_id: str, plan_id: str | None) -> dict:
         """Check if user can create more bots"""
         try:
             bots_result = supabase.table("bots").select("id", count="exact").eq("user_id", user_id).execute()
             current_bots = bots_result.count or 0
             
-            within_limit, limit = await self.subscription_service.check_quota(user_id, "bots", current_bots)
+            within_limit, limit = self.subscription_service.check_quota(user_id, "bots", current_bots, plan_id=plan_id)
             
             if not within_limit:
                 return {
@@ -176,13 +188,13 @@ class QuotaGuardMiddleware(BaseHTTPMiddleware):
             
         return None
     
-    async def _check_live_bots_quota(self, user_id: str) -> dict:
+    async def _check_live_bots_quota(self, user_id: str, plan_id: str | None) -> dict:
         """Check if user can activate more bots"""
         try:
             bots_result = supabase.table("bots").select("id", count="exact").eq("user_id", user_id).eq("is_live", True).execute()
             current_live_bots = bots_result.count or 0
             
-            within_limit, limit = await self.subscription_service.check_quota(user_id, "live_bots", current_live_bots)
+            within_limit, limit = self.subscription_service.check_quota(user_id, "live_bots", current_live_bots, plan_id=plan_id)
             
             if not within_limit:
                 return {
@@ -197,13 +209,13 @@ class QuotaGuardMiddleware(BaseHTTPMiddleware):
             
         return None
     
-    async def _check_team_members_quota(self, user_id: str) -> dict:
+    async def _check_team_members_quota(self, user_id: str, plan_id: str | None) -> dict:
         """Check if user can add more team members"""
         try:
             team_result = supabase.table("team_members").select("id", count="exact").eq("owner_id", user_id).eq("status", "active").execute()
             current_members = (team_result.count or 0) + 1  # +1 for owner
             
-            within_limit, limit = await self.subscription_service.check_quota(user_id, "team_members", current_members)
+            within_limit, limit = self.subscription_service.check_quota(user_id, "team_members", current_members, plan_id=plan_id)
             
             if not within_limit:
                 return {
@@ -218,7 +230,7 @@ class QuotaGuardMiddleware(BaseHTTPMiddleware):
             
         return None
     
-    async def _check_knowledge_sources_quota(self, user_id: str, bot_id: str) -> dict:
+    async def _check_knowledge_sources_quota(self, user_id: str, bot_id: str, plan_id: str | None) -> dict:
         """Check if user can add more knowledge sources to a bot"""
         try:
             # Verify bot ownership
@@ -230,7 +242,7 @@ class QuotaGuardMiddleware(BaseHTTPMiddleware):
             sources_result = supabase.table("knowledge_sources").select("id", count="exact").eq("bot_id", bot_id).execute()
             current_sources = sources_result.count or 0
             
-            within_limit, limit = await self.subscription_service.check_quota(user_id, "knowledge_sources", current_sources)
+            within_limit, limit = self.subscription_service.check_quota(user_id, "knowledge_sources", current_sources, plan_id=plan_id)
             
             if not within_limit:
                 return {
