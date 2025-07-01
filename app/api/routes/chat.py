@@ -5,7 +5,8 @@ from fastapi import APIRouter, HTTPException, status, Body, Query, Depends, WebS
 from langchain.memory import ConversationBufferMemory
 from langchain_core.messages import HumanMessage, AIMessage
 import math
-from typing import Dict, Set, Optional, Any
+from typing import Dict, Set, Optional, Any, Literal
+from pydantic import BaseModel
 
 from datetime import datetime
 from app.config.redisconnection import redisConnection
@@ -40,10 +41,11 @@ from app.utils.text_processing import clean_agent_output, auto_add_handoff_if_ne
 from app.utils.verification import get_current_user
 from app.utils.crm_utils import ensure_crm_entry
 from app.utils.subscription_limits import enforce_subscription_limits
+from app.utils.cookie_auth import require_cookie_auth
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["chat"])
+router = APIRouter(tags=["chat"], dependencies=[Depends(require_cookie_auth)])
 
 # Store active websocket connections
 active_connections: Dict[str, Set[WebSocket]] = {}
@@ -951,6 +953,10 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
                     })
                 except Exception as e:
                     print(f"Error sending message update to websocket: {e}")
+                    active_connections[conversation_id].remove(ws)
+                    if not active_connections[conversation_id]:
+                        del active_connections[conversation_id]
+                continue
 
         # sending a notification to the bot admin
         result = supabase.table("bots").select("*").eq("id", bot_id).single().execute()
@@ -2111,3 +2117,37 @@ async def get_conversation_status(conversation_id: str):
             status_code=500,
             detail=f"Failed to fetch conversation status: {str(e)}"
         )
+
+# ---- New model & endpoint: update conversation status ----
+
+
+class UpdateConversationStatusRequest(BaseModel):
+    status: Literal["ai", "human", "closed"]
+
+
+@router.post(
+    "/conversations/{conversation_id}/status",
+    response_model=StatusResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def update_conversation_status_endpoint(conversation_id: str, request: UpdateConversationStatusRequest):
+    """Update the status (ai / human / closed) of an existing conversation."""
+    # Validate status is one of allowed literals (handled by Pydantic)
+    try:
+        update_response = (
+            supabase.table("conversations")
+            .update({"status": request.status})
+            .eq("id", conversation_id)
+            .execute()
+        )
+
+        if not update_response.data:
+            raise HTTPException(
+                status_code=404, detail="Conversation not found or update failed"
+            )
+
+        return StatusResponse(status="success", message="Conversation status updated")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update status: {str(e)}")

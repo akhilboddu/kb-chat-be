@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, HTTPException, Query, status
+from fastapi import APIRouter, Body, HTTPException, Query, status, Depends
 from typing import Dict, Any, List, Optional
 # NotFoundError import removed - using Supabase now
 
@@ -14,8 +14,9 @@ from app.models.agent import (
     AgentConfigResponse,
     UpdateAgentConfigRequest,
 )
+from app.utils.cookie_auth import require_cookie_auth
 
-router = APIRouter(prefix="/agents", tags=["agents"])
+router = APIRouter(prefix="/agents", tags=["agents"], dependencies=[Depends(require_cookie_auth)])
 
 
 @router.post(

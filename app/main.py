@@ -16,6 +16,7 @@ from app.api.routes import custom_voice_agent as custom_voice_agent_routes
 from app.worker.celery_app import celery_app
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.quota_guard import QuotaGuardMiddleware
+from app.middleware.widget_cors_filter import WidgetCORSFilter
 from datetime import datetime
 
 # Configure logging
@@ -35,40 +36,23 @@ def create_app() -> FastAPI:
     )
 
     # --- CORS Middleware Configuration ---
-    # Get allowed origins from environment or use defaults
-    # Format for CORS_ORIGINS: comma-separated URLs like "https://example.com,https://app.example.com"
-    cors_origins_str = os.getenv("CORS_ORIGINS", "")
-    additional_origins = [origin.strip() for origin in cors_origins_str.split(",") if origin.strip()] if cors_origins_str else []
-
-    # Default development origins
-    default_origins = [
-        "https://deskforce.co.za",
-        "http://localhost:3002",
-        "http://127.0.0.1:3002",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://chatwise-dev-aryan.netlify.app",
-        
-    ]
-
-    # Combine default and environment-provided origins, filtering out empty strings and duplicates
-    all_origins = default_origins + additional_origins
-    origins = list(set(all_origins))  # Remove duplicates
+    # Widget-specific CORS configuration
+    # Allow all origins for widget endpoints only
     
-    # Add local development servers to origins
-    origins.extend([
-        "http://127.0.0.1:5500",
-        "http://localhost:5500",
-        "http://127.0.0.1:5173",
-        "http://localhost:5173"
-    ])
+    # Check if we're in development mode
+    is_development = os.getenv("ENVIRONMENT", "development").lower() == "development"
     
-    # Remove duplicates again after adding local servers
-    origins = list(set(origins))
+    if is_development:
+        # Allow all origins in development for all endpoints
+        cors_origins = ["*"]
+        allow_credentials = False  # Must be False when using "*"
+        print("CORS: Development mode - allowing all origins for all endpoints")
+    else:
+        # Production: allow all origins for widget endpoints, restrict others
+        cors_origins = ["https://deskforce.co.za","http://localhost:8080"]
+        allow_credentials = True
+        print("CORS: Production mode - allowing all origins for widget endpoints only")
     
-    print(f"CORS Origins configured: {origins}")  # Debug logging
     redisConnection.connect()
 
     # Add rate limiting middleware (relaxed for development)
@@ -81,14 +65,35 @@ def create_app() -> FastAPI:
     # Add quota guard middleware (disabled by default, enable with ENABLE_QUOTA_GUARD=true)
     app.add_middleware(QuotaGuardMiddleware)
 
+    # CORS Middleware for all routes (widget endpoints will be accessible from any origin)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=origins,  # Use the configured origins list instead of "*"
-        allow_credentials=True,  # Support httpOnly cookies
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=cors_origins,
+        allow_credentials=allow_credentials,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=[
+            "Accept",
+            "Content-Type", 
+            "Authorization",
+            "X-Requested-With",
+            "Origin",
+            "User-Agent",
+        ],
         expose_headers=["content-type", "content-length", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset"],
     )
+
+    # After CORSMiddleware addition, add WidgetCORSFilter with allowed paths
+    widget_allowed_paths = [
+        "/api/bots/{bot_id}/config",
+        "/api/bots/{bot_id}/conversations",
+        "/api/conversations/{conversation_id}",
+        "/api/conversations/{conversation_id}/messages",
+        "/api/bots/{bot_id}/conversations/by-email/{email}",
+        "/api/status/user",
+        "/api/status/{bot_id}",
+        "/api/ws/{conversation_id}",
+    ]
+    app.add_middleware(WidgetCORSFilter, allowed_paths=widget_allowed_paths, allowed_origins=cors_origins)
 
     # Mount all routes from the router with /api prefix
     app.include_router(router, prefix="/api")
