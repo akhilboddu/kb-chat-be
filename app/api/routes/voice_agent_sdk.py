@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import logging
 import threading
 import queue
+from argparse import Namespace
 
 # Official Deepgram SDK imports
 from deepgram import (
@@ -17,7 +18,7 @@ from deepgram import (
     AgentWebSocketEvents,
     AgentKeepAlive,
 )
-from deepgram.clients.agent.v1.websocket.options import SettingsOptions
+from deepgram.clients.agent.v1.websocket.options import SettingsOptions  # type: ignore
 
 from app.core import agent_manager
 
@@ -66,19 +67,13 @@ class DeepgramVoiceAgentSDK:
             if not self.openai_key and not self.anthropic_key:
                 logger.warning("⚠️ Neither OpenAI nor Anthropic API key found - will use default LLM")
             
-            # Determine which LLM provider to use (prefer Anthropic for speed)
-            if self.anthropic_key:
-                llm_provider = "anthropic"
-                llm_model = "claude-3-5-haiku-latest"  # Fast Anthropic Claude model (supported)
-                logger.info("🚀 Using Anthropic Claude for ultra-fast inference")
-            elif self.openai_key:
-                llm_provider = "open_ai"
-                llm_model = "gpt-4o-mini"
-                logger.info("🧠 Using OpenAI for reasoning")
-            else:
-                llm_provider = "open_ai"  # Default fallback
-                llm_model = "gpt-4o-mini"
-                logger.warning("⚠️ Using default LLM configuration")
+            # The base URL for our custom RAG endpoint
+            # This should be your deployed backend URL
+            base_url = os.getenv("VITE_API_BASE_URL", "http://localhost:8000")
+            rag_provider_url = f"{base_url}/api/custom-voice-agent/rag-think"
+            logger.info(f"--- DEBUG: Using Custom RAG Provider URL: {rag_provider_url} ---")
+            logger.info(f"--- DEBUG: Bot ID: {self.bot_id} ---")
+            logger.info(f"🚀 Using Custom RAG Think Provider at: {rag_provider_url}")
             
             # Initialize Deepgram client with official SDK
             config = DeepgramClientOptions(
@@ -113,12 +108,49 @@ class DeepgramVoiceAgentSDK:
             options.agent.language = "en"
             options.agent.listen.provider.type = "deepgram"
             options.agent.listen.provider.model = "nova-3"
-            options.agent.think.provider.type = llm_provider
-            options.agent.think.provider.model = llm_model
-            options.agent.think.prompt = bot_data.get("custom_prompt") or "You are a helpful AI assistant."
+            # Configure the agent
+            # Check if we should use custom provider or fallback to a supported one
+            use_custom_provider = os.getenv("USE_CUSTOM_PROVIDER", "true").lower() == "true"
+            
+            if use_custom_provider:
+                # Deepgram does not recognize an arbitrary "custom" provider type.
+                # Instead, use the supported "open_ai" provider type and point it
+                # at our own endpoint which speaks the OpenAI Chat Completions dialect.
+
+                options.agent.think.provider.type = "open_ai"
+                # Any string is accepted for BYO LLMs ‑ keep a harmless default.
+                options.agent.think.provider.model = "gpt-3.5-turbo"
+                # Do NOT include api_key in provider as it is not part of the API spec
+                # Instead, put any auth info in endpoint.headers if needed (not required for our RAG backend)
+
+                # Configure endpoint as a plain dict – Deepgram SDK will serialize this correctly
+                options.agent.think.endpoint = {
+                    "url": rag_provider_url,
+                    "headers": {"x-kb-id": self.bot_id}
+                }
+                
+                logger.info("🔧 Using CUSTOM RAG think provider via open_ai endpoint")
+            else:
+                # Fallback – use OpenAI directly
+                options.agent.think.provider.type = "open_ai"
+                options.agent.think.provider.model = "gpt-3.5-turbo"
+                options.agent.think.provider.api_key = self.openai_key
+                logger.info("🔧 Using OpenAI think provider (fallback)")
+            
             options.agent.speak.provider.type = "deepgram"
             options.agent.speak.provider.model = "aura-2-thalia-en"
             options.agent.greeting = f"Hello! I'm {bot_data.get('name', 'your AI assistant')}. How can I help you today?"
+            
+            # Log the complete configuration for debugging
+            logger.info("--- DEBUG: Complete agent configuration ---")
+            logger.info(f"Think provider type: {options.agent.think.provider.type}")
+            if use_custom_provider:
+                if options.agent.think.endpoint:
+                    logger.info(f"Think provider endpoint URL: {options.agent.think.endpoint.get('url')}")
+                    logger.info(f"Think provider endpoint headers: {options.agent.think.endpoint.get('headers')}")
+            else:
+                logger.info(f"Think provider model: {options.agent.think.provider.model}")
+                logger.info(f"Think provider has API key: {bool(options.agent.think.provider.api_key)}")
             
             # Start the connection using official SDK
             logger.info("🔗 Starting Deepgram Voice Agent connection...")

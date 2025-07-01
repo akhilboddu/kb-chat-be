@@ -12,6 +12,7 @@ from app.config.dbconnection import get_db_pool
 from app.core.config import llm
 from app.api.routes import router
 from app.api.routes import health as health_routes
+from app.api.routes import custom_voice_agent as custom_voice_agent_routes
 from app.worker.celery_app import celery_app
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.quota_guard import QuotaGuardMiddleware
@@ -91,6 +92,7 @@ def create_app() -> FastAPI:
 
     # Mount all routes from the router with /api prefix
     app.include_router(router, prefix="/api")
+    app.include_router(custom_voice_agent_routes.router, prefix="/api/custom-voice-agent")
     
     # Mount comprehensive health check routes
     app.include_router(health_routes.router, prefix="")
