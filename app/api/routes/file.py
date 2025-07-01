@@ -1,5 +1,5 @@
 import os
-from fastapi import APIRouter, HTTPException, UploadFile, File, status, BackgroundTasks
+from fastapi import APIRouter, HTTPException, UploadFile, File, status, BackgroundTasks, Depends
 from typing import List, Dict, Any
 import io
 import asyncio
@@ -9,11 +9,12 @@ from app.models.base import StatusResponse
 from app.models.file import ListFilesResponse, UploadedFileInfo, FileUploadStatusResponse
 from app.services.file_upload_service import process_files_background
 from app.tasks.upload import run_upload_task
+from app.utils.cookie_auth import require_cookie_auth
 
 router = APIRouter(tags=["files"])
 
 
-@router.post("/agents/{kb_id}/upload", response_model=StatusResponse)
+@router.post("/agents/{kb_id}/upload", response_model=StatusResponse, dependencies=[Depends(require_cookie_auth)])
 async def upload_to_kb(
     kb_id: str, 
     files: List[UploadFile] = File(...),
@@ -116,7 +117,7 @@ async def upload_to_kb(
     )
 
 
-@router.get("/agents/{kb_id}/upload-status", response_model=FileUploadStatusResponse)
+@router.get("/agents/{kb_id}/upload-status", response_model=FileUploadStatusResponse, dependencies=[Depends(require_cookie_auth)])
 async def get_upload_status(kb_id: str):
     """
     Get the current status of a file upload operation for a specific KB.
@@ -158,7 +159,7 @@ async def get_upload_status(kb_id: str):
         )
 
 
-@router.get("/agents/{kb_id}/files", response_model=ListFilesResponse)
+@router.get("/agents/{kb_id}/files", response_model=ListFilesResponse, dependencies=[Depends(require_cookie_auth)])
 async def list_uploaded_files_endpoint(kb_id: str):
     """
     Lists metadata for all files uploaded to a specific knowledge base.
@@ -186,7 +187,7 @@ async def list_uploaded_files_endpoint(kb_id: str):
         )
 
 
-@router.post("/bots/{bot_id}/upload", response_model=StatusResponse, deprecated=True)
+@router.post("/bots/{bot_id}/upload", response_model=StatusResponse, deprecated=True, dependencies=[Depends(require_cookie_auth)])
 async def bot_upload_endpoint(
     bot_id: str, 
     files: List[UploadFile] = File(...),

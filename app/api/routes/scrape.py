@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks, status
+from fastapi import APIRouter, HTTPException, BackgroundTasks, status, Depends
 import logging
 import os
 
@@ -10,9 +10,10 @@ from app.models.scrape import (
 )
 from app.services.scrape_service import run_scrape_and_populate
 from app.tasks.scrape import run_scrape_task
+from app.utils.cookie_auth import require_cookie_auth
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["scraping"])
+router = APIRouter(tags=["scraping"], dependencies=[Depends(require_cookie_auth)])
 
 
 @router.post(

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query, Body
+from fastapi import APIRouter, HTTPException, Query, Body, Depends
 from typing import Optional, List, Dict, Any
 from app.core import kb_manager
 from app.core.supabase_client import supabase
@@ -14,8 +14,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 import asyncio
 from uuid import uuid4
 from celery.result import AsyncResult
+from app.utils.cookie_auth import require_cookie_auth
 
-router = APIRouter(prefix="/agents", tags=["knowledge_base"])
+router = APIRouter(prefix="/agents", tags=["knowledge_base"], dependencies=[Depends(require_cookie_auth)])
 
 @router.get("/{agent_id}/sources")
 async def list_kb_sources(agent_id: str):

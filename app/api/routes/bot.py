@@ -281,6 +281,7 @@ async def list_bot_kb_documents(
     source_name: Optional[str] = None,
     source_type: Optional[str] = None,
     search: Optional[str] = None,
+    merge_by: Optional[str] = Query(None, description="Merge chunks by this field (currently supports 'source_name')"),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0)
 ):
@@ -298,6 +299,7 @@ async def list_bot_kb_documents(
             .select("id, document_id, content, source_type, source_name, source_url, created_at", count="exact")\
             .eq("kb_id", kb_id)
         
+        
         if source_name:
             query = query.eq("source_name", source_name)
         if source_type:
@@ -305,9 +307,80 @@ async def list_bot_kb_documents(
         if search:
             query = query.ilike("content", f"%{search}%")
         
+        if merge_by == "source_name":
+            # Fetch all matching rows (ignore limit/offset when merging)
+            result = query.execute()
+            rows = result.data or []
+
+            merged = {}
+            for row in rows:
+                key = row["source_name"] or "unknown"
+                page_num = row.get("page_num") or 0
+                entry = merged.setdefault(key, {
+                    "content_parts": [],
+                    "source_type": row.get("source_type"),
+                    "source_url": row.get("source_url"),
+                    "first_id": row.get("id"),
+                    "first_document_id": row.get("document_id")
+                })
+                # Capture first ids only if not set
+                if not entry.get("first_id"):
+                    entry["first_id"] = row.get("id")
+                if not entry.get("first_document_id"):
+                    entry["first_document_id"] = row.get("document_id")
+                entry.setdefault("part_rows", []).append({
+                    "id": row.get("id"),
+                    "document_id": row.get("document_id"),
+                    "page_num": page_num,
+                    "content": row["content"]
+                })
+
+                entry["content_parts"].append((page_num, row["content"]))
+
+            merged_docs = []
+            for name, info in merged.items():
+                # Sort by page number to keep order
+                ordered_parts = sorted(info["part_rows"], key=lambda x: x["page_num"])
+                content_parts = [p["content"] for p in ordered_parts]
+                merged_text = "\n\n".join(content_parts)
+
+                # Build chunk offset metadata
+                chunks_meta = []
+                cursor = 0
+                total_parts = len(ordered_parts)
+                for idx, part in enumerate(ordered_parts):
+                    start = cursor
+                    part_len = len(part["content"])
+                    end = cursor + part_len
+                    chunks_meta.append({
+                        "id": part["id"],
+                        "document_id": part["document_id"],
+                        "start": start,
+                        "end": end
+                    })
+                    # Advance cursor past this part and the delimiter (except after last part)
+                    cursor = end + (2 if idx < total_parts - 1 else 0)
+
+                merged_docs.append({
+                    "id": info.get("first_id"),
+                    "document_id": info.get("first_document_id"),
+                    "source_name": name,
+                    "source_type": info["source_type"],
+                    "source_url": info["source_url"],
+                    "content": merged_text,
+                    "chunks": chunks_meta
+                })
+
+            # Apply pagination after merge
+            total = len(merged_docs)
+            paginated = merged_docs[offset:offset + limit]
+
+            return {"documents": paginated, "total": total, "limit": limit, "offset": offset}
+
+        # Default (no merge)
         query = query.order("created_at", desc=True)
         result = query.range(offset, offset + limit - 1).execute()
-        
+
         return {
             "documents": result.data or [],
             "total": result.count or 0,

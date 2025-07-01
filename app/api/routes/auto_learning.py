@@ -5,7 +5,7 @@ Endpoints for analyzing conversations with handoffs to automatically
 generate knowledge base improvements.
 """
 
-from fastapi import APIRouter, HTTPException, Body, Query
+from fastapi import APIRouter, HTTPException, Body, Query, Depends
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 import logging
@@ -15,8 +15,9 @@ from app.core.auto_learning import AutoLearningSystem, analyze_conversation_for_
 from app.core.learning_manager import learning_manager
 from app.models.base import StatusResponse
 from app.models.learning import Learning, ListLearningsResponse, UpdateLearningStatusRequest, BulkUpdateLearningsRequest
+from app.utils.cookie_auth import require_cookie_auth
 
-router = APIRouter(prefix="/auto-learning", tags=["auto-learning"])
+router = APIRouter(prefix="/auto-learning", tags=["auto-learning"], dependencies=[Depends(require_cookie_auth)])
 logger = logging.getLogger(__name__)
 
 
