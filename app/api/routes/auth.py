@@ -65,8 +65,15 @@ async def register(user_data: UserRegisterRequest):
         if hasattr(result, 'user') and result.user and hasattr(result.user, 'identities') and len(result.user.identities) == 0:
             raise HTTPException(status_code=400, detail="Email already exists")
         
-        # Check if we have a session (immediate confirmation) or needs email confirmation
-        requires_confirmation = not hasattr(result, 'session') or result.session is None
+        # Always require email confirmation for better security
+        # Check if user's email is confirmed (email_confirmed_at will be None if not confirmed)
+        requires_confirmation = True
+        if hasattr(result, 'user') and result.user and hasattr(result.user, 'email_confirmed_at'):
+            requires_confirmation = result.user.email_confirmed_at is None
+        
+        # Fallback: if no session was created, definitely requires confirmation
+        if not hasattr(result, 'session') or result.session is None:
+            requires_confirmation = True
         
         logger.info(f"Registration successful for {user_data.email}, requires confirmation: {requires_confirmation}")
         

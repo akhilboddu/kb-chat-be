@@ -6,6 +6,7 @@ Based on Anthropic's Contextual Retrieval approach with Gemini Flash optimizatio
 
 import os
 import hashlib
+import re
 from typing import Optional, Tuple, Dict, Any, List
 from functools import lru_cache
 import logging
@@ -56,18 +57,16 @@ class Contextualizer:
 {full_document}
 </document>
 
-Here is the chunk we want to contextualize:
 <chunk>
 {chunk}
 </chunk>
 
-Please provide a brief, informative context (50-100 tokens) for this chunk that explains:
-1. What this chunk is about
-2. How it relates to the overall document
-3. Any key concepts or entities mentioned
+Generate a concise, informative prefix (≈ 20–40 tokens) that summarises the chunk:
+• What it is about
+• How it fits into the whole document
+• Important concepts or entities
 
-Write the context as if it's a prefix to the chunk, starting with "This section discusses..." or similar.
-Keep it concise and factual. Do not include the chunk content itself in your response."""
+Write it in third-person, factual style. **Do not repeat the chunk itself.** Return only the context sentence(s)."""
 
     def __init__(
         self, 
@@ -86,7 +85,8 @@ Keep it concise and factual. Do not include the chunk content itself in your res
         # Dynamic batch sizing based on environment
         self.batch_size = int(os.getenv("CONTEXT_BATCH_SIZE", str(batch_size)))
         self.enable_delays = os.getenv("ENABLE_CONTEXT_DELAYS", "false").lower() == "true"
-        self.disable_context = os.getenv("DISABLE_CONTEXT_GENERATION", "false").lower() == "true"
+        # Force context generation; ignore any environment flags that would disable it
+        self.disable_context = False
         
         # Gemini setup (Primary)
         self.use_gemini = prefer_gemini and GEMINI_AVAILABLE
@@ -184,21 +184,19 @@ Keep it concise and factual. Do not include the chunk content itself in your res
                         signal.alarm(0)  # Disable the alarm
                     
                     if response and response.text:
-                        context = response.text.strip()
-                        # Ensure context starts appropriately
-                        if not context.lower().startswith(('this section', 'this part', 'this chunk', 'this content')):
-                            context = f"This section discusses {context.lower()}"
-                        contexts.append(context)
+                        raw_ctx = response.text.strip()
+                        contexts.append(self._clean_context(raw_ctx))
                     else:
-                        contexts.append("This section contains relevant information from the document.")
+                        contexts.append("")
                         
                 except (Exception, TimeoutError) as e:
                     logger.warning(f"⚠️ Gemini prompt {i+1}/{len(prompts)} failed: {e}")
-                    contexts.append("This section contains relevant information from the document.")
+                    contexts.append("")
                     
                     # If we're getting consistent failures, break early and use fallback
-                    if i > 5 and len([c for c in contexts if "relevant information" in c]) > i * 0.5:
-                        logger.error(f"❌ Too many Gemini failures ({len([c for c in contexts if 'relevant information' in c])}/{i+1}), switching to fallback")
+                    empty_cnt = len([c for c in contexts if c == ""])
+                    if i > 5 and empty_cnt > i * 0.5:
+                        logger.error(f"❌ Too many Gemini failures ({empty_cnt}/{i+1}), switching to fallback")
                         raise Exception("Gemini API consistently failing - switching to fallback provider")
                     
                 # Optional delay only if enabled via environment variable
@@ -254,14 +252,14 @@ Keep it concise and factual. Do not include the chunk content itself in your res
                     )
                     
                     if response and response.content:
-                        context = response.content[0].text.strip()
-                        contexts.append(context)
+                        raw_ctx = response.content[0].text.strip()
+                        contexts.append(self._clean_context(raw_ctx))
                     else:
-                        contexts.append("This section contains relevant information from the document.")
+                        contexts.append("")
                         
                 except Exception as e:
                     logger.warning(f"⚠️ Anthropic prompt {i+1} failed: {e}")
-                    contexts.append("This section contains relevant information from the document.")
+                    contexts.append("")
                 
                 # Optional rate limiting delay
                 if self.enable_delays:
@@ -299,14 +297,14 @@ Keep it concise and factual. Do not include the chunk content itself in your res
                     )
                     
                     if response and response.choices:
-                        context = response.choices[0].message.content.strip()
-                        contexts.append(context)
+                        raw_ctx = response.choices[0].message.content.strip()
+                        contexts.append(self._clean_context(raw_ctx))
                     else:
-                        contexts.append("This section contains relevant information from the document.")
+                        contexts.append("")
                         
                 except Exception as e:
                     logger.warning(f"⚠️ OpenAI prompt {i+1} failed: {e}")
-                    contexts.append("This section contains relevant information from the document.")
+                    contexts.append("")
                 
                 # Optional rate limiting delay
                 if self.enable_delays:
@@ -341,11 +339,7 @@ Keep it concise and factual. Do not include the chunk content itself in your res
         if not chunks:
             return []
         
-        # Check if context generation is disabled
-        if self.disable_context:
-            logger.info("⚠️ Context generation disabled via DISABLE_CONTEXT_GENERATION=true")
-            return ["This section contains relevant information from the document."] * len(chunks)
-        
+        # Context generation must always run; no early opt-out
         logger.info(f"🎯 Starting batch context generation for {len(chunks)} chunks")
         start_time = time.time()
         
@@ -393,7 +387,7 @@ Keep it concise and factual. Do not include the chunk content itself in your res
             for i, chunk in enumerate(chunks):
                 if show_progress and i % 5 == 0:
                     logger.info(f"📊 Generating contexts: {i}/{total} ({i/total*100:.1f}%)")
-                contexts.append(self.create_context(full_document, chunk))
+                contexts.append(self._clean_context(self.create_context(full_document, chunk)))
         
         elapsed = time.time() - start_time
         logger.info(f"🏁 Batch context generation completed in {elapsed:.2f}s ({len(chunks)/elapsed:.1f} contexts/sec)")
@@ -444,11 +438,8 @@ Keep it concise and factual. Do not include the chunk content itself in your res
                     signal.alarm(0)
                 
                 if response and response.text:
-                    context = response.text.strip()
-                    # Ensure context starts appropriately
-                    if not context.lower().startswith(('this section', 'this part', 'this chunk', 'this content')):
-                        context = f"This section discusses {context.lower()}"
-                    return context
+                    raw_ctx = response.text.strip()
+                    return self._clean_context(raw_ctx)
                     
             except Exception as e:
                 logger.warning(f"⚠️ Gemini single call failed: {e}")
@@ -464,7 +455,8 @@ Keep it concise and factual. Do not include the chunk content itself in your res
                 )
                 
                 if response and response.content:
-                    return response.content[0].text.strip()
+                    raw_ctx = response.content[0].text.strip()
+                    return self._clean_context(raw_ctx)
                     
             except Exception as e:
                 logger.warning(f"⚠️ Anthropic call failed: {e}")
@@ -484,13 +476,14 @@ Keep it concise and factual. Do not include the chunk content itself in your res
                 )
                 
                 if response and response.choices:
-                    return response.choices[0].message.content.strip()
+                    raw_ctx = response.choices[0].message.content.strip()
+                    return self._clean_context(raw_ctx)
                     
             except Exception as e:
                 logger.error(f"❌ OpenAI call failed: {e}")
         
         # Final fallback
-        return "This section contains information from the document."
+        return ""
     
     def clear_cache(self):
         """Clear the context cache."""
@@ -517,6 +510,26 @@ Keep it concise and factual. Do not include the chunk content itself in your res
             "primary_provider": "gemini" if self.use_gemini else ("anthropic" if self.use_anthropic else ("openai" if self.use_openai else "none")),
             "batch_size": self.batch_size
         }
+
+    # ---------------- Utility -----------------
+    @staticmethod
+    def _clean_context(context: str, max_chars: int = 220) -> str:
+        """Post-process raw LLM output into a short, boiler-plate-free prefix."""
+        if not context:
+            return ""
+
+        # Strip leading common boilerplate phrases
+        context = context.strip()
+        context = re.sub(
+            r"^(This (section|part|chunk|content) (discusses|describes|covers|contains)[.:]?\s*)",
+            "",
+            context,
+            flags=re.IGNORECASE,
+        )
+
+        # Collapse whitespace and enforce char cap
+        context = re.sub(r"\s+", " ", context)
+        return context[:max_chars]
 
 
 # Singleton instance

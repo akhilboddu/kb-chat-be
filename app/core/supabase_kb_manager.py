@@ -277,61 +277,52 @@ class KBManager:
             else:
                 print(f"[KB Manager] Using STANDARD processing pipeline")
             
-            # Check if we should skip context generation (for debugging/performance)
-            skip_context = os.getenv("SKIP_CONTEXT_GENERATION", "false").lower() == "true"
+            # Always perform context generation (skip flag removed)
+            # Batch generate contexts (environment controlled batch size)
+            print(f"Generating contexts for {len(valid_chunks)} chunks...")
+            contexts = []
+            context_batch_size = int(os.getenv("CONTEXT_BATCH_SIZE", "50"))  # Environment controlled
             
-            if skip_context:
-                print(f"[KB Manager] Skipping context generation (SKIP_CONTEXT_GENERATION=true)")
-                contexts = [""] * len(valid_chunks)  # Empty contexts
+            for i in range(0, len(valid_chunks), context_batch_size):
+                batch_chunks = valid_chunks[i:i + context_batch_size]
                 
-                if progress_callback:
-                    progress_callback(30, f"Context generation skipped")
-            else:
-                # Batch generate contexts (environment controlled batch size)
-                print(f"Generating contexts for {len(valid_chunks)} chunks...")
-                contexts = []
-                context_batch_size = int(os.getenv("CONTEXT_BATCH_SIZE", "50"))  # Environment controlled
-                
-                for i in range(0, len(valid_chunks), context_batch_size):
-                    batch_chunks = valid_chunks[i:i + context_batch_size]
+                try:
+                    # Add timeout and error handling for context generation
+                    print(f"Processing context batch {i//context_batch_size + 1} of {(len(valid_chunks) + context_batch_size - 1)//context_batch_size}")
+                    batch_contexts = contextualizer.batch_create_contexts(
+                        full_document, 
+                        batch_chunks,
+                        show_progress=False
+                    )
+                    contexts.extend(batch_contexts)
                     
-                    try:
-                        # Add timeout and error handling for context generation
-                        print(f"Processing context batch {i//context_batch_size + 1} of {(len(valid_chunks) + context_batch_size - 1)//context_batch_size}")
-                        batch_contexts = contextualizer.batch_create_contexts(
-                            full_document, 
-                            batch_chunks,
-                            show_progress=False
-                        )
-                        contexts.extend(batch_contexts)
+                    # Progress callback for context generation
+                    if progress_callback:
+                        percent = int((i + len(batch_chunks)) / len(valid_chunks) * 30)  # 0-30% for contexts
+                        progress_callback(percent, f"Generating contexts: {i + len(batch_chunks)}/{len(valid_chunks)} chunks")
+                        print(f"[KB Progress] Context generation: {percent}% - Processed {i + len(batch_chunks)}/{len(valid_chunks)} chunks")
+                    
+                    # Optional delay between batches only if enabled via environment variable
+                    if i + context_batch_size < len(valid_chunks):
+                        if os.getenv("ENABLE_BATCH_DELAYS", "false").lower() == "true":
+                            time.sleep(0.1)  # Reduced delay
                         
-                        # Progress callback for context generation
-                        if progress_callback:
-                            percent = int((i + len(batch_chunks)) / len(valid_chunks) * 30)  # 0-30% for contexts
-                            progress_callback(percent, f"Generating contexts: {i + len(batch_chunks)}/{len(valid_chunks)} chunks")
-                            print(f"[KB Progress] Context generation: {percent}% - Processed {i + len(batch_chunks)}/{len(valid_chunks)} chunks")
-                        
-                        # Optional delay between batches only if enabled via environment variable
-                        if i + context_batch_size < len(valid_chunks):
-                            if os.getenv("ENABLE_BATCH_DELAYS", "false").lower() == "true":
-                                time.sleep(0.1)  # Reduced delay
-                            
-                    except Exception as e:
-                        print(f"Error generating contexts for batch {i//context_batch_size + 1}: {e}")
-                        # Use empty contexts as fallback
-                        fallback_contexts = ["This section contains information from the document."] * len(batch_chunks)
-                        contexts.extend(fallback_contexts)
-                        
-                        if progress_callback:
-                            percent = int((i + len(batch_chunks)) / len(valid_chunks) * 30)
-                            progress_callback(percent, f"Context generation issue, continuing: {i + len(batch_chunks)}/{len(valid_chunks)} chunks")
-                
-                # Ensure we have contexts for all chunks
-                if len(contexts) < len(valid_chunks):
-                    print(f"Warning: Only generated {len(contexts)} contexts for {len(valid_chunks)} chunks. Adding fallback contexts.")
-                    while len(contexts) < len(valid_chunks):
-                        contexts.append("This section contains information from the document.")
+                except Exception as e:
+                    print(f"Error generating contexts for batch {i//context_batch_size + 1}: {e}")
+                    # Use empty contexts as fallback
+                    fallback_contexts = [""] * len(batch_chunks)
+                    contexts.extend(fallback_contexts)
+                    
+                    if progress_callback:
+                        percent = int((i + len(batch_chunks)) / len(valid_chunks) * 30)
+                        progress_callback(percent, f"Context generation issue, continuing: {i + len(batch_chunks)}/{len(valid_chunks)} chunks")
             
+            # Ensure we have contexts for all chunks
+            if len(contexts) < len(valid_chunks):
+                print(f"Warning: Only generated {len(contexts)} contexts for {len(valid_chunks)} chunks. Adding fallback contexts.")
+                while len(contexts) < len(valid_chunks):
+                    contexts.append("")
+        
             # Create contextualized texts
             ctx_texts = [f"{context} {chunk}" if context else chunk for context, chunk in zip(contexts, valid_chunks)]
             
@@ -470,54 +461,115 @@ class KBManager:
             traceback.print_exc()
             return False
     
-    def get_similar_docs(self, kb_id: str, query: str, n_results: int = 5) -> List[dict]:
+    def get_similar_docs(
+        self,
+        kb_id: str,
+        query: str,
+        n_results: int = 5,
+        rerank_k: int = 20,
+        disable_rerank: bool = False,
+    ) -> List[dict]:
         """
-        Retrieves similar documents using hybrid search (vector + BM25).
-        
+        Retrieve similar documents with hybrid search then *optionally* perform a
+        lightweight client-side re-ranking using cosine similarity. This keeps
+        the server-side pipeline intact while typically boosting precision.
+
         Args:
-            kb_id: ID of the knowledge base to query
-            query: Query text
-            n_results: Number of results to return
-            
+            kb_id:   Knowledge-base ID
+            query:   Natural-language query
+            n_results:  Final number of documents to return
+            rerank_k:  How many candidates to fetch from Supabase before
+                       re-ranking. Must be >= n_results.
+            disable_rerank:  Set to True to skip the extra scoring step. This
+                             can also be toggled via env var DISABLE_RERANK.
+
         Returns:
-            List of dictionaries with 'document' and 'distance' keys
+            List of dicts ⇒ {"document": str, "distance": float}
         """
+
         try:
-            # Embed the query
+            # --- 1️⃣  Embed the query -------------------------------------------------
             query_embedding = embeddings_manager.embed_query(query)
-            
-            if not query_embedding:
+            if not query_embedding or all(v == 0.0 for v in query_embedding):
                 print(f"Failed to embed query for KB {kb_id}")
                 return []
-            
-            # Call hybrid search RPC
-            result = self.supabase.rpc('hybrid_search', {
-                'kb_id_param': kb_id,
-                'query_text': query,
-                'query_embedding': query_embedding,
-                'match_count': n_results
-            }).execute()
-            
+
+            # Honour global toggle so we can disable re-ranking at runtime
+            if os.getenv("DISABLE_RERANK", "false").lower() == "true":
+                disable_rerank = True
+
+            # Ensure we fetch enough for re-ranking
+            match_count = max(n_results, rerank_k)
+
+            # --- 2️⃣  First-pass hybrid search on Supabase -------------------------
+            result = (
+                self.supabase.rpc(
+                    "hybrid_search",
+                    {
+                        "kb_id_param": kb_id,
+                        "query_text": query,
+                        "query_embedding": query_embedding,
+                        "match_count": match_count,
+                    },
+                ).execute()
+            )
+
             if not result.data:
                 print(f"No documents found for query in KB {kb_id}")
                 return []
-            
-            # Format results for backward compatibility
-            doc_info = []
-            for doc in result.data:
-                # Convert score to distance (1 - score for backward compatibility)
-                distance = 1.0 - doc['score']
-                doc_info.append({
-                    'document': doc['content'],
-                    'distance': distance
-                })
-            
+
+            candidates = result.data[:match_count]
+
+            # Quick early-exit path when rerank disabled --------------------------------
+            if disable_rerank:
+                print("[KB] Re-ranking disabled – returning raw hybrid results")
+                return [
+                    {"document": d["content"], "distance": 1.0 - d["score"]}
+                    for d in candidates[:n_results]
+                ]
+
+            # --- 3️⃣  Lightweight re-rank -----------------------------------------
+            # Embed the *content* (or ctx_text if available) of each candidate.
+            # We only need the top `rerank_k` documents for scoring.
+            texts_to_embed = [doc.get("content", "") for doc in candidates]
+            doc_embeddings = embeddings_manager.embed_texts(texts_to_embed)
+
+            # Compute cosine similarities
+            import math
+
+            def _cosine(a: List[float], b: List[float]) -> float:
+                dot = sum(x * y for x, y in zip(a, b))
+                norm_a = math.sqrt(sum(x * x for x in a))
+                norm_b = math.sqrt(sum(x * x for x in b))
+                if norm_a == 0.0 or norm_b == 0.0:
+                    return 0.0
+                return dot / (norm_a * norm_b)
+
+            cosine_scores = [_cosine(query_embedding, emb) for emb in doc_embeddings]
+
+            # Attach cosine score and keep original hybrid score for debugging
+            for doc, cos in zip(candidates, cosine_scores):
+                doc["cosine"] = cos
+
+            # Sort by cosine desc (higher is more similar)
+            candidates.sort(key=lambda d: d["cosine"], reverse=True)
+
+            top_docs = candidates[:n_results]
+
+            # Format for backward compatibility (distance = 1 – cosine)
+            doc_info = [
+                {"document": d["content"], "distance": 1.0 - d["cosine"]}
+                for d in top_docs
+            ]
+
             print("_______________________________________________")
-            print(f"[KB RESULT] Returned {len(doc_info)} docs via hybrid search")
+            print(
+                f"[KB RESULT] Returned {len(doc_info)} docs via hybrid + cosine re-rank"
+            )
             print("_______________________________________________")
-            
+
             return doc_info
-            
+
         except Exception as e:
             print(f"Error querying KB {kb_id}: {e}")
             return []

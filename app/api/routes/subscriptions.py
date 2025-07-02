@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Request
 import logging
 import uuid
 from datetime import datetime, timedelta
+from typing import Dict
 
 from app.core.supabase_client import supabase
 from app.models.subscription import SubscriptionResponse, BotResponse, DashboardStatsResponse, SubscriptionOut
@@ -116,6 +117,37 @@ async def get_subscription_info(request: Request):
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
+async def get_active_conversations_per_bot(user_uuid: str) -> Dict[str, int]:
+    """Get active conversation count for each bot owned by the user."""
+    try:
+        # Get all bots for the user
+        bots_resp = supabase.table("bots").select("id").eq("user_id", user_uuid).execute()
+        if not bots_resp.data:
+            return {}
+        
+        bot_ids = [bot["id"] for bot in bots_resp.data]
+        
+        # Get active conversations for all bots (status != 'closed')
+        conversations_resp = (
+            supabase.table("conversations")
+            .select("bot_id")
+            .in_("bot_id", bot_ids)
+            .neq("status", "closed")
+            .execute()
+        )
+        
+        # Count conversations per bot
+        active_counts = {}
+        for conv in conversations_resp.data or []:
+            bot_id = conv["bot_id"]
+            active_counts[bot_id] = active_counts.get(bot_id, 0) + 1
+        
+        return active_counts
+    except Exception as e:
+        logger.error(f"Error getting active conversations per bot: {e}")
+        return {}
+
+
 @subscriptions_router.get("/dashboard-stats", response_model=DashboardStatsResponse)
 async def get_dashboard_stats(request: Request):
     """Get dashboard stats - SIMPLIFIED to just pull from database"""
@@ -155,11 +187,25 @@ async def get_dashboard_stats(request: Request):
                 "maxKnowledgeSources": 2,
                 "maxTeamMembers": 1,
             }
-            # Build trial response quickly
+            # Get bots for trial user too
+            bots_resp = supabase.table("bots").select("*").eq("user_id", user_uuid).execute()
+            bots_list = bots_resp.data if bots_resp.data else []
+            
+            # Get active conversations per bot for trial user
+            active_conversations_per_bot = await get_active_conversations_per_bot(user_uuid)
+            
+            # Add active_conversations to each bot
+            for bot in bots_list:
+                bot["active_conversations"] = active_conversations_per_bot.get(bot["id"], 0)
+            
+            # Calculate total active conversations
+            total_active_conversations = sum(active_conversations_per_bot.values())
+            
+            # Build trial response with real bot data
             trial_stats = DashboardStatsResponse(
                 total_messages=0,
                 total_conversations=0,
-                active_conversations=0,
+                active_conversations=total_active_conversations,
                 team_member_count=1,
                 subscription=SubscriptionResponse(
                     id="trial",
@@ -174,7 +220,7 @@ async def get_dashboard_stats(request: Request):
                     created_at=datetime.utcnow(),
                 ),
                 plan_limits=default_limits,
-                bots=[],
+                bots=bots_list,
             )
             return trial_stats
         
@@ -212,12 +258,22 @@ async def get_dashboard_stats(request: Request):
         bots_list = bots_resp.data if bots_resp.data else []
 
         live_bot_count = len([b for b in bots_list if b.get("is_live")])
+        
+        # Get active conversations per bot
+        active_conversations_per_bot = await get_active_conversations_per_bot(user_uuid)
+        
+        # Add active_conversations to each bot
+        for bot in bots_list:
+            bot["active_conversations"] = active_conversations_per_bot.get(bot["id"], 0)
+        
+        # Calculate total active conversations
+        total_active_conversations = sum(active_conversations_per_bot.values())
 
         # Build response with real usage data
         stats = DashboardStatsResponse(
             total_messages=total_messages,
             total_conversations=total_conversations,
-            active_conversations=0,  # Placeholder – can be refined later
+            active_conversations=total_active_conversations,
             team_member_count=1,  # TODO: Replace with real team member count when table ready
             subscription=SubscriptionResponse(
                 id=sub_data["id"],
