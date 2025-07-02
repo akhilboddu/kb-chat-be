@@ -74,8 +74,8 @@ class SubscriptionService:
         
         # Fallback to TRIAL limits if no subscription
         return PlanLimits(
-            maxMessages=50,
-            maxConversations=10,
+            maxMessages=100,
+            maxConversations=100,
             maxBots=1,
             maxLiveBots=1,
             maxKnowledgeSources=2,

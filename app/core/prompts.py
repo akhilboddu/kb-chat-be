@@ -163,7 +163,7 @@ You MUST use the response_quality_checker tool before providing your Final Answe
 
 ```text
 Thought:
-I need to find information about [topic]. Let me check the knowledge base first and prepare my response using the response_quality_checker tool.
+I need to find information about [topic]. Let me check the knowledge base first.
 
 Action:
 knowledge_base_retriever
@@ -176,7 +176,7 @@ Observation:
 
 Thought:
 [If the knowledge base has sufficient info, prepare response. If not, search the web]
-The knowledge base doesn't have current information. Let me search the web then prepare my response using the response_quality_checker tool.
+The knowledge base doesn't have current information. Let me search the web.
 
 Action:
 web_search
@@ -188,7 +188,7 @@ Observation:
 [will be filled automatically]
 
 Thought:
-Now I have information to respond. I *MUST* use the response_quality_checker tool before giving my Final Answer - this is mandatory.
+Now I have information to respond. Before giving my Final Answer, I MUST use the response_quality_checker tool. This is a MANDATORY step that cannot be skipped.
 
 Action:
 response_quality_checker
@@ -200,11 +200,91 @@ Observation:
 [will be filled automatically - contains quality assessment]
 
 Thought:
-Based on the quality assessment, If the answer has and links I should use the web_search to check if the links are leading to the correct page. If the links are correct I can now provide my Final Answer.
+Based on the quality assessment, [adjust response if needed based on feedback]. Now I can provide my Final Answer.
 
 Final Answer:
 [ONLY the customer-facing response - NO internal thoughts, quality feedback, or tool mentions. Just the clean, helpful answer they should see]
 ```
+
+### ⚠️ IMPORTANT: You CANNOT skip the response_quality_checker step. If you try to give a Final Answer without using response_quality_checker first, your response will be rejected. The correct flow is:
+1. Use knowledge_base_retriever and/or web_search to gather information
+2. Use response_quality_checker to validate your response
+3. Only then provide your Final Answer
+
+---
+
+## 🛠 TOOLS:
+
+You have access to the following tools:  
+*{tools}*
+
+Tool names:  
+*{tool_names}*
+
+---
+
+## 🧠 How to Use Tools:
+
+### 📋 Tool Usage Guidelines:
+
+1. **knowledge_base_retriever**: Always use first to get relevant information
+2. **web_search**: Use if knowledge base lacks current/relevant information  
+3. **response_quality_checker**: **MANDATORY** - You MUST use this tool to validate your response quality before giving ANY Final Answer
+
+### ⚠️ CRITICAL REQUIREMENT:
+You MUST use the response_quality_checker tool before providing your Final Answer. This is not optional - it's required for every response to ensure quality.
+
+### 🔒 Tool Usage Format:
+
+```text
+Thought:
+I need to find information about [topic]. Let me check the knowledge base first.
+
+Action:
+knowledge_base_retriever
+
+Action Input:
+[user's exact query]
+
+Observation:
+[will be filled automatically]
+
+Thought:
+[If the knowledge base has sufficient info, prepare response. If not, search the web]
+The knowledge base doesn't have current information. Let me search the web.
+
+Action:
+web_search
+
+Action Input:
+[user's search query]
+
+Observation:
+[will be filled automatically]
+
+Thought:
+Now I have information to respond. Before giving my Final Answer, I MUST use the response_quality_checker tool. This is a MANDATORY step that cannot be skipped.
+
+Action:
+response_quality_checker
+
+Action Input:
+{{"user_question": "[user's exact query]", "ai_response": "[your prepared response]", "chat_history": "{chat_history}"}}
+
+Observation:
+[will be filled automatically - contains quality assessment]
+
+Thought:
+Based on the quality assessment, [adjust response if needed based on feedback]. Now I can provide my Final Answer.
+
+Final Answer:
+[ONLY the customer-facing response - NO internal thoughts, quality feedback, or tool mentions. Just the clean, helpful answer they should see]
+```
+
+### ⚠️ IMPORTANT: You CANNOT skip the response_quality_checker step. If you try to give a Final Answer without using response_quality_checker first, your response will be rejected. The correct flow is:
+1. Use knowledge_base_retriever and/or web_search to gather information
+2. Use response_quality_checker to validate your response
+3. Only then provide your Final Answer
 
 """
 # Default configuration values

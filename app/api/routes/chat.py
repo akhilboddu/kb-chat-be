@@ -122,8 +122,13 @@ async def send_mail(request: ChatRequest, user=Depends(require_cookie_auth)):
     company_name = botData.data[0]["company"]
 
     userId = botData.data[0]["user_id"] 
-    userData = supabase.auth.admin.get_user_by_id(userId)
-    company_email = userData.user.email
+    try:
+        userData = supabase.auth.admin.get_user_by_id(userId)
+        company_email = userData.user.email if getattr(userData, "user", None) else None
+    except Exception as e:
+        print(f"Warning: could not fetch auth user {userId}: {e}")
+        company_email = None
+    print(userData if 'userData' in locals() else 'user_not_found', "user_data")
     
 
     #get user email from conversation_id in supabase
@@ -181,6 +186,7 @@ async def get_chat_history(conversation_id: str, user=Depends(require_cookie_aut
 async def chat_endpoint(
     kb_id: str,
     request: ChatRequest,
+    bot_id: str | None = None,
     store_history: bool = Query(True, description="When false, skip persisting messages"),
     customer_context: Optional[Dict[str, Any]] = None,
     custom_prompt: Optional[str] = None,
@@ -238,9 +244,22 @@ async def chat_endpoint(
         )
         # --- End Memory Management ---
 
+        # If no DB history (preview) but frontend supplied conversation_context, populate from it
+        if (not db_history) and hasattr(request, "conversation_context") and request.conversation_context:
+            print(f"Populating memory from conversation_context with {len(request.conversation_context)} entries")
+            for msg in request.conversation_context:
+                role = msg.get("role")
+                content = msg.get("content", "")
+                if role == "user":
+                    memory.chat_memory.add_user_message(content)
+                elif role == "bot":
+                    memory.chat_memory.add_ai_message(content)
+
+        # --- End Memory Management ---
+
         # Instantiate the agent executor for this KB, passing the populated memory
         print(f"Creating agent executor with memory for kb_id: {kb_id}")
-        agent_executor = agent_manager.create_agent_executor(kb_id=kb_id, memory=memory, customer_context=customer_context)
+        agent_executor = agent_manager.create_agent_executor(kb_id=kb_id, memory=memory, bot_id=bot_id, customer_context=customer_context)
         print(f"Agent executor created successfully for kb_id: {kb_id}")
 
         # --- Format History for Prompt ---
@@ -354,6 +373,43 @@ async def chat_endpoint(
         print(
             f"DEBUG: Returning ChatResponse. final_content='{final_content}', response_type='{response_type}'"
         )
+
+        # When history is not stored (preview mode) expose the tools used so the
+        # front-end emulator can display them.  We detect tools from the
+        # LangChain `intermediate_steps` if present.
+        if not store_history:
+            try:
+                used_tools = []
+                if isinstance(response, dict) and "intermediate_steps" in response:
+                    for step in response["intermediate_steps"]:
+                        if isinstance(step, tuple) and len(step) > 0:
+                            action = step[0]
+                            tool_name = getattr(action, "tool", str(action))
+                            if tool_name and tool_name not in used_tools:
+                                used_tools.append(tool_name)
+                # Auto-invoke quality checker if it wasn't called
+                if "response_quality_checker" not in used_tools:
+                    from app.core.tools import get_response_quality_checker_tool
+                    qc_tool = get_response_quality_checker_tool()
+                    if qc_tool:
+                        try:
+                            qc_input = {
+                                "user_question": request.message,
+                                "ai_response": final_content,
+                                "chat_history": history_string,
+                            }
+                            qc_result = qc_tool.func(json.dumps(qc_input))
+                            used_tools.append("response_quality_checker")
+                        except Exception as e:
+                            print(f"Quality checker fallback error: {e}")
+                if used_tools:
+                    tool_json = {"tool_use": used_tools}
+                    import json
+                    prefix = "```json\n" + json.dumps(tool_json) + "\n```\n\n"
+                    final_content = prefix + final_content
+            except Exception as e:
+                print(f"Tool extraction failed: {e}")
+
         return ChatResponse(content=final_content, type=response_type)
 
     # --- Catch Errors Outside Agent Execution (e.g., memory loading, setup) ---
@@ -767,45 +823,57 @@ async def bot_chathuman_endpoint(request: ChatRequest, user=Depends(get_current_
 
 
 @router.post("/bots/{bot_id}/chat", response_model=ChatResponse)
-async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
+async def bot_chat_endpoint(
+    bot_id: str,
+    request: ChatRequest,
+    store_history: bool = Query(True, description="When false, skip persisting messages"),
+):
     """
-    HTTP endpoint for stateful, non-streaming chat interactions with a bot,
-    maintaining conversation history using the database.
+    Endpoint for bot chat.
     """
-    print(f"Received HTTP chat request for bot_id: {bot_id}")
-
-    add_user_message_response = (
-        supabase.table("messages")
-        .insert(
-            {
-                "conversation_id": request.conversation_id,
-                "role": "user",
-                "content": request.message,
-                "reply_to_message_id": request.reply_to_message_id,
-            }
-        )
-        .execute()
-    )
-
-    # Broadcast the user message to all connected clients
-    if request.conversation_id in active_connections and add_user_message_response.data:
-        user_message_id = add_user_message_response.data[0]["id"]
-        for connection in active_connections[request.conversation_id]:
-            try:
-                await connection.send_json({
-                    "type": "message",
-                    "id": user_message_id,
-                    "content": request.message,
+    # Check if this is a preview conversation (starts with "preview_")
+    is_preview = request.conversation_id.startswith("preview_")
+    
+    # Override store_history for preview conversations
+    if is_preview:
+        store_history = False
+    
+    # Enforce subscription limits before processing
+    await enforce_subscription_limits(bot_id, request.conversation_id)
+    
+    # save user's message to supabase
+    if store_history:
+        add_user_message_response = (
+            supabase.table("messages")
+            .insert(
+                {
+                    "conversation_id": request.conversation_id,
                     "role": "user",
+                    "content": request.message,
                     "reply_to_message_id": request.reply_to_message_id,
-                    "timestamp": datetime.now().isoformat()
-                })
-            except Exception as e:
-                print(f"Error sending user message to websocket: {e}")
+                }
+            )
+            .execute()
+        )
 
-    # Fetch bot and conversation data concurrently for better performance
+        # Broadcast the user message to all connected clients
+        if request.conversation_id in active_connections and add_user_message_response.data:
+            user_message_id = add_user_message_response.data[0]["id"]
+            for connection in active_connections[request.conversation_id]:
+                try:
+                    await connection.send_json({
+                        "type": "message",
+                        "id": user_message_id,
+                        "content": request.message,
+                        "role": "user",
+                        "reply_to_message_id": request.reply_to_message_id,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                except Exception as e:
+                    print(f"Error sending user message to websocket: {e}")
+
+    # Fetch bot data
     bot_task = supabase.table("bots").select("*").eq("id", bot_id).execute()
-    conversation_task = supabase.table("conversations").select("*").eq("id", request.conversation_id).execute()
     
     # Process bot data
     response = bot_task
@@ -821,84 +889,105 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     else:
         print(f"No custom prompt configured for bot {bot_id}, using default")
 
-    # Get user data and conversation data
-    userData = supabase.auth.admin.get_user_by_id(user_id)
-    company_email = userData.user.email
-    print(userData, "user_data")
+    # Get user data
+    try:
+        userData = supabase.auth.admin.get_user_by_id(user_id)
+        company_email = userData.user.email if getattr(userData, "user", None) else None
+    except Exception as e:
+        print(f"Warning: could not fetch auth user {user_id}: {e}")
+        company_email = None
+    print(userData if 'userData' in locals() else 'user_not_found', "user_data")
     
-    conversation_repsonse = conversation_task
-    print(f"status is {conversation_repsonse.data}")
-    if conversation_repsonse.data and len(conversation_repsonse.data) > 0:
-        status = conversation_repsonse.data[0]["status"]
-        # Extract customer context and bot info for the agent
+    # Initialize customer context
+    customer_context = None
+    
+    # Only fetch conversation data if not a preview conversation
+    if not is_preview and store_history:
+        conversation_task = supabase.table("conversations").select("*").eq("id", request.conversation_id).execute()
+        conversation_repsonse = conversation_task
+        print(f"status is {conversation_repsonse.data}")
+        if conversation_repsonse.data and len(conversation_repsonse.data) > 0:
+            status = conversation_repsonse.data[0]["status"]
+            # Extract customer context and bot info for the agent
+            customer_context = {
+                "customer_name": conversation_repsonse.data[0].get("customer_name"),
+                "customer_email": conversation_repsonse.data[0].get("customer_email"),
+                "customer_phone": conversation_repsonse.data[0].get("customer_phone"),
+                "bot_name": bots_data.get("name", "Assistant"),  # Use bot's name
+                "company_name": bots_data.get("company", "our company")  # Use bot's company
+            }
+            if status == "human":
+                client = redisConnection.client
+                if client:
+                    #check if the bot is online
+                    bot_online = client.get(f"bot:{bot_id}")
+                    print(bot_online, "bot_online----")
+                if bot_online is None:
+                    notify_admin_on_user_message(
+                        conversation_repsonse.data[0]["customer_name"],
+                        conversation_repsonse.data[0]["customer_email"],
+                        request.message,
+                        request.conversation_id,
+                        company_email,
+                        bot_id  # Pass the bot_id parameter
+                    )
+                    return {
+                    "content": "Seems like no one is online to help you at the moment. But our team has been notified and will get back to you as soon as possible.",
+                    }
+                else:
+                    return {
+                    "content": "",
+                    }
+            # If conversation is closed, update it to "ai"
+            if status == "closed":
+                supabase.table("conversations").update({"status": "ai"}).eq(
+                    "id", request.conversation_id
+                ).execute()
+    else:
+        # For preview conversations, use default customer context
         customer_context = {
-            "customer_name": conversation_repsonse.data[0].get("customer_name"),
-            "customer_email": conversation_repsonse.data[0].get("customer_email"),
-            "customer_phone": conversation_repsonse.data[0].get("customer_phone"),
-            "bot_name": bots_data.get("name", "Assistant"),  # Use bot's name
-            "company_name": bots_data.get("company", "our company")  # Use bot's company
+            "customer_name": "Preview User",
+            "customer_email": "preview@example.com",
+            "customer_phone": None,
+            "bot_name": bots_data.get("name", "Assistant"),
+            "company_name": bots_data.get("company", "our company")
         }
-        if status == "human":
-            client = redisConnection.client
-            if client:
-                #check if the bot is online
-                bot_online = client.get(f"bot:{bot_id}")
-                print(bot_online, "bot_online----")
-            if bot_online is None:
-                notify_admin_on_user_message(
-                    conversation_repsonse.data[0]["customer_name"],
-                    conversation_repsonse.data[0]["customer_email"],
-                    request.message,
-                    request.conversation_id,
-                    company_email,
-                    bot_id  # Pass the bot_id parameter
-                )
-                return {
-                "content": "Seems like no one is online to help you at the moment. But our team has been notified and will get back to you as soon as possible.",
-                }
-            else:
-                return {
-                "content": "",
-                }
-        # If conversation is closed, update it to "ai"
-        if status == "closed":
-            supabase.table("conversations").update({"status": "ai"}).eq(
-                "id", request.conversation_id
-            ).execute()
+    
     # now use all logic from /agents/{kb_id}/chat endpoint
     response = await chat_endpoint(
         kb_id,
         request,
         store_history=False,  # Prevent duplicate DB insert – we already saved the user row above
-        customer_context=customer_context if 'customer_context' in locals() else None,
+        customer_context=customer_context,
         custom_prompt=custom_prompt,
     )
 
     # save user's message and bot's response to supabase
-    bot_message_response = supabase.table("messages").insert(
-        {
-            "conversation_id": request.conversation_id,
-            "role": "bot",
-            "content": response.content,
-        }
-    ).execute()
+    if store_history:
+        bot_message_response = supabase.table("messages").insert(
+            {
+                "conversation_id": request.conversation_id,
+                "role": "bot",
+                "content": response.content,
+            }
+        ).execute()
 
-    # Broadcast message to all connected clients
-    if request.conversation_id in active_connections:
-        print(f"Broadcasting to {len(active_connections[request.conversation_id])} connections for conversation_id {request.conversation_id}")
-        content = response["content"] if isinstance(response, dict) else getattr(response, "content", "")
-        message_id = bot_message_response.data[0]["id"] if bot_message_response.data else None
-        for connection in active_connections[request.conversation_id]:
-            try:
-                await connection.send_json({
-                    "type": "message",
-                    "id": message_id,  # Add the DB id for dedupe
-                    "content": content,
-                    "role": "bot",
-                    "timestamp": datetime.now().isoformat()
-                })
-            except Exception as e:
-                print(f"Error sending message to websocket: {e}")
+        # Broadcast message to all connected clients
+        if request.conversation_id in active_connections:
+            print(f"Broadcasting to {len(active_connections[request.conversation_id])} connections for conversation_id {request.conversation_id}")
+            content = response["content"] if isinstance(response, dict) else getattr(response, "content", "")
+            message_id = bot_message_response.data[0]["id"] if bot_message_response.data else None
+            for connection in active_connections[request.conversation_id]:
+                try:
+                    await connection.send_json({
+                        "type": "message",
+                        "id": message_id,  # Add the DB id for dedupe
+                        "content": content,
+                        "role": "bot",
+                        "timestamp": datetime.now().isoformat()
+                    })
+                except Exception as e:
+                    print(f"Error sending message to websocket: {e}")
 
     # conversation_count = db_manager.get_conversation_count(user_id)
     # message_count = db_manager.get_message_count(user_id)
@@ -910,7 +999,7 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
     #         }
 
     # if response.type == "handoff", update the user's message to status 'handoff'
-    if response.type == "handoff":
+    if response.type == "handoff" and store_history:
         print("is a clean handoff------>", response)
         client = redisConnection.client
         if client:
@@ -995,6 +1084,9 @@ async def bot_chat_endpoint(bot_id: str, request: ChatRequest):
         # Update
         supabase.table("conversations").update({"handoff_requests": new_value}).eq("id", request.conversation_id).execute()
         return response
+
+    # Always return the ChatResponse object
+    return response
 
 
 async def bot_chat_websocket_endpoint(bot_id: str, request: ChatRequest, websocket: WebSocket):
@@ -1460,6 +1552,7 @@ async def voice_chat_endpoint(
         agent_executor = agent_manager.create_agent_executor(
             kb_id=kb_id, 
             memory=memory, 
+            bot_id=None,  # voice endpoint doesn't have bot id
             customer_context=customer_context
         )
         

@@ -10,6 +10,7 @@ from langchain_core.memory import BaseMemory
 from langchain.callbacks.base import BaseCallbackHandler
 import logging
 from langchain.agents.output_parsers import ReActSingleInputOutputParser
+from langchain.schema import AgentFinish
 
 from app.core.config import llm
 from app.core.tools import (
@@ -51,9 +52,12 @@ class ForgivingReActOutputParser(ReActSingleInputOutputParser):
                     try:
                         return super().parse(proper_format)
                     except:
-                        # Last attempt emergency handling - explicitly create the return structure
-                        # This is essentially what the parser would produce, but we construct it manually
-                        return {"action": "Final Answer", "action_input": text.strip()}
+                        # Last-ditch attempt: return a valid AgentFinish so downstream code
+                        # (callbacks expecting .log / .tool etc.) does not crash.
+                        return AgentFinish(
+                            return_values={"output": text.strip()},
+                            log=text,
+                        )
 
                 # If still fails, raise the original error
                 raise original_error

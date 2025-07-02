@@ -74,14 +74,24 @@ async def get_message_count(user_id: str, start_date: str) -> int:
         bot_ids = [b["id"] for b in bots_resp.data] if bots_resp.data else []
         if not bot_ids:
             return 0
-        # Get all conversations for these bots
-        convs_resp = supabase.table("conversations").select("id").in_("bot_id", bot_ids).gte("created_at", start_date).execute()
+        # Get all conversations for these bots (no date filter – we want messages in *any* conversation)
+        convs_resp = supabase.table("conversations").select("id").in_("bot_id", bot_ids).execute()
         conv_ids = [c["id"] for c in convs_resp.data] if convs_resp.data else []
         if not conv_ids:
             return 0
         # Count messages in these conversations
-        msgs_resp = supabase.table("messages").select("id", count="exact").in_("conversation_id", conv_ids).execute()
-        return msgs_resp.count or 0
+        msgs_resp = (
+            supabase.table("messages")
+            .select("id", count="exact")
+            .in_("conversation_id", conv_ids)
+            .gte("created_at", start_date)  # Only messages created *this* month
+            .execute()
+        )
+        # supabase-py sets .count only when server sends Content-Range header.
+        # On some PostgREST setups that header is omitted; fall back to len(data).
+        if msgs_resp.count is not None:
+            return msgs_resp.count
+        return len(msgs_resp.data or [])
     except Exception as e:
         logger.error(f"Error getting message count: {str(e)}")
         return 0
@@ -93,7 +103,11 @@ async def get_conversation_count(user_id: str, start_date: str) -> int:
         if not bot_ids:
             return 0
         convs_resp = supabase.table("conversations").select("id", count="exact").in_("bot_id", bot_ids).gte("created_at", start_date).execute()
-        return convs_resp.count or 0
+        # supabase-py sets .count only when server sends Content-Range header.
+        # On some PostgREST setups that header is omitted; fall back to len(data).
+        if convs_resp.count is not None:
+            return convs_resp.count
+        return len(convs_resp.data or [])
     except Exception as e:
         logger.error(f"Error getting conversation count: {str(e)}")
         return 0
@@ -165,6 +179,10 @@ async def enforce_subscription_limits(bot_id: str, conversation_id: str) -> None
     Raises:
         HTTPException: If subscription limits are exceeded
     """
+    # Skip limits check for preview conversations
+    if conversation_id.startswith("preview_"):
+        return
+        
     limit_exceeded, error_message = await check_subscription_limits(bot_id, conversation_id)
     if limit_exceeded:
         logger.debug(f"Subscription limit exceeded? {limit_exceeded}")

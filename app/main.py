@@ -95,6 +95,7 @@ def create_app() -> FastAPI:
     widget_allowed_paths = [
         "/api/bots/{bot_id}/config",
         "/api/bots/{bot_id}/conversations",
+        "/api/bots/{bot_id}/chat",
         "/api/conversations/{conversation_id}",
         "/api/conversations/{conversation_id}/messages",
         "/api/bots/{bot_id}/conversations/by-email/{email}",

@@ -34,9 +34,13 @@ if GOOGLE_API_KEY:
     try:
         # Explicitly pass the key, though it often reads from env var too
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-lite", google_api_key=GOOGLE_API_KEY
+            model="gemini-2.0-flash", 
+            google_api_key=GOOGLE_API_KEY,
+            temperature=0.1,  # Lower temperature for more consistent behavior
+            top_p=0.8,
+            top_k=40
         )
-        print(f"LLM: Initialized Google Gemini Pro (gemini-2.0-flash-lite)")
+        print(f"LLM: Initialized Google Gemini Pro (gemini-2.0-flash) with temperature=0.1")
     except Exception as e:
         print(
             f"Warning: Failed to initialize Google Gemini even though key was found: {e}"

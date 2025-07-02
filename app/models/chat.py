@@ -9,6 +9,11 @@ class ChatRequest(BaseModel):
     message: str = Field(..., description="User message to the agent")
     conversation_id: str = Field(..., description="Conversation ID")
     reply_to_message_id: Optional[str] = None
+    # Optional list of previous messages for stateless preview sessions
+    conversation_context: Optional[List[dict]] = Field(
+        None,
+        description="Optional list of previous messages (role/content) to prime the agent when history is not stored.",
+    )
 
 
 class ChatResponse(BaseModel):

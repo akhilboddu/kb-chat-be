@@ -13,6 +13,7 @@ import os
 import json
 import requests
 from openai import OpenAI
+import re
 
 # Import Gemini for the response quality checker
 try:
@@ -225,7 +226,8 @@ def get_response_quality_checker_tool() -> Optional[Tool]:
         return None
     
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    # Use the same model variant as the main LLM to avoid per-model quota splits
+    model = genai.GenerativeModel("gemini-2.0-flash")
     
     def check_response_quality(evaluation_data: str) -> str:
         """
@@ -239,8 +241,15 @@ def get_response_quality_checker_tool() -> Optional[Tool]:
         }
         """
         try:
+            # Remove Markdown code block fences if present
+            cleaned_input = evaluation_data.strip()
+            if cleaned_input.startswith("```"):
+                # Strip the opening ``` or ```json and the closing ```
+                cleaned_input = re.sub(r"^```[a-zA-Z]*\n", "", cleaned_input)
+                cleaned_input = re.sub(r"\n```$", "", cleaned_input)
+
             # Parse the input data
-            data = json.loads(evaluation_data)
+            data = json.loads(cleaned_input)
             user_question = data.get("user_question", "")
             ai_response = data.get("ai_response", "")
             chat_history = data.get("chat_history", "")
@@ -291,15 +300,23 @@ Be thorough but concise in your analysis.
 """
 
             # Get evaluation from Gemini
-            response = model.generate_content(
-                evaluation_prompt,
-                generation_config={
-                    "max_output_tokens": 500,
-                    "temperature": 0.1,  # Low temperature for consistent evaluation
-                    "top_p": 0.8,
-                    "top_k": 40
-                }
-            )
+            try:
+                response = model.generate_content(
+                    evaluation_prompt,
+                    generation_config={
+                        "max_output_tokens": 500,
+                        "temperature": 0.1,  # Low temperature for consistent evaluation
+                        "top_p": 0.8,
+                        "top_k": 40,
+                    },
+                )
+            except Exception as gemini_err:
+                # Quota exhausted or transient error – return stub result so agent still satisfies prompt
+                return json.dumps({
+                    "quality_score": 0,
+                    "issues": [f"Checker error: {str(gemini_err)}"],
+                    "recommendation": "Quality checker fallback – review manually",
+                })
             
             if response and response.text:
                 # Try to extract JSON from response

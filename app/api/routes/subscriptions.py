@@ -201,10 +201,30 @@ async def get_dashboard_stats(request: Request):
             # Calculate total active conversations
             total_active_conversations = sum(active_conversations_per_bot.values())
             
+            # Determine window start date – use earliest bot creation or fallback to now - 30d
+            if bots_list:
+                earliest_bot_dt = min(
+                    [datetime.fromisoformat(b["created_at"].replace("Z", "+00:00")) for b in bots_list]
+                )
+                window_start_dt = earliest_bot_dt
+            else:
+                # No bots yet – without a creation date we cannot compute usage window
+                window_start_dt = None
+
+            if window_start_dt:
+                total_messages = await get_message_count(user_uuid, window_start_dt.isoformat())
+                total_conversations = await get_conversation_count(user_uuid, window_start_dt.isoformat())
+                logger.info(f"🔍 TRIAL PATH - user: {user_uuid}, window_start: {window_start_dt.isoformat()}")
+                logger.info(f"🔍 TRIAL PATH - calculated: messages={total_messages}, conversations={total_conversations}")
+            else:
+                total_messages = 0
+                total_conversations = 0
+                logger.info(f"🔍 TRIAL PATH - no window_start_dt, using zeros")
+
             # Build trial response with real bot data
             trial_stats = DashboardStatsResponse(
-                total_messages=0,
-                total_conversations=0,
+                total_messages=total_messages,
+                total_conversations=total_conversations,
                 active_conversations=total_active_conversations,
                 team_member_count=1,
                 subscription=SubscriptionResponse(
@@ -246,12 +266,23 @@ async def get_dashboard_stats(request: Request):
         logger.info(f"✅ Found plan: {plan_data['key']} with limits: {plan_data['limits']}")
         
         # --- Usage calculations ---
-        # Get start of the current month (UTC)
-        start_of_month = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        # Use subscription creation date as window start; fallback to current month if not available
+        sub_created_str = sub_data.get("created_at")
+        try:
+            subscription_start_dt = datetime.fromisoformat(sub_created_str.replace("Z", "+00:00")) if sub_created_str else None
+        except Exception:
+            subscription_start_dt = None
 
-        # Calculate usage metrics
-        total_messages = await get_message_count(user_uuid, start_of_month.isoformat())
-        total_conversations = await get_conversation_count(user_uuid, start_of_month.isoformat())
+        if subscription_start_dt:
+            total_messages = await get_message_count(user_uuid, subscription_start_dt.isoformat())
+            total_conversations = await get_conversation_count(user_uuid, subscription_start_dt.isoformat())
+            logger.info(f"🔍 SUBSCRIPTION PATH - user: {user_uuid}, window_start: {subscription_start_dt.isoformat()}")
+            logger.info(f"🔍 SUBSCRIPTION PATH - calculated: messages={total_messages}, conversations={total_conversations}")
+        else:
+            # Should not happen – created_at is expected – but ensure defined values
+            logger.warning("Subscription created_at missing for user %s; returning zero usage", user_uuid)
+            total_messages = 0
+            total_conversations = 0
 
         # Fetch bots for the user (needed for live bot counts & dashboard listing)
         bots_resp = supabase.table("bots").select("*").eq("user_id", user_uuid).execute()
