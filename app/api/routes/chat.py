@@ -45,7 +45,8 @@ from app.utils.cookie_auth import require_cookie_auth
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["chat"], dependencies=[Depends(require_cookie_auth)])
+router = APIRouter(tags=["chat"])
+public_router = APIRouter(tags=["chat-public"])
 
 # Store active websocket connections
 active_connections: Dict[str, Set[WebSocket]] = {}
@@ -99,7 +100,7 @@ async def handle_handoff_triggered(conversation_id: str):
 agent_active_connections = {}
 
 @router.post("/send-mail")
-async def send_mail(request: ChatRequest):
+async def send_mail(request: ChatRequest, user=Depends(require_cookie_auth)):
     client = redisConnection.client
     if not client:
         return {"message": "Redis client not available"}
@@ -149,7 +150,7 @@ async def send_mail(request: ChatRequest):
 
 
 @router.get("/{conversation_id}/chat-history")
-async def get_chat_history(conversation_id: str):
+async def get_chat_history(conversation_id: str, user=Depends(require_cookie_auth)):
     try:
         conversation_response = (
             supabase.table("messages")
@@ -658,7 +659,7 @@ async def delete_chat_history_endpoint(conversation_id: str):
 
 
 @router.get("/conversations", response_model=ListConversationsResponse)
-async def list_conversations_endpoint():
+async def list_conversations_endpoint(user=Depends(require_cookie_auth)):
     """
     Lists all conversations grouped by knowledge base,
     with preview information and handoff status.
@@ -1545,7 +1546,7 @@ async def get_stream_token(user_id: str):
         raise HTTPException(status_code=500, detail="Failed to generate token")
 
 
-@router.post("/send-msg-demobot", response_model=ChatResponse)
+@public_router.post("/send-msg-demobot", response_model=ChatResponse)
 async def send_message_to_demo_bot(request: DemoChatRequest):
     """
     Endpoint for sending messages to a demo bot associated with a specific URL.
@@ -1591,8 +1592,16 @@ async def send_message_to_demo_bot(request: DemoChatRequest):
                 elif msg.get("role") == "bot":
                     memory.chat_memory.add_ai_message(msg.get("content", ""))
         
-        # 4. Create agent executor with populated memory
-        agent_executor = agent_manager.create_agent_executor(kb_id=kb_id, memory=memory)
+        # 4. Create agent executor with populated memory and customer context
+        # Create basic customer context for demo bot
+        customer_context = {
+            "customer_name": "Demo User",
+            "customer_email": "demo@example.com", 
+            "customer_phone": None,
+            "bot_name": "Demo Assistant",
+            "company_name": "Demo Company"
+        }
+        agent_executor = agent_manager.create_agent_executor(kb_id=kb_id, memory=memory, customer_context=customer_context)
         
         # 5. Format history for prompt
         memory_variables = memory.load_memory_variables({})
@@ -1618,10 +1627,13 @@ async def send_message_to_demo_bot(request: DemoChatRequest):
         agent_output = response.get("output")
         if agent_output:
             from app.utils.text_processing import clean_agent_output, auto_add_handoff_if_needed
+            print(f"Demo bot - Raw agent output: {agent_output}")
             cleaned_output = clean_agent_output(agent_output)
+            print(f"Demo bot - After clean_agent_output: {cleaned_output}")
             
             # Apply automatic handoff detection
             cleaned_output = auto_add_handoff_if_needed(cleaned_output)
+            print(f"Demo bot - After auto_add_handoff_if_needed: {cleaned_output}")
             
             # Check for handoff marker and determine response type
             handoff_marker = "(needs help)"

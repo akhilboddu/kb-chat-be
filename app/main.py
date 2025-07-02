@@ -43,15 +43,24 @@ def create_app() -> FastAPI:
     is_development = os.getenv("ENVIRONMENT", "development").lower() == "development"
     
     if is_development:
-        # Allow all origins in development for all endpoints
-        cors_origins = ["*"]
-        allow_credentials = False  # Must be False when using "*"
-        print("CORS: Development mode - allowing all origins for all endpoints")
-    else:
-        # Production: allow all origins for widget endpoints, restrict others
-        cors_origins = ["https://deskforce.co.za","http://localhost:8080"]
+        # In development, allow various local development server origins
+        cors_origins = [
+            "http://localhost:8080",     # Vite / Netlify dev server
+            "http://localhost:3000",     # React default dev port
+            "http://localhost:5500",     # Live Server default port
+            "http://127.0.0.1:5500",     # Live Server with 127.0.0.1
+            "http://127.0.0.1:8080",     # Alternative local server
+            "http://127.0.0.1:3000",     # Alternative local server
+            "http://localhost:5000",     # Common dev server port
+            "http://127.0.0.1:5000",     # Alternative local server
+        ]
         allow_credentials = True
-        print("CORS: Production mode - allowing all origins for widget endpoints only")
+        print(f"CORS: Development mode - allowing local origins: {cors_origins}")
+    else:
+        # Production: allow specific origins
+        cors_origins = ["https://deskforce.co.za", "http://localhost:8080"]
+        allow_credentials = True
+        print(f"CORS: Production mode - allowing origins: {cors_origins}")
     
     redisConnection.connect()
 
@@ -92,6 +101,7 @@ def create_app() -> FastAPI:
         "/api/status/user",
         "/api/status/{bot_id}",
         "/api/ws/{conversation_id}",
+        "/api/send-msg-demobot",
     ]
     app.add_middleware(WidgetCORSFilter, allowed_paths=widget_allowed_paths, allowed_origins=cors_origins)
 
