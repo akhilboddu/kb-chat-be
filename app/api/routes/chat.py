@@ -377,38 +377,38 @@ async def chat_endpoint(
         # When history is not stored (preview mode) expose the tools used so the
         # front-end emulator can display them.  We detect tools from the
         # LangChain `intermediate_steps` if present.
-        if not store_history:
-            try:
-                used_tools = []
-                if isinstance(response, dict) and "intermediate_steps" in response:
-                    for step in response["intermediate_steps"]:
-                        if isinstance(step, tuple) and len(step) > 0:
-                            action = step[0]
-                            tool_name = getattr(action, "tool", str(action))
-                            if tool_name and tool_name not in used_tools:
-                                used_tools.append(tool_name)
-                # Auto-invoke quality checker if it wasn't called
-                if "response_quality_checker" not in used_tools:
-                    from app.core.tools import get_response_quality_checker_tool
-                    qc_tool = get_response_quality_checker_tool()
-                    if qc_tool:
-                        try:
-                            qc_input = {
-                                "user_question": request.message,
-                                "ai_response": final_content,
-                                "chat_history": history_string,
-                            }
-                            qc_result = qc_tool.func(json.dumps(qc_input))
-                            used_tools.append("response_quality_checker")
-                        except Exception as e:
-                            print(f"Quality checker fallback error: {e}")
-                if used_tools:
-                    tool_json = {"tool_use": used_tools}
-                    import json
-                    prefix = "```json\n" + json.dumps(tool_json) + "\n```\n\n"
-                    final_content = prefix + final_content
-            except Exception as e:
-                print(f"Tool extraction failed: {e}")
+        # if not store_history:
+        #     try:
+        #         used_tools = []
+        #         if isinstance(response, dict) and "intermediate_steps" in response:
+        #             for step in response["intermediate_steps"]:
+        #                 if isinstance(step, tuple) and len(step) > 0:
+        #                     action = step[0]
+        #                     tool_name = getattr(action, "tool", str(action))
+        #                     if tool_name and tool_name not in used_tools:
+        #                         used_tools.append(tool_name)
+        #         # Auto-invoke quality checker if it wasn't called
+        #         if "response_quality_checker" not in used_tools:
+        #             from app.core.tools import get_response_quality_checker_tool
+        #             qc_tool = get_response_quality_checker_tool()
+        #             if qc_tool:
+        #                 try:
+        #                     qc_input = {
+        #                         "user_question": request.message,
+        #                         "ai_response": final_content,
+        #                         "chat_history": history_string,
+        #                     }
+        #                     qc_result = qc_tool.func(json.dumps(qc_input))
+        #                     used_tools.append("response_quality_checker")
+        #                 except Exception as e:
+        #                     print(f"Quality checker fallback error: {e}")
+        #         if used_tools:
+        #             tool_json = {"tool_use": used_tools}
+        #             import json
+        #             prefix = "```json\n" + json.dumps(tool_json) + "\n```\n\n"
+        #             final_content = prefix + final_content
+        #     except Exception as e:
+        #         print(f"Tool extraction failed: {e}")
 
         return ChatResponse(content=final_content, type=response_type)
 
@@ -822,271 +822,272 @@ async def bot_chathuman_endpoint(request: ChatRequest, user=Depends(get_current_
     return post_message(request.conversation_id, request.message, "human")
 
 
-@router.post("/bots/{bot_id}/chat", response_model=ChatResponse)
-async def bot_chat_endpoint(
-    bot_id: str,
-    request: ChatRequest,
-    store_history: bool = Query(True, description="When false, skip persisting messages"),
-):
-    """
-    Endpoint for bot chat.
-    """
-    # Check if this is a preview conversation (starts with "preview_")
-    is_preview = request.conversation_id.startswith("preview_")
+# @router.post("/bots/{bot_id}/chat", response_model=ChatResponse)
+# async def bot_chat_endpoint(
+#     bot_id: str,
+#     request: ChatRequest,
+#     store_history: bool = Query(True, description="When false, skip persisting messages"),
+# ):
+#     """
+#     Endpoint for bot chat.
+#     """
+#     # Check if this is a preview conversation (starts with "preview_")
+#     is_preview = request.conversation_id.startswith("preview_")
     
-    # Override store_history for preview conversations
-    if is_preview:
-        store_history = False
+#     # Override store_history for preview conversations
+#     if is_preview:
+#         store_history = False
     
-    # Enforce subscription limits before processing
-    await enforce_subscription_limits(bot_id, request.conversation_id)
+#     # Enforce subscription limits before processing
+#     await enforce_subscription_limits(bot_id, request.conversation_id)
     
-    # save user's message to supabase
-    if store_history:
-        add_user_message_response = (
-            supabase.table("messages")
-            .insert(
-                {
-                    "conversation_id": request.conversation_id,
-                    "role": "user",
-                    "content": request.message,
-                    "reply_to_message_id": request.reply_to_message_id,
-                }
-            )
-            .execute()
-        )
+#     # save user's message to supabase
+#     if store_history:
+#         add_user_message_response = (
+#             supabase.table("messages")
+#             .insert(
+#                 {
+#                     "conversation_id": request.conversation_id,
+#                     "role": "user",
+#                     "content": request.message,
+#                     "reply_to_message_id": request.reply_to_message_id,
+#                 }
+#             )
+#             .execute()
+#         )
 
-        # Broadcast the user message to all connected clients
-        if request.conversation_id in active_connections and add_user_message_response.data:
-            user_message_id = add_user_message_response.data[0]["id"]
-            for connection in active_connections[request.conversation_id]:
-                try:
-                    await connection.send_json({
-                        "type": "message",
-                        "id": user_message_id,
-                        "content": request.message,
-                        "role": "user",
-                        "reply_to_message_id": request.reply_to_message_id,
-                        "timestamp": datetime.now().isoformat()
-                    })
-                except Exception as e:
-                    print(f"Error sending user message to websocket: {e}")
+#         # Broadcast the user message to all connected clients
+#         if request.conversation_id in active_connections and add_user_message_response.data:
+#             user_message_id = add_user_message_response.data[0]["id"]
+#             for connection in active_connections[request.conversation_id]:
+#                 try:
+#                     await connection.send_json({
+#                         "type": "message",
+#                         "id": user_message_id,
+#                         "content": request.message,
+#                         "role": "user",
+#                         "reply_to_message_id": request.reply_to_message_id,
+#                         "timestamp": datetime.now().isoformat()
+#                     })
+#                 except Exception as e:
+#                     print(f"Error sending user message to websocket: {e}")
 
-    # Fetch bot data
-    bot_task = supabase.table("bots").select("*").eq("id", bot_id).execute()
+#     # Fetch bot data
+#     bot_task = supabase.table("bots").select("*").eq("id", bot_id).execute()
     
-    # Process bot data
-    response = bot_task
-    bots_data = response.data[0]
-    user_id = bots_data["user_id"]
-    print(user_id, "user_id")
-    kb_id = bots_data["kb_id"]
+#     # Process bot data
+#     response = bot_task
+#     bots_data = response.data[0]
+#     user_id = bots_data["user_id"]
+#     print(user_id, "user_id")
+#     kb_id = bots_data["kb_id"]
     
-    # Get custom prompt if configured
-    custom_prompt = bots_data.get("custom_prompt")
-    if custom_prompt:
-        print(f"Found custom prompt for bot {bot_id}")
-    else:
-        print(f"No custom prompt configured for bot {bot_id}, using default")
+#     # Get custom prompt if configured
+#     custom_prompt = bots_data.get("custom_prompt")
+#     if custom_prompt:
+#         print(f"Found custom prompt for bot {bot_id}")
+#     else:
+#         print(f"No custom prompt configured for bot {bot_id}, using default")
 
-    # Get user data
-    try:
-        userData = supabase.auth.admin.get_user_by_id(user_id)
-        company_email = userData.user.email if getattr(userData, "user", None) else None
-    except Exception as e:
-        print(f"Warning: could not fetch auth user {user_id}: {e}")
-        company_email = None
-    print(userData if 'userData' in locals() else 'user_not_found', "user_data")
+#     # Get user data
+#     try:
+#         userData = supabase.auth.admin.get_user_by_id(user_id)
+#         company_email = userData.user.email if getattr(userData, "user", None) else None
+#     except Exception as e:
+#         print(f"Warning: could not fetch auth user {user_id}: {e}")
+#         company_email = None
+#     print(userData if 'userData' in locals() else 'user_not_found', "user_data")
     
-    # Initialize customer context
-    customer_context = None
+#     # Initialize customer context
+#     customer_context = None
     
-    # Only fetch conversation data if not a preview conversation
-    if not is_preview and store_history:
-        conversation_task = supabase.table("conversations").select("*").eq("id", request.conversation_id).execute()
-        conversation_repsonse = conversation_task
-        print(f"status is {conversation_repsonse.data}")
-        if conversation_repsonse.data and len(conversation_repsonse.data) > 0:
-            status = conversation_repsonse.data[0]["status"]
-            # Extract customer context and bot info for the agent
-            customer_context = {
-                "customer_name": conversation_repsonse.data[0].get("customer_name"),
-                "customer_email": conversation_repsonse.data[0].get("customer_email"),
-                "customer_phone": conversation_repsonse.data[0].get("customer_phone"),
-                "bot_name": bots_data.get("name", "Assistant"),  # Use bot's name
-                "company_name": bots_data.get("company", "our company")  # Use bot's company
-            }
-            if status == "human":
-                client = redisConnection.client
-                if client:
-                    #check if the bot is online
-                    bot_online = client.get(f"bot:{bot_id}")
-                    print(bot_online, "bot_online----")
-                if bot_online is None:
-                    notify_admin_on_user_message(
-                        conversation_repsonse.data[0]["customer_name"],
-                        conversation_repsonse.data[0]["customer_email"],
-                        request.message,
-                        request.conversation_id,
-                        company_email,
-                        bot_id  # Pass the bot_id parameter
-                    )
-                    return {
-                    "content": "Seems like no one is online to help you at the moment. But our team has been notified and will get back to you as soon as possible.",
-                    }
-                else:
-                    return {
-                    "content": "",
-                    }
-            # If conversation is closed, update it to "ai"
-            if status == "closed":
-                supabase.table("conversations").update({"status": "ai"}).eq(
-                    "id", request.conversation_id
-                ).execute()
-    else:
-        # For preview conversations, use default customer context
-        customer_context = {
-            "customer_name": "Preview User",
-            "customer_email": "preview@example.com",
-            "customer_phone": None,
-            "bot_name": bots_data.get("name", "Assistant"),
-            "company_name": bots_data.get("company", "our company")
-        }
+#     # Only fetch conversation data if not a preview conversation
+#     if not is_preview and store_history:
+#         conversation_task = supabase.table("conversations").select("*").eq("id", request.conversation_id).execute()
+#         conversation_repsonse = conversation_task
+#         print(f"status is {conversation_repsonse.data}")
+#         if conversation_repsonse.data and len(conversation_repsonse.data) > 0:
+#             status = conversation_repsonse.data[0]["status"]
+#             # Extract customer context and bot info for the agent
+#             customer_context = {
+#                 "customer_name": conversation_repsonse.data[0].get("customer_name"),
+#                 "customer_email": conversation_repsonse.data[0].get("customer_email"),
+#                 "customer_phone": conversation_repsonse.data[0].get("customer_phone"),
+#                 "bot_name": bots_data.get("name", "Assistant"),  # Use bot's name
+#                 "company_name": bots_data.get("company", "our company")  # Use bot's company
+#             }
+#             if status == "human":
+#                 client = redisConnection.client
+#                 if client:
+#                     #check if the bot is online
+#                     bot_online = client.get(f"bot:{bot_id}")
+#                     print(bot_online, "bot_online----")
+#                 if bot_online is None:
+#                     notify_admin_on_user_message(
+#                         conversation_repsonse.data[0]["customer_name"],
+#                         conversation_repsonse.data[0]["customer_email"],
+#                         request.message,
+#                         request.conversation_id,
+#                         company_email,
+#                         bot_id  # Pass the bot_id parameter
+#                     )
+#                     return {
+#                     "content": "Seems like no one is online to help you at the moment. But our team has been notified and will get back to you as soon as possible.",
+#                     }
+#                 else:
+#                     return {
+#                     "content": "",
+#                     }
+#             # If conversation is closed, update it to "ai"
+#             if status == "closed":
+#                 supabase.table("conversations").update({"status": "ai"}).eq(
+#                     "id", request.conversation_id
+#                 ).execute()
+#     else:
+#         # For preview conversations, use default customer context
+#         customer_context = {
+#             "customer_name": "Preview User",
+#             "customer_email": "preview@example.com",
+#             "customer_phone": None,
+#             "bot_name": bots_data.get("name", "Assistant"),
+#             "company_name": bots_data.get("company", "our company")
+#         }
     
-    # now use all logic from /agents/{kb_id}/chat endpoint
-    response = await chat_endpoint(
-        kb_id,
-        request,
-        store_history=False,  # Prevent duplicate DB insert – we already saved the user row above
-        customer_context=customer_context,
-        custom_prompt=custom_prompt,
-    )
+#     # now use all logic from /agents/{kb_id}/chat endpoint
+#     response = await chat_endpoint(
+#         kb_id,
+#         request,
+#         bot_id,
+#         store_history=False,  # Prevent duplicate DB insert – we already saved the user row above
+#         customer_context=customer_context,
+#         custom_prompt=custom_prompt,
+#     )
 
-    # save user's message and bot's response to supabase
-    if store_history:
-        bot_message_response = supabase.table("messages").insert(
-            {
-                "conversation_id": request.conversation_id,
-                "role": "bot",
-                "content": response.content,
-            }
-        ).execute()
+#     # save user's message and bot's response to supabase
+#     if store_history:
+#         bot_message_response = supabase.table("messages").insert(
+#             {
+#                 "conversation_id": request.conversation_id,
+#                 "role": "bot",
+#                 "content": response.content,
+#             }
+#         ).execute()
 
-        # Broadcast message to all connected clients
-        if request.conversation_id in active_connections:
-            print(f"Broadcasting to {len(active_connections[request.conversation_id])} connections for conversation_id {request.conversation_id}")
-            content = response["content"] if isinstance(response, dict) else getattr(response, "content", "")
-            message_id = bot_message_response.data[0]["id"] if bot_message_response.data else None
-            for connection in active_connections[request.conversation_id]:
-                try:
-                    await connection.send_json({
-                        "type": "message",
-                        "id": message_id,  # Add the DB id for dedupe
-                        "content": content,
-                        "role": "bot",
-                        "timestamp": datetime.now().isoformat()
-                    })
-                except Exception as e:
-                    print(f"Error sending message to websocket: {e}")
+#         # Broadcast message to all connected clients
+#         if request.conversation_id in active_connections:
+#             print(f"Broadcasting to {len(active_connections[request.conversation_id])} connections for conversation_id {request.conversation_id}")
+#             content = response["content"] if isinstance(response, dict) else getattr(response, "content", "")
+#             message_id = bot_message_response.data[0]["id"] if bot_message_response.data else None
+#             for connection in active_connections[request.conversation_id]:
+#                 try:
+#                     await connection.send_json({
+#                         "type": "message",
+#                         "id": message_id,  # Add the DB id for dedupe
+#                         "content": content,
+#                         "role": "bot",
+#                         "timestamp": datetime.now().isoformat()
+#                     })
+#                 except Exception as e:
+#                     print(f"Error sending message to websocket: {e}")
 
-    # conversation_count = db_manager.get_conversation_count(user_id)
-    # message_count = db_manager.get_message_count(user_id)
-    # if conversation_count is not None and message_count is not None:
-    #     if conversation_count >= 20 or message_count >= 100:
-    #         print("The bad return")
-    #         return {
-    #             "content": "",
-    #         }
+#     # conversation_count = db_manager.get_conversation_count(user_id)
+#     # message_count = db_manager.get_message_count(user_id)
+#     # if conversation_count is not None and message_count is not None:
+#     #     if conversation_count >= 20 or message_count >= 100:
+#     #         print("The bad return")
+#     #         return {
+#     #             "content": "",
+#     #         }
 
-    # if response.type == "handoff", update the user's message to status 'handoff'
-    if response.type == "handoff" and store_history:
-        print("is a clean handoff------>", response)
-        client = redisConnection.client
-        if client:
-            bot_online = client.get(f"bot:{bot_id}")
-            print(bot_online, "bot_online")
-            if bot_online is None:
-                notify_admin_on_user_message(
-                    conversation_repsonse.data[0]["customer_name"],
-                    conversation_repsonse.data[0]["customer_email"],
-                    request.message,
-                    request.conversation_id,
-                    company_email,
-                    bot_id  # Pass the bot_id parameter
-                )
-        supabase.table("handover_requests").insert(
-            {
-                "conversation_id": request.conversation_id,
-                "last_message_id": add_user_message_response.data[0]["id"],
-            }
-        ).execute()
+#     # if response.type == "handoff", update the user's message to status 'handoff'
+#     if response.type == "handoff" and store_history:
+#         print("is a clean handoff------>", response)
+#         client = redisConnection.client
+#         if client:
+#             bot_online = client.get(f"bot:{bot_id}")
+#             print(bot_online, "bot_online")
+#             if bot_online is None:
+#                 notify_admin_on_user_message(
+#                     conversation_repsonse.data[0]["customer_name"],
+#                     conversation_repsonse.data[0]["customer_email"],
+#                     request.message,
+#                     request.conversation_id,
+#                     company_email,
+#                     bot_id  # Pass the bot_id parameter
+#                 )
+#         supabase.table("handover_requests").insert(
+#             {
+#                 "conversation_id": request.conversation_id,
+#                 "last_message_id": add_user_message_response.data[0]["id"],
+#             }
+#         ).execute()
 
-        supabase.table("conversations").update({"status": "human"}).eq(
-            "id", request.conversation_id
-        ).execute()
+#         supabase.table("conversations").update({"status": "human"}).eq(
+#             "id", request.conversation_id
+#         ).execute()
 
-        # Update the user's message to status 'handoff'
-        supabase.table("messages").update({
-            "status": "handoff"
-        }).eq("id", add_user_message_response.data[0]["id"]).execute()
+#         # Update the user's message to status 'handoff'
+#         supabase.table("messages").update({
+#             "status": "handoff"
+#         }).eq("id", add_user_message_response.data[0]["id"]).execute()
 
         
 
-        # Broadcast message update to all clients so UI can update color immediately
-        if request.conversation_id in active_connections:
-            for connection in active_connections[request.conversation_id]:
-                try:
-                    await connection.send_json({
-                        "type": "message_update",
-                        "message_id": add_user_message_response.data[0]["id"],
-                        "status": "handoff"
-                    })
-                except Exception as e:
-                    print(f"Error sending message update to websocket: {e}")
-                    active_connections[conversation_id].remove(ws)
-                    if not active_connections[conversation_id]:
-                        del active_connections[conversation_id]
-                continue
+#         # Broadcast message update to all clients so UI can update color immediately
+#         if request.conversation_id in active_connections:
+#             for connection in active_connections[request.conversation_id]:
+#                 try:
+#                     await connection.send_json({
+#                         "type": "message_update",
+#                         "message_id": add_user_message_response.data[0]["id"],
+#                         "status": "handoff"
+#                     })
+#                 except Exception as e:
+#                     print(f"Error sending message update to websocket: {e}")
+#                     active_connections[conversation_id].remove(ws)
+#                     if not active_connections[conversation_id]:
+#                         del active_connections[conversation_id]
+#                 continue
 
-        # sending a notification to the bot admin
-        result = supabase.table("bots").select("*").eq("id", bot_id).single().execute()
+#         # sending a notification to the bot admin
+#         result = supabase.table("bots").select("*").eq("id", bot_id).single().execute()
 
-        if result.data:  # ✅ Check if data exists
-            user_id = result.data["user_id"]  # ✅ Access dict key
-            print(user_id, "userid")
-            result = (
-                supabase.table("anon_push_subscriptions")
-                .select("*")
-                .eq("user_id", user_id)
-                .execute()
-            )
-            print("result anon", result)
-            if result.data and len(result.data) > 0:
-                for data in result.data:
-                    sub_obj = json.loads(data["subscription"])
-                    send_push_notification(
-                        sub_obj,
-                        "Support Required",
-                        "A new user has request for human support",
-                    )
-                    print(
-                        f"msg: Result for {data['user_id']} is ready and push notification is been sent"
-                    )
-        else:
-            print("Bot not found or query failed")
-        # Fetch current value
-        resp = supabase.table("conversations").select("handoff_requests").eq("id", request.conversation_id).single().execute()
-        current = resp.data["handoff_requests"] if resp.data and "handoff_requests" in resp.data else 0
+#         if result.data:  # ✅ Check if data exists
+#             user_id = result.data["user_id"]  # ✅ Access dict key
+#             print(user_id, "userid")
+#             result = (
+#                 supabase.table("anon_push_subscriptions")
+#                 .select("*")
+#                 .eq("user_id", user_id)
+#                 .execute()
+#             )
+#             print("result anon", result)
+#             if result.data and len(result.data) > 0:
+#                 for data in result.data:
+#                     sub_obj = json.loads(data["subscription"])
+#                     send_push_notification(
+#                         sub_obj,
+#                         "Support Required",
+#                         "A new user has request for human support",
+#                     )
+#                     print(
+#                         f"msg: Result for {data['user_id']} is ready and push notification is been sent"
+#                     )
+#         else:
+#             print("Bot not found or query failed")
+#         # Fetch current value
+#         resp = supabase.table("conversations").select("handoff_requests").eq("id", request.conversation_id).single().execute()
+#         current = resp.data["handoff_requests"] if resp.data and "handoff_requests" in resp.data else 0
 
-        # Increment (or decrement, clamp to >= 0)
-        new_value = max(current + 1, 0)  # or max(current - 1, 0) for decrement
+#         # Increment (or decrement, clamp to >= 0)
+#         new_value = max(current + 1, 0)  # or max(current - 1, 0) for decrement
 
-        # Update
-        supabase.table("conversations").update({"handoff_requests": new_value}).eq("id", request.conversation_id).execute()
-        return response
+#         # Update
+#         supabase.table("conversations").update({"handoff_requests": new_value}).eq("id", request.conversation_id).execute()
+#         return response
 
-    # Always return the ChatResponse object
-    return response
+#     # Always return the ChatResponse object
+#     return response
 
 
 async def bot_chat_websocket_endpoint(bot_id: str, request: ChatRequest, websocket: WebSocket):
@@ -1160,6 +1161,7 @@ async def bot_chat_websocket_endpoint(bot_id: str, request: ChatRequest, websock
         response = await chat_endpoint(
             kb_id,
             request,
+            bot_id=bot_id,
             store_history=False,
             customer_context={
                 "customer_name": conversation_response.data[0].get("customer_name"),
@@ -1650,9 +1652,21 @@ async def send_message_to_demo_bot(request: DemoChatRequest):
     """
     try:
 
-        #get the domain from the url
-        domain = str(request.url).replace("https://", "").replace("http://", "").replace("www.", "").replace("/", "")
-        
+        # --- Robustly normalise the incoming URL so it matches what we store in `demo_bots.url` ---
+        # Using `urllib.parse` avoids accidental concatenation of path segments (e.g. `ayoba.me/web` → `ayoba.meweb`).
+        from urllib.parse import urlparse
+
+        parsed_url = urlparse(str(request.url))
+
+        # Extract host (netloc) first; if absent (user sends bare domain) fall back to path.
+        domain = parsed_url.netloc or parsed_url.path
+
+        # Remove leading 'www.' and any trailing slash.
+        domain = domain.lstrip().replace("www.", "").rstrip("/")
+
+        # Ignore any path components – the demo_bots table stores only the bare domain.
+        domain = domain.lower()
+         
         # 1. Get the demo bot's kb_id from the URL
         demo_bot_response = supabase.table("demo_bots").select("kb_id").eq("url", domain).execute()
         

@@ -204,33 +204,6 @@ class EnhancedAgentExecutor:
         """Delegate all other attribute access to the wrapped agent_executor."""
         return getattr(self.agent_executor, name)
 
-
-def get_bot_business_context(kb_id: str) -> Dict[str, Any]:
-    """
-    Retrieve business context for a bot from the database.
-    
-    Args:
-        kb_id: Knowledge base ID
-        
-    Returns:
-        Dictionary containing business context
-    """
-    # Hardcoded Zaio business context since Supabase doesn't contain this data
-    zaio_business_context = {
-        'company_name': 'Zaio',
-        'industry': 'Edtech',
-        'products': ['Full Stack Bootcamp', 'Data Science Bootcamp', 'Cyber Security Bootcamp'],
-        'services': ['Full Stack Development Training', 'Data Science Training', 'Cyber Security Training'],
-        'bot_name': 'Zaio Assistant',
-        'business_keywords': [
-            'zaio', 'edtech', 'full stack', 'data science', 'cyber security', 'bootcamp', 'training', 
-            'coding', 'programming', 'education', 'tech education', 'developer', 'programmer', 
-            'salary', 'earnings', 'income', 'pay', 'compensation', 'job market', 'career', 'employment'
-        ]
-    }
-    
-    return zaio_business_context
-
 def create_agent_executor(
     kb_id: str, memory: Optional[BaseMemory] = None, bot_id: str = None, customer_context: Optional[Dict[str, Any]] = None
 ) -> Union[AgentExecutor, EnhancedAgentExecutor]:
@@ -251,6 +224,7 @@ def create_agent_executor(
 
     # --- Fetch Agent Configuration from DB ---
     print(f"Fetching agent config for kb_id: {kb_id}")
+    print(f"Bot ID: {bot_id}")
     
     # First, try to get custom prompt from bots table if bot_id is provided
     custom_prompt_from_bot = None
@@ -266,6 +240,7 @@ def create_agent_executor(
     # Get the agent config (for max_iterations and fallback prompt)
     agent_config = db_manager.get_agent_config(kb_id)
     
+    print(f"/n/nCustom prompt from bot: {custom_prompt_from_bot}")
     # Use custom prompt from bot if available, otherwise use agent config prompt or DEFAULT_SYSTEM_PROMPT
     if custom_prompt_from_bot and custom_prompt_from_bot.strip():
         # For custom prompts, append the tools and ReAct formatting from the default prompt
