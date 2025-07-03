@@ -19,7 +19,8 @@ from functools import wraps
 logger = logging.getLogger(__name__)
 
 # Initialize Redis client for task tracking
-redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+# Use kb-redis as default for Docker environment
+redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://kb-redis:6379/0"))
 
 
 class TaskProtection:

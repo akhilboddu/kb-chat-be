@@ -3,6 +3,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict
+import re
 
 from app.core.supabase_client import supabase
 from app.models.subscription import SubscriptionResponse, BotResponse, DashboardStatsResponse, SubscriptionOut
@@ -148,6 +149,52 @@ async def get_active_conversations_per_bot(user_uuid: str) -> Dict[str, int]:
         return {}
 
 
+# Helper to safely parse ISO 8601 timestamps coming from Supabase which
+# sometimes include fewer than 6 fractional-second digits (e.g. "2025-05-25T15:44:11.5458+00:00").
+# Python < 3.11 complains about such strings, so we normalise them by padding
+# the fractional part with trailing zeros up to 6 digits.
+
+def parse_iso_datetime(value: str):
+    """Parse ISO8601 datetime strings with flexible microsecond precision.
+
+    1. Converts trailing 'Z' to '+00:00' so that Python < 3.11 accepts it.
+    2. Pads the fractional-second component with trailing zeros until it has
+       exactly six digits so that ``datetime.fromisoformat`` succeeds on
+       Python versions prior to 3.11.
+    """
+    if not value:
+        return None
+
+    # Normalise timezone
+    val = value.replace("Z", "+00:00")
+
+    # Fast path – try native parser first
+    try:
+        return datetime.fromisoformat(val)
+    except ValueError:
+        pass  # Will attempt relaxed parsing below
+
+    # Split on the fractional separator if present
+    if "." not in val:
+        raise  # No fractional seconds – original ValueError is unexpected
+
+    date_part, frac_and_tz = val.split(".", 1)
+
+    # Extract fractional seconds and timezone sign (if any)
+    m = re.match(r"(\d{1,6})([+-].+)?$", frac_and_tz)
+    if not m:
+        # Give up – propagate original error
+        raise
+
+    frac, tz = m.groups()
+    tz = tz or ""
+
+    # Pad fractional seconds to 6 digits (microsecond precision)
+    frac = frac.ljust(6, "0")
+    fixed_val = f"{date_part}.{frac}{tz}"
+    return datetime.fromisoformat(fixed_val)
+
+
 @subscriptions_router.get("/dashboard-stats", response_model=DashboardStatsResponse)
 async def get_dashboard_stats(request: Request):
     """Get dashboard stats - SIMPLIFIED to just pull from database"""
@@ -203,9 +250,9 @@ async def get_dashboard_stats(request: Request):
             
             # Determine window start date – use earliest bot creation or fallback to now - 30d
             if bots_list:
-                earliest_bot_dt = min(
-                    [datetime.fromisoformat(b["created_at"].replace("Z", "+00:00")) for b in bots_list]
-                )
+                earliest_bot_dt = min([
+                    parse_iso_datetime(b["created_at"]) for b in bots_list
+                ])
                 window_start_dt = earliest_bot_dt
             else:
                 # No bots yet – without a creation date we cannot compute usage window
@@ -269,7 +316,7 @@ async def get_dashboard_stats(request: Request):
         # Use subscription creation date as window start; fallback to current month if not available
         sub_created_str = sub_data.get("created_at")
         try:
-            subscription_start_dt = datetime.fromisoformat(sub_created_str.replace("Z", "+00:00")) if sub_created_str else None
+            subscription_start_dt = parse_iso_datetime(sub_created_str)
         except Exception:
             subscription_start_dt = None
 
@@ -314,10 +361,10 @@ async def get_dashboard_stats(request: Request):
                 status=sub_data["status"],
                 price=sub_data.get("price", 0.0),
                 billing_cycle=sub_data.get("billing_cycle", "monthly"),
-                start_date=datetime.fromisoformat(sub_data["created_at"].replace('Z', '+00:00')),
+                start_date=parse_iso_datetime(sub_data["created_at"]),
                 end_date=None,
                 auto_renew=False,
-                created_at=datetime.fromisoformat(sub_data["created_at"].replace('Z', '+00:00'))
+                created_at=parse_iso_datetime(sub_data["created_at"])
             ),
             plan_limits=plan_data["limits"],  # Limits fetched from plans table
             bots=bots_list  # Pass the full bots list for frontend rendering

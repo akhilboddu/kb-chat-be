@@ -30,7 +30,7 @@ async def check_worker_health():
         health_status = TaskHealthMonitor.check_worker_health()
         
         # Add queue depth information
-        redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+        redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://kb-redis:6379/0"))
         
         queue_info = {}
         for queue_name in ["scrape", "upload"]:
@@ -91,7 +91,7 @@ async def check_kb_tasks(kb_id: str):
     Useful for preventing duplicate operations in the UI.
     """
     try:
-        redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+        redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://kb-redis:6379/0"))
         
         active_tasks = {}
         for task_type in ["scrape", "upload", "optimize"]:

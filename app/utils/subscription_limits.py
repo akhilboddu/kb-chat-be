@@ -69,6 +69,20 @@ async def get_bot_and_user(bot_id: str) -> Optional[Dict[str, Any]]:
 
 async def get_message_count(user_id: str, start_date: str) -> int:
     try:
+        # Normalise simple ISO strings so PostgREST understands them.  We
+        # keep the original precision and the ":" in the UTC offset.
+        if start_date:
+            from datetime import datetime
+            try:
+                dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                # Re-emit using builtin isoformat() which yields the canonical
+                # form "YYYY-MM-DDTHH:MM:SS.ssssss+00:00".
+                start_date = dt.isoformat()
+            except Exception:
+                # Leave start_date untouched on failure – better to run the
+                # filter unmodified than to create an invalid timestamp string
+                pass
+        
         # Get all bot IDs for this user
         bots_resp = supabase.table("bots").select("id").eq("user_id", user_id).execute()
         bot_ids = [b["id"] for b in bots_resp.data] if bots_resp.data else []
@@ -98,6 +112,20 @@ async def get_message_count(user_id: str, start_date: str) -> int:
 
 async def get_conversation_count(user_id: str, start_date: str) -> int:
     try:
+        # Normalise simple ISO strings so PostgREST understands them.  We
+        # keep the original precision and the ":" in the UTC offset.
+        if start_date:
+            from datetime import datetime
+            try:
+                dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                # Re-emit using builtin isoformat() which yields the canonical
+                # form "YYYY-MM-DDTHH:MM:SS.ssssss+00:00".
+                start_date = dt.isoformat()
+            except Exception:
+                # Leave start_date untouched on failure – better to run the
+                # filter unmodified than to create an invalid timestamp string
+                pass
+        
         bots_resp = supabase.table("bots").select("id").eq("user_id", user_id).execute()
         bot_ids = [b["id"] for b in bots_resp.data] if bots_resp.data else []
         if not bot_ids:
