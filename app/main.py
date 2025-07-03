@@ -39,28 +39,10 @@ def create_app() -> FastAPI:
     # Widget-specific CORS configuration
     # Allow all origins for widget endpoints only
     
-    # Check if we're in development mode
-    is_development = os.getenv("ENVIRONMENT", "development").lower() == "development"
     
-    if is_development:
-        # In development, allow various local development server origins
-        cors_origins = [
-            "http://localhost:8080",     # Vite / Netlify dev server
-            "http://localhost:3000",     # React default dev port
-            "http://localhost:5500",     # Live Server default port
-            "http://127.0.0.1:5500",     # Live Server with 127.0.0.1
-            "http://127.0.0.1:8080",     # Alternative local server
-            "http://127.0.0.1:3000",     # Alternative local server
-            "http://localhost:5000",     # Common dev server port
-            "http://127.0.0.1:5000",     # Alternative local server
-        ]
-        allow_credentials = True
-        print(f"CORS: Development mode - allowing local origins: {cors_origins}")
-    else:
-        # Production: allow specific origins
-        cors_origins = ["https://deskforce.co.za", "http://localhost:8080"]
-        allow_credentials = True
-        print(f"CORS: Production mode - allowing origins: {cors_origins}")
+    cors_origins = ["https://deskforce.co.za", "http://localhost:8080"]
+    allow_credentials = True
+    print(f"CORS: Production mode - allowing origins: {cors_origins}")
     
     redisConnection.connect()
 
