@@ -6,12 +6,14 @@ from starlette.routing import compile_path
 import re
 
 class WidgetCORSFilter(BaseHTTPMiddleware):
-    """Middleware that keeps the `Access-Control-Allow-Origin` header only for widget endpoints.
+    """Middleware that allows widget endpoints to be accessed from any origin.
 
-    It assumes a *global* CORSMiddleware already added **with** ``allow_origins=["*"]``.
-    For every response coming out of the app, we check the request path. If it doesn't
-    match one of the allowed widget patterns, we strip the CORS headers so the browser
-    will treat the response as *not* CORS-enabled.
+    This middleware overrides CORS headers for specific widget endpoints to allow
+    them to be embedded on any website. For widget endpoints, it sets the
+    Access-Control-Allow-Origin header to match the requesting origin.
+    
+    For non-widget endpoints, it preserves the CORS policy set by the main 
+    CORSMiddleware.
     """
 
     def __init__(self, app, allowed_paths: List[str], allowed_origins: List[str] | None = None):
@@ -27,21 +29,23 @@ class WidgetCORSFilter(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response: Response = await call_next(request)
         origin = request.headers.get("origin")
-        # Only bother if this is a cross-origin request that has Origin header
+        
+        # If this is a widget endpoint, always allow CORS from any origin
+        if self._path_allowed(request.url.path) and origin:
+            # Override CORS headers for widget endpoints to allow any origin
+            response.headers["access-control-allow-origin"] = origin
+            response.headers["access-control-allow-credentials"] = "true"
+            response.headers["access-control-allow-methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            response.headers["access-control-allow-headers"] = "Accept, Content-Type, Authorization, X-Requested-With, Origin, User-Agent"
+            response.headers["vary"] = "Origin"
+            return response
+            
+        # For non-widget endpoints, keep the original behavior
         if origin:
             # Keep header if origin is explicitly allowed
             if origin in self._allowed_origins:
                 return response
-            if not self._path_allowed(request.url.path):
-                # Strip CORS headers added by the global CORSMiddleware
-                for hdr in (
-                    "access-control-allow-origin",
-                    "access-control-allow-credentials",
-                    "access-control-allow-methods",
-                    "access-control-allow-headers",
-                ):
-                    if hdr in response.headers:
-                        del response.headers[hdr]
+            # Otherwise use the default CORS policy set by CORSMiddleware
         return response
 
     def _path_allowed(self, path: str) -> bool:

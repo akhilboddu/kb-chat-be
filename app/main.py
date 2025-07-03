@@ -36,13 +36,30 @@ def create_app() -> FastAPI:
     )
 
     # --- CORS Middleware Configuration ---
-    # Widget-specific CORS configuration
-    # Allow all origins for widget endpoints only
+    # Simple CORS configuration for both development and production
     
+    cors_origins = [
+        # Production domains
+        "https://deskforce.co.za",
+        "https://www.deskforce.co.za",
+        "https://app.deskforce.co.za",
+        "https://api.deskforce.co.za",
+        
+        # Development origins
+        "http://localhost:8080",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:5500",
+        "http://localhost:4173",
+        "http://127.0.0.1:8080",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5500",
+        "http://127.0.0.1:4173",
+    ]
     
-    cors_origins = ["https://deskforce.co.za", "http://localhost:8080"]
     allow_credentials = True
-    print(f"CORS: Production mode - allowing origins: {cors_origins}")
+    print(f"CORS: Allowing origins: {cors_origins}")
     
     redisConnection.connect()
 
