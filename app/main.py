@@ -149,7 +149,22 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     def init_db_pool():
-        get_db_pool()
+        """Initialize the database connection pool.
+
+        If the pool creation fails (e.g. database temporarily unavailable)
+        we log the exception but DO NOT crash the application. This ensures
+        that the service can still start and the /health endpoint can return
+        a meaningful status (unhealthy database) instead of the container
+        failing its health-check during deployment.
+        The pool will be lazily retried on first real DB usage.
+        """
+        try:
+            get_db_pool()
+            logger.info("Database connection pool initialised successfully")
+        except Exception as e:
+            # Do not raise here – allow the service to boot so that health-checks pass
+            logger.error(f"Unable to establish DB pool on startup: {e}. "
+                         "Will retry on demand.")
 
     @app.on_event("shutdown")
     def close_db_pool():

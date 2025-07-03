@@ -13,13 +13,14 @@ from app.tasks.scrape import run_scrape_task
 from app.utils.cookie_auth import require_cookie_auth
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["scraping"], dependencies=[Depends(require_cookie_auth)])
+router = APIRouter(tags=["scraping"])
 
 
 @router.post(
     "/agents/{kb_id}/scrape-url",
     response_model=ScrapeInitiatedResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_cookie_auth)],
 )
 async def scrape_url_and_populate_kb(
     kb_id: str, request: ScrapeURLRequest, background_tasks: BackgroundTasks

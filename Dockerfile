@@ -19,7 +19,9 @@ RUN apt-get update && \
         curl \
         gcc \
         libpq-dev \
-        ca-certificates && \
+        ca-certificates \
+        procps \
+        net-tools && \
     rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user with a home directory and set the correct permissions
@@ -35,6 +37,16 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
+
+# ---- Pre-fetch critical models ----
+# Download the embedding model during build so that the container starts fast
+# (otherwise first-start may take >3 minutes and fail health-checks).
+RUN python - << 'PY'
+from sentence_transformers import SentenceTransformer
+# This will download and cache the model under $TRANSFORMERS_CACHE
+SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+print('✅ HuggingFace model pre-downloaded')
+PY
 
 # Copy the rest of the application code with appropriate ownership
 COPY --chown=appuser:appuser . .
