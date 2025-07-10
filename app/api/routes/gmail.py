@@ -13,7 +13,7 @@ import base64
 import email.mime.text
 import email.mime.multipart
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel
 import asyncio
 
@@ -178,6 +178,27 @@ async def connect_gmail(bot_id: str, request: GmailAuthRequest):
         # Upsert Gmail configuration
         supabase.table("gmail_configs").upsert(config_data).execute()
         
+        # Call users.watch() once per connected account
+        gmail_service = build("gmail", "v1", credentials=credentials)
+
+        watch_resp = gmail_service.users().watch(
+            userId="me",
+            body={
+                "topicName": "projects/ragtest-454923/topics/deskforce",
+                # Optional: only fire on inbox label or sent label etc.
+                "labelIds": ["INBOX"],
+                "labelFilterAction": "include"
+            }
+        ).execute()
+
+        # watch_resp returns {"historyId": "...", "expiration": 1723682219000}
+        supabase.table("gmail_configs").update({
+            "watch_history_id": watch_resp["historyId"],
+            "watch_expires_at": datetime.utcfromtimestamp(
+                int(watch_resp["expiration"]) / 1000
+            ).isoformat(),
+        }).eq("bot_id", bot_id).execute()
+        
         return GmailAuthResponse(
             status="success",
             message="Gmail account connected successfully",
@@ -322,28 +343,27 @@ def create_email_message(to: str, subject: str, body_html: str = None, body_text
                         reply_to_message_id: str = None, reply_to_thread_id: str = None) -> str:
     """Create email message in the format expected by Gmail API"""
     
-    # Create message
-    if body_html and body_text:
-        # Multipart message with both HTML and text
-        message = email.mime.multipart.MIMEMultipart('alternative')
-        text_part = email.mime.text.MIMEText(body_text, 'plain')
-        html_part = email.mime.text.MIMEText(body_html, 'html')
-        message.attach(text_part)
-        message.attach(html_part)
-    elif body_html:
-        # HTML only
+    # Create message - use HTML if provided, otherwise text
+    if body_html:
         message = email.mime.text.MIMEText(body_html, 'html')
+    elif body_text:
+        message = email.mime.text.MIMEText(body_text, 'plain')
     else:
-        # Text only (fallback)
-        message = email.mime.text.MIMEText(body_text or subject, 'plain')
+        # Fallback to plain text
+        message = email.mime.text.MIMEText(subject, 'plain')
     
     message['To'] = to
     message['Subject'] = subject
+    # Note: From header will be set by Gmail automatically based on the authenticated account
     
-    # Add threading headers if replying
+    # ✅ Add threading headers
     if reply_to_message_id:
         message['In-Reply-To'] = reply_to_message_id
         message['References'] = reply_to_message_id
+        print(f"🔗 Email threading: Added In-Reply-To and References headers with message_id: {reply_to_message_id}")
+
+
+    print(f"message FINAL: {message}")
     
     # Convert to base64 encoded string
     raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
@@ -359,6 +379,9 @@ async def send_email(bot_id: str, email_request: EmailRequest):
         if not bot_response.data:
             raise HTTPException(status_code=404, detail="Bot not found")
         
+        print(f"Email request --->: {email_request}")
+
+        
         # Validate email content
         if not email_request.body_html and not email_request.body_text:
             raise HTTPException(status_code=400, detail="Either body_html or body_text must be provided")
@@ -368,13 +391,15 @@ async def send_email(bot_id: str, email_request: EmailRequest):
         
         # Build Gmail service
         gmail_service = build('gmail', 'v1', credentials=credentials)
+
+        print(f"Email request: {email_request}")
         
         # Create email message
         raw_message = create_email_message(
             to=email_request.to,
             subject=email_request.subject,
             body_html=email_request.body_html,
-            body_text=email_request.body_text,
+            #body_text=email_request.body_html,
             reply_to_message_id=email_request.reply_to_message_id,
             reply_to_thread_id=email_request.reply_to_thread_id
         )
@@ -385,12 +410,22 @@ async def send_email(bot_id: str, email_request: EmailRequest):
         # Add thread ID if replying
         if email_request.reply_to_thread_id:
             message_body['threadId'] = email_request.reply_to_thread_id
+            print(f"🔗 Gmail API: Using threadId {email_request.reply_to_thread_id}")
+        
+        if email_request.reply_to_message_id:
+            print(f"📧 Gmail API: Using message_id {email_request.reply_to_message_id} for In-Reply-To header")
+        
+        print(f"📤 Gmail API: Sending email with message_body: {message_body}")
         
         # Send the email
         sent_message = gmail_service.users().messages().send(
             userId='me', 
             body=message_body
         ).execute()
+        
+        print(f"📤 Gmail API: Sent message response: {sent_message}")
+        print(f"📤 Gmail API: Message ID: {sent_message.get('id')}")
+        print(f"📤 Gmail API: Thread ID: {sent_message.get('threadId')}")
         
         # Get the sent message details
         message_details = gmail_service.users().messages().get(
@@ -401,7 +436,14 @@ async def send_email(bot_id: str, email_request: EmailRequest):
         
         # Extract email details
         headers = {header['name']: header['value'] for header in message_details['payload']['headers']}
-        
+
+        # 🔧 FIX: Extract Message-ID header in a case-insensitive way
+        message_id_header_value = ""
+        for h_name, h_value in headers.items():
+            if h_name.lower() == "message-id":
+                message_id_header_value = h_value
+                break
+ 
         email_details = {
             "message_id": sent_message['id'],
             "thread_id": sent_message['threadId'],
@@ -411,8 +453,10 @@ async def send_email(bot_id: str, email_request: EmailRequest):
                 "to": headers.get('To', ''),
                 "subject": headers.get('Subject', ''),
                 "date": headers.get('Date', ''),
-                "message_id": headers.get('Message-ID', ''),
-                "from": headers.get('From', '')
+                "message_id": message_id_header_value,
+                "from": headers.get('From', ''),
+                "in_reply_to": headers.get('In-Reply-To', ''),
+                "references": headers.get('References', '')
             },
             "size_estimate": message_details.get('sizeEstimate', 0),
             "sent_at": datetime.utcnow().isoformat()
@@ -638,3 +682,350 @@ if __name__ == "__main__":
     
     # Uncomment this line to run the test (after filling in details):
     asyncio.run(test_send_email()) 
+
+# =========================================
+# Helper: fetch new Gmail messages after a
+#         Pub/Sub push notification
+# =========================================
+
+async def fetch_new_messages(email_address: str, notification_history_id: str) -> Dict[str, Any]:
+    """Pull messages added between the previous stored history ID and *notification_history_id*."""
+
+    # 1. Find bot + last stored history
+    cfg_resp = (
+        supabase.table("gmail_configs")
+        .select("bot_id, watch_history_id")
+        .eq("email_address", email_address)
+        .single()
+        .execute()
+    )
+    if not cfg_resp.data:
+        raise HTTPException(status_code=404, detail=f"No bot linked to Gmail address {email_address}")
+
+    bot_id = cfg_resp.data["bot_id"]
+    prev_history_id = cfg_resp.data.get("watch_history_id")
+
+    start_id = None
+    if prev_history_id and str(prev_history_id).isdigit():
+        start_id = str(prev_history_id)
+    elif str(notification_history_id).isdigit():
+        # first run – use notification_history_id - 1
+        start_id = str(int(notification_history_id) - 1)
+    else:
+        start_id = str(notification_history_id)
+
+    # 2. Get credentials
+    credentials = await get_gmail_credentials(bot_id)
+    gmail_service = build("gmail", "v1", credentials=credentials)
+
+    # 3. Fetch history (paginate if nextPageToken present)
+    message_ids: List[str] = []
+    page_token = None
+    while True:
+        try:
+            history_req = gmail_service.users().history().list(
+                userId="me",
+                startHistoryId=start_id,
+                maxResults=100,
+                pageToken=page_token,
+            )
+            history_resp = history_req.execute()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Gmail history fetch failed: {e}")
+
+        for hist_item in history_resp.get("history", []):
+            if "messagesAdded" in hist_item:
+                for added in hist_item["messagesAdded"]:
+                    message_ids.append(added["message"]["id"])
+            if "messages" in hist_item:
+                for m in hist_item["messages"]:
+                    message_ids.append(m["id"])
+
+        page_token = history_resp.get("nextPageToken")
+        if not page_token:
+            break
+
+    message_ids = list(dict.fromkeys(message_ids))  # dedupe, preserve order
+    print(f"🆕 message IDs found: {message_ids}")
+
+    # 4. Pull full messages
+    messages: List[Dict[str, Any]] = []
+    for msg_id in message_ids:
+        try:
+            msg = gmail_service.users().messages().get(userId="me", id=msg_id, format="full").execute()
+        except Exception as fetch_err:
+            print(f"⚠️ Failed to fetch message {msg_id}: {fetch_err}")
+            continue
+
+        headers = {h["name"].lower(): h["value"] for h in msg["payload"].get("headers", [])}
+
+        # Helper to walk parts recursively
+        def _extract_body(payload):
+            if "parts" in payload:
+                for p in payload["parts"]:
+                    res = _extract_body(p)
+                    if res:
+                        return res
+            mime_type = payload.get("mimeType", "")
+            body_data = payload.get("body", {}).get("data")
+            if not body_data:
+                return None
+            import base64, re, html
+            try:
+                decoded = base64.urlsafe_b64decode(body_data + "==").decode("utf-8", errors="ignore")
+            except Exception:
+                return None
+            if mime_type == "text/plain":
+                return decoded
+            if mime_type == "text/html":
+                # Strip HTML tags quickly
+                text = re.sub(r"<[^>]+>", " ", decoded)
+                text = html.unescape(text)
+                return re.sub(r"\s+", " ", text).strip()
+            return None
+
+        raw_body = _extract_body(msg.get("payload", {})) or msg.get("snippet", "")
+
+        def _clean_reply(text: str) -> str:
+            import re
+            # Strip everything after common reply separators
+            patterns = [
+                r"\nOn .*wrote:$",               # "On DATE, NAME wrote:"
+                r"^>.*$",                        # quoted lines starting with >
+                r"^From: .*",                   # From: header in body
+            ]
+            lines = text.splitlines()
+            cleaned_lines = []
+            for line in lines:
+                # stop if matches first pattern
+                if re.match(r"^On .* wrote:$", line):
+                    break
+                if line.startswith('>'):
+                    continue
+                cleaned_lines.append(line)
+            cleaned = "\n".join(cleaned_lines).strip()
+            # Collapse multiple blank lines
+            cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+            return cleaned
+
+        body_text = _clean_reply(raw_body)
+
+        messages.append({
+            "id": msg["id"],
+            "thread_id": msg["threadId"],
+            "body": body_text,
+            "from": headers.get("from", ""),
+            "to": headers.get("to", ""),
+            "subject": headers.get("subject", ""),
+            "date": headers.get("date", ""),
+            "internal_date": msg.get("internalDate"),
+            "label_ids": msg.get("labelIds", []),
+        })
+
+    # 5. Store new history ID for next invocation
+    supabase.table("gmail_configs").update({"watch_history_id": str(notification_history_id)}).eq("bot_id", bot_id).execute()
+
+    return {"bot_id": bot_id, "messages": messages}
+
+# =========================================
+# Helper: map Gmail thread_id -> conversation_id
+# =========================================
+
+
+async def map_thread_to_conversation(thread_id: str) -> Optional[str]:
+    """Return conversation_id associated with a Gmail thread_id.
+
+    Strategy: look up follow_up_emails.thread_id → get follow_up_queue_id → get conversation_id.
+    Returns None if no mapping found.
+    """
+
+    # Find any email we previously sent that uses this thread
+    email_resp = (
+        supabase.table("follow_up_emails")
+        .select("follow_up_queue_id")
+        .eq("thread_id", thread_id)
+        .limit(1)
+        .execute()
+    )
+
+    if not email_resp.data:
+        return None
+
+    queue_id = email_resp.data[0]["follow_up_queue_id"]
+
+    queue_resp = (
+        supabase.table("follow_up_queue")
+        .select("conversation_id")
+        .eq("id", queue_id)
+        .single()
+        .execute()
+    )
+
+    if not queue_resp.data:
+        return None
+
+    return queue_resp.data["conversation_id"]
+
+# =========================================
+# Helper: insert reply into messages table and broadcast
+# =========================================
+
+async def insert_reply_as_chat_message(conversation_id: str, content: str, thread_id: str, gmail_message_id: str):
+    """Insert an incoming email reply into messages table and broadcast via websocket."""
+
+    from app.api.routes.chat import broadcast_to_all_connections  # local import to avoid circular
+
+    insert_resp = supabase.table("messages").insert({
+        "conversation_id": conversation_id,
+        "content": content,
+        "role": "user",
+        "status": "email_reply",
+        "read": True,
+        "created_at": datetime.utcnow().isoformat(),
+    }).execute()
+
+    if not insert_resp.data:
+        print(f"❌ Failed to insert email reply into messages for conversation {conversation_id}")
+        return
+
+    message_id = insert_resp.data[0]["id"]
+
+    # update conversation timestamp
+    supabase.table("conversations").update({"updated_at": datetime.utcnow().isoformat()}).eq("id", conversation_id).execute()
+
+    # broadcast to websocket clients (if any)
+    await broadcast_to_all_connections(conversation_id, {
+        "type": "message",
+        "id": message_id,
+        "content": content,
+        "role": "user",
+        "status": "email_reply",
+        "timestamp": datetime.utcnow().isoformat(),
+    })
+
+    print(f"✅ Stored and broadcasted email reply {gmail_message_id} in conversation {conversation_id}")
+
+# =========================================
+# Helper: cancel remaining follow-ups
+# =========================================
+
+
+def cancel_pending_followups(conversation_id: str):
+    """Mark follow_up_queue items for this conversation as cancelled if not yet executed."""
+
+    now_iso = datetime.utcnow().isoformat()
+
+    try:
+
+        follow_up_queue_response = (
+            supabase.table("follow_up_queue")
+            .select("id")
+            .eq("conversation_id", conversation_id)
+            .execute()
+        )
+        
+        # cancel queue items with future due_date and not already cancelled/completed
+        follow_up_queue_update_response = (
+            supabase.table("follow_up_queue")
+            .update({"status": "cancelled", "updated_at": now_iso})
+            .eq("conversation_id", conversation_id)
+            .gt("due_date", now_iso)
+            .execute()
+        )
+
+        follow_up_emails_update_response = (
+            supabase.table("follow_up_emails")
+            .update({"delivery_status": "cancelled", "updated_at": now_iso})
+            .eq("follow_up_queue_id", follow_up_queue_response.data[0]["id"]).eq("delivery_status", "pending")
+            .execute()
+        )
+        if follow_up_queue_update_response.data:
+            print(f"🛑 Cancelled {len(follow_up_queue_update_response.data)} follow-up queue item(s) for conversation {conversation_id}")
+        if follow_up_emails_update_response.data:
+            print(f"🛑 Cancelled {len(follow_up_emails_update_response.data)} follow-up emails for conversation {conversation_id}")
+    except Exception as e:
+        print(f"⚠️ Failed to cancel follow-ups for conversation {conversation_id}: {e}")
+
+# -------------------------------------------------------------
+# Gmail Pub/Sub push webhook – receives notifications when
+# something in a watched mailbox changes (new email, label etc.)
+# -------------------------------------------------------------
+
+class PubSubPushBody(BaseModel):
+    """Google Pub/Sub push message envelope"""
+
+    message: Dict[str, Any]
+    subscription: str
+
+
+async def _process_pubsub_notification(email_address: str, history_id: str):
+    """Background task: fetch new messages for the given history_id.
+    For now this is a stub that simply logs; next tasks will
+    implement full fetching/cancellation logic."""
+    print(f"[GMAIL WEBHOOK] Received notification – emailAddress={email_address} historyId={history_id}")
+
+    try:
+        data = await fetch_new_messages(email_address, history_id)
+    except HTTPException as he:
+        print(f"❌ fetch_new_messages error: {he.detail}")
+        return
+    except Exception as err:
+        print(f"❌ Unexpected error fetching messages: {err}")
+        return
+
+    for msg in data["messages"]:
+        print(f"🔗 Processing Gmail msg {msg['id']} thread {msg['thread_id']}")
+        conv_id = await map_thread_to_conversation(msg["thread_id"])
+        if not conv_id:
+            print(f"⚠️ No conversation mapping for thread {msg['thread_id']}, skipping.")
+            continue
+
+        # Try to get plaintext body; fallback to snippet
+        content = msg.get("body", "(no content)")
+
+        await insert_reply_as_chat_message(conv_id, content, msg["thread_id"], msg["id"])
+
+        cancel_pending_followups(conv_id)
+
+
+@router.post("/webhook")
+async def gmail_webhook(body: PubSubPushBody):
+    """Endpoint called by Google Pub/Sub (HTTP push) when Gmail mailbox changes.
+
+    Google sends a JSON body of the form:
+    {
+      "message": {
+        "data": "base64-encoded string",
+        "messageId": "...",
+        "publishTime": "..."
+      },
+      "subscription": "projects/…/subscriptions/…"
+    }
+    The data field decodes to: {"emailAddress": "...", "historyId": "..."}
+    We parse it and trigger background processing.
+    """
+    try:
+        envelope = body.message
+        if "data" not in envelope:
+            raise ValueError("Missing data field in Pub/Sub message")
+
+        decoded_bytes = base64.b64decode(envelope["data"])
+        decoded_str = decoded_bytes.decode()
+        payload = json.loads(decoded_str)
+
+        email_address = payload.get("emailAddress")
+        history_id = payload.get("historyId")
+
+        if not email_address or not history_id:
+            raise ValueError("emailAddress or historyId missing in decoded payload")
+
+        # Process asynchronously (don’t block Google’s retry logic)
+        asyncio.create_task(_process_pubsub_notification(email_address, history_id))
+
+        # Acknowledge immediately – Google treats 2xx as success
+        return {"status": "accepted"}
+
+    except Exception as e:
+        # Log and let Google retry by returning 500
+        print(f"Error handling Gmail webhook: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process notification") 

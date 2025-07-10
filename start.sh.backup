@@ -157,26 +157,6 @@ if [[ "${START_CELERY:-false}" == "true" ]]; then
         echo "Optimize worker started with PID: $OPTIMIZE_WORKER_PID"
     fi
     
-    # Start email worker in background with thread pool
-    if is_running "celery.*worker.*-Q email"; then
-        echo "Email worker is already running, skipping..."
-    else
-        echo "Starting email worker with thread pool..."
-        ./venv/bin/celery -A app.worker.celery_app worker -Q email --pool=threads --concurrency=2 --loglevel=info -n email@%h &
-        EMAIL_WORKER_PID=$!
-        echo "Email worker started with PID: $EMAIL_WORKER_PID"
-    fi
-    
-    # Start Celery Beat scheduler
-    if is_running "celery.*beat"; then
-        echo "Celery Beat scheduler is already running, skipping..."
-    else
-        echo "Starting Celery Beat scheduler..."
-        ./venv/bin/celery -A app.worker.celery_app beat --loglevel=info &
-        BEAT_PID=$!
-        echo "Celery Beat scheduler started with PID: $BEAT_PID"
-    fi
-    
     # Optionally start Flower for monitoring
     if [[ "${START_FLOWER:-false}" == "true" ]]; then
         echo "🌸 Starting Flower monitoring dashboard..."
@@ -189,8 +169,6 @@ if [[ "${START_CELERY:-false}" == "true" ]]; then
     [[ -n "$SCRAPE_WORKER_PID" ]] && echo "$SCRAPE_WORKER_PID" > .celery_scrape_worker.pid
     [[ -n "$UPLOAD_WORKER_PID" ]] && echo "$UPLOAD_WORKER_PID" > .celery_upload_worker.pid
     [[ -n "$OPTIMIZE_WORKER_PID" ]] && echo "$OPTIMIZE_WORKER_PID" > .celery_optimize_worker.pid
-    [[ -n "$EMAIL_WORKER_PID" ]] && echo "$EMAIL_WORKER_PID" > .celery_email_worker.pid
-    [[ -n "$BEAT_PID" ]] && echo "$BEAT_PID" > .celery_beat.pid
     [[ -n "$FLOWER_PID" ]] && echo "$FLOWER_PID" > .celery_flower.pid
     
     # Function to cleanup workers on exit
@@ -199,8 +177,6 @@ if [[ "${START_CELERY:-false}" == "true" ]]; then
         [[ -n "$SCRAPE_WORKER_PID" ]] && kill $SCRAPE_WORKER_PID 2>/dev/null || true
         [[ -n "$UPLOAD_WORKER_PID" ]] && kill $UPLOAD_WORKER_PID 2>/dev/null || true
         [[ -n "$OPTIMIZE_WORKER_PID" ]] && kill $OPTIMIZE_WORKER_PID 2>/dev/null || true
-        [[ -n "$EMAIL_WORKER_PID" ]] && kill $EMAIL_WORKER_PID 2>/dev/null || true
-        [[ -n "$BEAT_PID" ]] && kill $BEAT_PID 2>/dev/null || true
         [[ -n "$FLOWER_PID" ]] && kill $FLOWER_PID 2>/dev/null || true
         rm -f .celery_*.pid
     }
@@ -225,9 +201,9 @@ WORKERS="${WORKERS:-1}"
 
 if [[ "${ENV:-development}" == "production" ]]; then
     echo "🏭 Starting in production mode..."
-    ./venv/bin/uvicorn app.main:app --host $HOST --port $PORT --workers $WORKERS --log-level info
+    ./venv/bin/uvicorn app.main:app --host $HOST --port $PORT --workers $WORKERS
 else
     echo "🔧 Starting in development mode with auto-reload..."
-    ./venv/bin/uvicorn app.main:app --host $HOST --port $PORT --reload --log-level debug
+    ./venv/bin/uvicorn app.main:app --host $HOST --port $PORT --reload
 fi
 

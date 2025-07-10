@@ -95,6 +95,7 @@ class Message(BaseModel):
     content: str
     created_at: datetime.datetime
     role: Literal["bot", "user", "human", "page_visit"]
+    status: Optional[str] = None
     reply_to_message_id: Optional[str] = None
 
 
