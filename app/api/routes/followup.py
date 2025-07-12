@@ -93,8 +93,7 @@ async def add_to_followup_queue(
         
         # Set default due date if not provided (12 hours from now)
         if not item.due_date:
-            #item.due_date = datetime.utcnow() + timedelta(hours=12)
-            item.due_date = datetime.now(timezone.utc) + timedelta(minutes=1)
+            item.due_date = datetime.now(timezone.utc) + timedelta(hours=12)
         
         # Generate follow-up email using the AI agent
         print(f"Generating follow-up email for conversation {item.conversation_id}")
@@ -117,7 +116,7 @@ async def add_to_followup_queue(
         
         if generated_email:
             email_subject = generated_email.get("subject", item.subject or "Follow-up from our conversation")
-            email_message = generated_email.get("plain_text_body", item.message or "Thank you for your interest. I wanted to follow up on our conversation.")
+            email_message = generated_email.get("email_body", item.message or "Thank you for your interest. I wanted to follow up on our conversation.")
             print(f"Using generated email - Subject: {email_subject[:50]}...")
         else:
             print("Using default email content")
@@ -126,6 +125,36 @@ async def add_to_followup_queue(
             if not email_message:
                 email_message = f"Hi {item.customer_name}, I wanted to follow up on our conversation and see if you have any questions or need additional information."
         
+        # -------------------------------------------------------------------
+        # 🚦  Prevent duplicate active queue items for same bot+conversation
+        # -------------------------------------------------------------------
+        existing_active = (
+            supabase.table("follow_up_queue")
+            .select("id")
+            .eq("bot_id", bot_id)
+            .eq("conversation_id", item.conversation_id)
+            .in_("status", ["pending", "in_progress"])
+            .execute()
+        )
+
+        # Cancel any existing active items + their pending emails
+        if existing_active.data:
+            now_iso = datetime.utcnow().isoformat()
+            active_ids = [row["id"] for row in existing_active.data]
+            print(f"🔄 Cancelling {len(active_ids)} existing active follow-up queue item(s)")
+
+            supabase.table("follow_up_queue").update({
+                "status": "cancelled",
+                "updated_at": now_iso,
+            }).in_("id", active_ids).execute()
+
+            supabase.table("follow_up_emails").update({
+                "delivery_status": "cancelled",
+                "updated_at": now_iso,
+            }).in_("follow_up_queue_id", active_ids).eq("delivery_status", "pending").execute()
+
+        # Always create a fresh queue item
+        new_created = True
         # Prepare the data for insertion
         queue_data = {
             "bot_id": bot_id,
@@ -148,56 +177,60 @@ async def add_to_followup_queue(
         
         # Insert into follow_up_queue table
         response = supabase.table("follow_up_queue").insert(queue_data).execute()
-        
+
         if not response.data:
             raise HTTPException(status_code=500, detail="Failed to add to follow-up queue")
-        
-        # Return the created item
+
         created_item = response.data[0]
         
-        # Always add an email record to the follow_up_emails table
-        try:
-            email_record = {
-                "follow_up_queue_id": created_item["id"],
-                "email_type": "initial",
-                "subject": email_subject or "Follow-up Email",
-                "message": email_message or "Follow-up message",
-                "recipient_email": item.customer_email,
-                "recipient_name": item.customer_name,
-                "scheduled_for": item.due_date.isoformat(),  # Schedule for the due date
-                "delivery_status": "pending",  # Mark as pending until actually sent
-                "email_provider": "gmail",
-                "email_provider_id": None,
-                "opened_at": None,
-                "clicked_at": None,
-                "bounce_reason": None,
-                "metadata": {
-                    "generated_by": "ai_agent" if generated_email else "fallback",
-                    "generation_data": generated_email if generated_email else None,
-                    "key_points": generated_email.get("key_points", []) if generated_email else ["Follow-up on conversation", "Offer additional support"],
-                    "urgency_level": generated_email.get("urgency_level", "medium") if generated_email else "medium",
-                    "follow_up_reason": generated_email.get("follow_up_reason", "") if generated_email else "Standard follow-up after conversation",
-                    "call_to_action": generated_email.get("call_to_action") if generated_email else None,
-                    "scheduled_send_time": item.due_date.isoformat(),
-                    "scheduled_delay_hours": 12 if not item.due_date else None
-                },
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
-            }
-            
-            print(f"Adding email record to follow_up_emails table: {email_record['subject']}")
-            email_response = supabase.table("follow_up_emails").insert(email_record).execute()
-            
-            if email_response.data:
-                print(f"Successfully added email to database with ID: {email_response.data[0]['id']}")
-            else:
-                print("Failed to add email to database - no data returned")
-                print(f"Email response: {email_response}")
+        # --------------------------------------------------------
+        # Add initial email only the first time queue item is made
+        # --------------------------------------------------------
+        if new_created:
+            try:
+                email_record = {
+                    "follow_up_queue_id": created_item["id"],
+                    "email_type": "initial",
+                    "subject": email_subject or "Follow-up Email",
+                    "message": email_message or "Follow-up message",
+                    "recipient_email": item.customer_email,
+                    "recipient_name": item.customer_name,
+                    "scheduled_for": item.due_date.isoformat(),  # Schedule for the due date
+                    "delivery_status": "pending",  # Mark as pending until actually sent
+                    "email_provider": "gmail",
+                    "email_provider_id": None,
+                    "opened_at": None,
+                    "clicked_at": None,
+                    "bounce_reason": None,
+                    "metadata": {
+                        "generated_by": "ai_agent" if generated_email else "fallback",
+                        "generation_data": generated_email if generated_email else None,
+                        "key_points": generated_email.get("key_points", []) if generated_email else ["Follow-up on conversation", "Offer additional support"],
+                        "urgency_level": generated_email.get("urgency_level", "medium") if generated_email else "medium",
+                        "follow_up_reason": generated_email.get("follow_up_reason", "") if generated_email else "Standard follow-up after conversation",
+                        "call_to_action": generated_email.get("call_to_action") if generated_email else None,
+                        "scheduled_send_time": item.due_date.isoformat(),
+                        "scheduled_delay_hours": 12 if not item.due_date else None
+                    },
+                    "created_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.utcnow().isoformat()
+                }
                 
-        except Exception as e:
-            print(f"Error adding email to database: {e}")
-            print(f"Email record that failed: {email_record}")
-            # Don't fail the entire operation if email recording fails
+                print(f"Adding email record to follow_up_emails table: {email_record['subject']}")
+                email_response = supabase.table("follow_up_emails").insert(email_record).execute()
+                
+                if email_response.data:
+                    print(f"Successfully added email to database with ID: {email_response.data[0]['id']}")
+                else:
+                    print("Failed to add email to database - no data returned")
+                    print(f"Email response: {email_response}")
+                    
+            except Exception as e:
+                print(f"Error adding email to database: {e}")
+                print(f"Email record that failed: {email_record}")
+                # Don't fail the entire operation if email recording fails
+        else:
+            print("Skipping email generation – queue item already existed")
         
         # Get the email record that was created
         emails = []
@@ -736,7 +769,7 @@ async def generate_next_followup_email(
             "message": generated_email["email_body"],
             "recipient_email": queue_item["customer_email"],
             "recipient_name": queue_item["customer_name"],
-            "scheduled_for": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
+            "scheduled_for": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(),
             "delivery_status": "pending",
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat()
@@ -836,7 +869,7 @@ async def generate_next_followup_email_internal(queue_id: str):
             "subject": subject_to_use,  # Use previous subject for consistency
             "message": new_email_data["email_body"],
             "delivery_status": "pending",
-            "scheduled_for": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
+            "scheduled_for": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat()
         }

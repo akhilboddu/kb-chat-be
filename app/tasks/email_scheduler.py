@@ -12,6 +12,12 @@ from app.core.follow_up_email_agent import generate_follow_up_email
 
 import builtins as _b
 
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+
+from app.api.routes.gmail import CLIENT_CONFIG, SCOPES, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+
 # --- Silence all existing prints/logger output ---
 # We keep original print for selective use
 _b.print_orig = _b.print
@@ -428,6 +434,8 @@ def send_single_followup_email(email_record: Dict[str, Any]) -> Dict[str, Any]:
         html_content = email_record["message"]
         email_id = email_record["id"]
         bot_id = email_record["follow_up_queue"]["bot_id"]
+        # Store queue_id for later use (e.g. triggering next email)
+        queue_id = email_record["follow_up_queue_id"]
         
         logger.info(f"Sending email {email_id} to {recipient_email} via bot {bot_id}")
         
@@ -456,6 +464,8 @@ def send_single_followup_email(email_record: Dict[str, Any]) -> Dict[str, Any]:
             )
         finally:
             loop.close()
+
+        
         
         if result["success"]:
             # Extract thread_id and email_id from the response
@@ -523,7 +533,7 @@ def send_single_followup_email(email_record: Dict[str, Any]) -> Dict[str, Any]:
             # Continue anyway - the email was sent successfully
 
             # Update queue item status to in_progress (don't increment count yet)
-            queue_id = email_record["follow_up_queue_id"]
+            # queue_id = email_record["follow_up_queue_id"] # This line is now redundant
         try:
             queue_update_response = supabase.table("follow_up_queue").update({
                 "status": "in_progress",
@@ -532,6 +542,51 @@ def send_single_followup_email(email_record: Dict[str, Any]) -> Dict[str, Any]:
             _b.print_orig(f"✅ Queue status updated to in_progress for queue {queue_id}")
         except Exception as queue_error:
             _b.print_orig(f"⚠️ Error updating queue status: {queue_error}")
+
+        # ------------------------------------------------------------------
+        # 💬  Log an "email_sent" message in chat history so the front-end
+        #      picks it up immediately.
+        # ------------------------------------------------------------------
+        try:
+            conversation_id = email_record["follow_up_queue"]["conversation_id"]
+            msg_payload = {
+                "conversation_id": conversation_id,
+                "content": html_content,
+                "role": "bot",
+                "status": "email_sent",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            # ---------------------------------------------
+            # Avoid storing duplicate "email_sent" messages
+            # ---------------------------------------------
+            try:
+                duplicate_check = (
+                    supabase.table("messages")
+                    .select("id")
+                    .eq("conversation_id", conversation_id)
+                    .eq("role", "bot")
+                    .eq("status", "email_sent")
+                    .eq("content", html_content)
+                    .limit(1)
+                    .execute()
+                )
+
+                if duplicate_check.data:
+                    _b.print_orig(
+                        f"🔄 Duplicate email_sent message already exists for conversation {conversation_id}, skipping insert."
+                    )
+                else:
+                    supabase.table("messages").insert(msg_payload).execute()
+                    _b.print_orig(
+                        f"✅ Inserted email_sent message for conversation {conversation_id}"
+                    )
+            except Exception as duplicate_err:
+                _b.print_orig(
+                    f"⚠️ Error checking/inserting email_sent message: {duplicate_err}"
+                )
+            # End duplicate handling
+        except Exception as msg_err:
+            _b.print_orig(f"⚠️ Failed to insert email_sent message: {msg_err}")
         
         # 🔧 VERIFY EMAIL THREADING 🔧
         # Verify that threading is working correctly for this queue
@@ -547,7 +602,83 @@ def send_single_followup_email(email_record: Dict[str, Any]) -> Dict[str, Any]:
         _b.print_orig("⏳ Waiting for database consistency before generating next email…")
         import time
         time.sleep(2)  # Ensure DB consistency
-        # NOTE: generation of the next email is handled by a separate Celery task
+
+        # ------------------------------------------------------------------
+        # 🚀 Trigger generation of the NEXT follow-up email via internal API
+        # ------------------------------------------------------------------
+        try:
+            api_base_url = os.getenv("API_BASE_URL", "http://localhost:8000")
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                next_email_res = loop.run_until_complete(
+                    call_generate_next_email_api(queue_id, api_base_url)
+                )
+            finally:
+                loop.close()
+
+            if next_email_res.get("success"):
+                _b.print_orig(
+                    f"✅ Triggered generation of next follow-up email for queue {queue_id}"
+                )
+            else:
+                _b.print_orig(
+                    f"⚠️ Failed to trigger next follow-up email: {next_email_res.get('error')}"
+                )
+                # If we can't generate the next email, mark queue as completed
+                _b.print_orig(f"🎯 Marking queue {queue_id} as completed (no next email generated)")
+                supabase.table("follow_up_queue").update({
+                    "status": "completed",
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }).eq("id", queue_id).execute()
+        except Exception as gen_err:
+            _b.print_orig(f"⚠️ Error calling generate-next-email API: {gen_err}")
+            # If there's an error generating the next email, mark queue as completed
+            _b.print_orig(f"🎯 Marking queue {queue_id} as completed (error generating next email)")
+            supabase.table("follow_up_queue").update({
+                "status": "completed",
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }).eq("id", queue_id).execute()
+
+        # ------------------------------------------------------------------
+        # 🎯 CHECK IF QUEUE SHOULD BE MARKED AS COMPLETED
+        # ------------------------------------------------------------------
+        try:
+            # Get current queue status to check if we've reached max_follow_ups
+            queue_status_response = supabase.table("follow_up_queue").select(
+                "follow_up_count, max_follow_ups, status"
+            ).eq("id", queue_id).execute()
+            
+            if queue_status_response.data:
+                queue_info = queue_status_response.data[0]
+                current_count = queue_info.get("follow_up_count", 0)
+                max_follow_ups = queue_info.get("max_follow_ups", 3)
+                current_status = queue_info.get("status", "pending")
+                
+                _b.print_orig(f"📊 Queue {queue_id} - Current count: {current_count}, Max: {max_follow_ups}, Status: {current_status}")
+                
+                # Check if we've reached the maximum number of follow-ups
+                if current_count >= max_follow_ups and current_status != "completed":
+                    _b.print_orig(f"🎯 Marking queue {queue_id} as completed (reached max_follow_ups: {max_follow_ups})")
+                    supabase.table("follow_up_queue").update({
+                        "status": "completed",
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    }).eq("id", queue_id).execute()
+                    
+                    # Also cancel any pending emails for this queue
+                    supabase.table("follow_up_emails").update({
+                        "delivery_status": "cancelled",
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    }).eq("follow_up_queue_id", queue_id).eq("delivery_status", "pending").execute()
+                    
+                    _b.print_orig(f"✅ Queue {queue_id} completed and pending emails cancelled")
+                else:
+                    _b.print_orig(f"📧 Queue {queue_id} continues - {current_count}/{max_follow_ups} emails sent")
+                    
+        except Exception as queue_check_err:
+            _b.print_orig(f"⚠️ Error checking queue completion status: {queue_check_err}")
+        
         return {"success": True}
             
     except Exception as e:
@@ -653,7 +784,7 @@ def generate_new_followup_email(email_record: Dict[str, Any]) -> Dict[str, Any]:
             "subject": subject_to_use,  # Use previous subject for consistency
             "message": new_email_data["email_body"],  # Use HTML body
             "delivery_status": "pending",
-            "scheduled_for": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),  # Schedule for 1 minute from now
+            "scheduled_for": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(),  # Schedule for 24 hours from now
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat()
         }
@@ -744,7 +875,7 @@ def generate_new_followup_email_task(self, email_record: Dict[str, Any]):
             "subject": subject_to_use,  # Use previous subject for consistency
             "message": new_email_data["email_body"],
             "delivery_status": "pending",
-            "scheduled_for": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(),
+            "scheduled_for": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat()
         }
@@ -804,6 +935,65 @@ def cleanup_failed_emails(self):
     except Exception as e:
         logger.error(f"Email cleanup error: {str(e)}")
         return {"processed": 0, "error": str(e)}
+
+@celery_app.task(bind=True, base=RetryableTask, queue="email", soft_time_limit=300, time_limit=600)
+def renew_expired_gmail_watches(self):
+    """
+    Renew Gmail watches for all enabled configs that expire in the next 24 hours.
+    Runs every 6 hours.
+    """
+    logger = get_logger("gmail_watch_renewal")
+    now = datetime.now(timezone.utc)
+    soon = now + timedelta(hours=24)
+    try:
+        # Get all enabled Gmail configs
+        resp = supabase.table("gmail_configs").select("bot_id, email_address, access_token, refresh_token, token_expires_at, watch_expires_at, is_enabled").eq("is_enabled", True).execute()
+        if not resp.data:
+            logger.info("No enabled Gmail configs found for watch renewal.")
+            return
+        for cfg in resp.data:
+            bot_id = cfg["bot_id"]
+            email_address = cfg["email_address"]
+            watch_expires_at = cfg.get("watch_expires_at")
+            if not watch_expires_at:
+                continue
+            try:
+                expires_at = datetime.fromisoformat(watch_expires_at.replace('Z', '+00:00'))
+            except Exception:
+                logger.warning(f"Invalid watch_expires_at for bot {bot_id}")
+                continue
+            if expires_at > soon:
+                continue  # Not expiring soon
+            # Build credentials using CLIENT_CONFIG and SCOPES
+            credentials = Credentials(
+                token=cfg.get("access_token"),
+                refresh_token=cfg.get("refresh_token"),
+                token_uri=CLIENT_CONFIG["web"]["token_uri"],
+                client_id=GOOGLE_CLIENT_ID,
+                client_secret=GOOGLE_CLIENT_SECRET,
+                scopes=SCOPES
+            )
+            if credentials.expired and credentials.refresh_token:
+                credentials.refresh(Request())
+            gmail_service = build("gmail", "v1", credentials=credentials)
+            # Call users.watch() with the same topicName and label structure as gmail.py
+            watch_resp = gmail_service.users().watch(
+                userId="me",
+                body={
+                    "topicName": os.getenv("GMAIL_PUSH_TOPIC") or "projects/ragtest-454923/topics/deskforce",
+                    "labelIds": ["INBOX"],
+                    "labelFilterAction": "include"
+                }
+            ).execute()
+            # Update DB as in gmail.py
+            supabase.table("gmail_configs").update({
+                "watch_history_id": watch_resp["historyId"],
+                "watch_expires_at": datetime.utcfromtimestamp(int(watch_resp["expiration"]) / 1000).isoformat(),
+                "updated_at": datetime.utcnow().isoformat(),
+            }).eq("bot_id", bot_id).execute()
+            logger.info(f"Renewed Gmail watch for bot {bot_id} ({email_address}), new expiration: {datetime.utcfromtimestamp(int(watch_resp['expiration']) / 1000).isoformat()}")
+    except Exception as e:
+        logger.error(f"Error renewing Gmail watches: {str(e)}")
 
 # Test function to manually trigger email sending
 def test_email_scheduler():

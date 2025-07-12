@@ -51,6 +51,20 @@ class EmailResponse(BaseModel):
     thread_id: str
     email_details: Dict[str, Any]
 
+class EmailReplyRequest(BaseModel):
+    """Request body for replying to an email thread."""
+    conversation_id: str
+    to: str
+    subject: Optional[str] = None
+    body_html: Optional[str] = None
+    body_text: Optional[str] = None
+    # Gmail identifiers to maintain threading
+    reply_to_message_id: Optional[str] = None  # Gmail Message-ID header of the email we are replying to
+    reply_to_thread_id: Optional[str] = None   # Gmail threadId we are replying in
+    # Link the reply to an existing chat message (optional)
+    reply_to_chat_message_id: Optional[str] = None
+
+
 @router.get("/{bot_id}/config", response_model=GmailConfigModel)
 async def get_gmail_config(bot_id: str):
     """Get Gmail configuration for a bot"""
@@ -476,6 +490,117 @@ async def send_email(bot_id: str, email_request: EmailRequest):
         print(f"Error sending email for bot {bot_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
 
+@router.post("/{bot_id}/reply-email")
+async def reply_to_email(bot_id: str, req: EmailReplyRequest):
+    """Send a reply email via connected Gmail account and log it as a human message.
+
+    After successfully sending, store the outgoing email in **messages** table with:
+      • role = "human"
+      • status = "email_sent"
+      • reply_to_message_id = req.reply_to_chat_message_id (if provided)
+    """
+    try:
+        # ---------------------------------------------
+        # 1️⃣  Determine threading info if not provided
+        # ---------------------------------------------
+        thread_id = req.reply_to_thread_id
+        reply_msg_id = req.reply_to_message_id
+        subject = req.subject
+        to_addr = req.to
+
+        if not thread_id or not reply_msg_id or not subject or not to_addr:
+            # Find follow_up_queue for this conversation & bot
+            queue_resp = (
+                supabase.table("follow_up_queue")
+                .select("id")
+                .eq("conversation_id", req.conversation_id)
+                .eq("bot_id", bot_id)
+                .order("created_at", desc=True)  # Get the most recent queue entry
+                .limit(1)
+                .execute()
+            )
+
+            if not queue_resp.data:
+                raise HTTPException(status_code=404, detail="No follow-up queue for conversation")
+
+            queue_id = queue_resp.data[0]["id"]
+
+            email_resp = (
+                supabase.table("follow_up_emails")
+                .select("thread_id, metadata, subject, recipient_email")
+                .eq("follow_up_queue_id", queue_id)
+                .eq("email_type", "initial")
+                .order("created_at", desc=False)
+                .limit(1)
+                .execute()
+            )
+
+            if not email_resp.data:
+                raise HTTPException(status_code=404, detail="Initial follow-up email not found")
+
+            init_email = email_resp.data[0]
+            meta = init_email.get("metadata") or {}
+
+            thread_id = thread_id or init_email.get("thread_id")
+            reply_msg_id = reply_msg_id or meta.get("gmail_message_id_header")
+            subject = init_email.get("subject")
+            to_addr = to_addr or init_email.get("recipient_email")
+
+        if not (thread_id and reply_msg_id and subject and to_addr):
+            raise HTTPException(status_code=400, detail="Unable to resolve threading information for reply")
+
+        # ---------------------------------------------
+        # 2️⃣  Send the email using existing helper
+        # ---------------------------------------------
+        email_req = EmailRequest(
+            to=to_addr,
+            subject=subject,
+            body_html=req.body_html,
+            body_text=req.body_text,
+            reply_to_message_id=reply_msg_id,
+            reply_to_thread_id=thread_id,
+        )
+
+        send_resp: EmailResponse = await send_email(bot_id, email_req)  # type: ignore
+
+        # ---------------------------------------------
+        # 3️⃣  Persist chat message (dedupe check)
+        # ---------------------------------------------
+        msg_content = req.body_html or req.body_text or "(no content)"
+        duplicate = (
+            supabase.table("messages")
+            .select("id")
+            .eq("conversation_id", req.conversation_id)
+            .eq("role", "human")
+            .eq("status", "email_sent")
+            .eq("content", msg_content)
+            .limit(1)
+            .execute()
+        )
+
+        if not duplicate.data:
+            supabase.table("messages").insert({
+                "conversation_id": req.conversation_id,
+                "content": msg_content,
+                "role": "human",
+                "status": "email_sent",
+                "reply_to_message_id": req.reply_to_chat_message_id,
+                "created_at": datetime.utcnow().isoformat(),
+            }).execute()
+
+        return {
+            "status": send_resp.status,
+            "message": send_resp.message,
+            "email_id": send_resp.email_id,
+            "thread_id": send_resp.thread_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error replying to email for bot {bot_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to reply to email: {e}")
+
 @router.get("/{bot_id}/email/{email_id}")
 async def get_email_details(bot_id: str, email_id: str):
     """Get details of a specific email"""
@@ -875,23 +1000,51 @@ async def insert_reply_as_chat_message(conversation_id: str, content: str, threa
 
     from app.api.routes.chat import broadcast_to_all_connections  # local import to avoid circular
 
-    insert_resp = supabase.table("messages").insert({
-        "conversation_id": conversation_id,
-        "content": content,
-        "role": "user",
-        "status": "email_reply",
-        "read": True,
-        "created_at": datetime.utcnow().isoformat(),
-    }).execute()
+    # ----------------------------------------------------
+    # Avoid storing duplicate "email_reply" messages
+    # ----------------------------------------------------
+    try:
+        duplicate_check = (
+            supabase.table("messages")
+            .select("id")
+            .eq("conversation_id", conversation_id)
+            .eq("role", "user")
+            .eq("status", "email_reply")
+            .eq("content", content)
+            .limit(1)
+            .execute()
+        )
 
-    if not insert_resp.data:
-        print(f"❌ Failed to insert email reply into messages for conversation {conversation_id}")
+        if duplicate_check.data:
+            print(f"🔄 Duplicate email_reply already stored for conversation {conversation_id}, skipping.")
+            return  # Skip broadcasting as it's already stored
+        
+        insert_resp = (
+            supabase.table("messages").insert({
+                "conversation_id": conversation_id,
+                "content": content,
+                "role": "user",
+                "status": "email_reply",
+                "read": True,
+                "created_at": datetime.utcnow().isoformat(),
+            }).execute()
+        )
+
+        if not insert_resp.data:
+            print(f"❌ Failed to insert email reply into messages for conversation {conversation_id}")
+            return
+
+        message_id = insert_resp.data[0]["id"]
+    except Exception as dup_err:
+        print(f"⚠️ Error checking/inserting duplicate email_reply: {dup_err}")
         return
+    # End duplicate handling and insertion
 
-    message_id = insert_resp.data[0]["id"]
-
-    # update conversation timestamp
-    supabase.table("conversations").update({"updated_at": datetime.utcnow().isoformat()}).eq("id", conversation_id).execute()
+    # update conversation timestamp & status -> human (handoff)
+    supabase.table("conversations").update({
+        "updated_at": datetime.utcnow().isoformat(),
+        "status": "human",
+    }).eq("id", conversation_id).execute()
 
     # broadcast to websocket clients (if any)
     await broadcast_to_all_connections(conversation_id, {
@@ -975,6 +1128,11 @@ async def _process_pubsub_notification(email_address: str, history_id: str):
 
     for msg in data["messages"]:
         print(f"🔗 Processing Gmail msg {msg['id']} thread {msg['thread_id']}")
+        # Ignore emails that originated from our own mailbox (label "SENT")
+        if "SENT" in msg.get("label_ids", []):
+            print(f"↩️ Skipping self-sent email {msg['id']} (label SENT)")
+            continue
+
         conv_id = await map_thread_to_conversation(msg["thread_id"])
         if not conv_id:
             print(f"⚠️ No conversation mapping for thread {msg['thread_id']}, skipping.")

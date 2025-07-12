@@ -723,8 +723,12 @@ async def list_conversations_endpoint(user=Depends(require_cookie_auth)):
     """
     print("Received request to list all conversations with handoff status")
     try:
-        # Get all conversations from the database
-        conversations_response = supabase.table("conversations").select("*, bots(kb_id, name)").execute()
+        # Get all conversations with their latest non-page-visit message in one query
+        conversations_response = (
+            supabase.table("conversations_last_message")
+            .select("*, bots(kb_id, name)")
+            .execute()
+        )
         
         # Initialize response list
         conversations_list = []
@@ -732,51 +736,34 @@ async def list_conversations_endpoint(user=Depends(require_cookie_auth)):
         # Group conversations by kb_id
         kb_conversations = {}
         
-        for conv in conversations_response.data:
-            if not conv.get("bots") or not conv["bots"].get("kb_id"):
-                continue
-                
-            kb_id = conv["bots"]["kb_id"]
-            kb_name = conv["bots"].get("name", "Unknown KB")
-            
-            # Get conversation history for this specific conversation
-            history = db_manager.get_conversation_history(conv["id"])
-            
-            # Skip if no history exists
-            if not history or len(history) == 0:
-                continue
-            
-            # Count total messages
-            message_count = len(history)
-            
-            # Get the last message for preview
-            last_message = history[-1]
-            last_message_timestamp = last_message.get(
-                "timestamp", datetime.datetime.now()
-            )
-            last_message_content = last_message.get("content", "")
-            
-            # Create a short preview (first 50 chars)
+        for conv in conversations_response.data or []:
+            bots_info = conv.get("bots") or {}
+            kb_id = bots_info.get("kb_id")
+            if not kb_id:
+                continue  # Skip conversations without KB linkage
+
+            kb_name = bots_info.get("name", "Unknown KB")
+
+            # Use last_message fields provided by the view
+            last_message_content = conv.get("last_message", "")
+            last_message_timestamp = conv.get("last_message_time") or conv.get("created_at")
+
+            # Short preview (first 50 chars)
             preview = (
-                last_message_content[:50] + "..."
-                if len(last_message_content) > 50
-                else last_message_content
+                (last_message_content[:50] + "...") if len(last_message_content or "") > 50 else last_message_content
             )
-            
-            # Determine if handoff is needed
+
+            # Determine if conversation needs human attention
             needs_attention = False
             if conv.get("status") == "human":
                 needs_attention = True
-            elif last_message.get("message_type") == "ai":
-                content = last_message.get("content", "")
-                if "(needs help)" in content:
-                    needs_attention = True
-            
-            # Create conversation preview for this specific conversation
+            elif conv.get("status") != "closed" and "(needs help)" in (last_message_content or ""):
+                needs_attention = True
+
             conversation_preview = ConversationPreview(
                 last_message_timestamp=last_message_timestamp,
                 last_message_preview=preview,
-                message_count=message_count,
+                message_count=conv.get("total_messages", 0),  # total_messages not in view; default to 0
                 needs_human_attention=needs_attention,
             )
             
@@ -1365,14 +1352,19 @@ async def list_bot_conversations_endpoint(
         )
         total_count = count_response.count if hasattr(count_response, "count") else 0
 
-        # Use the view that already contains the last message for every conversation
-        query = supabase.table("conversations_last_message").select("*").eq("bot_id", bot_id)
-
-        print("conversations------>", query)
+        # ----------------------- REFACTORED SECTION -----------------------
+        # Query the conversations_last_message view directly with pagination.
+        # The view already contains the latest *non-page-visit* message, so we
+        # can drop the expensive per-conversation fallback queries.
+        query = (
+            supabase.table("conversations_last_message")
+            .select("*")
+            .eq("bot_id", bot_id)
+        )
 
         # Map filter values to status values
         filter_map = {
-            "open": "*",
+            "open": "*",      # All except closed
             "my": "human",
             "unassigned": "ai",
             "closed": "closed",
@@ -1383,50 +1375,17 @@ async def list_bot_conversations_endpoint(
         if filter == "open":
             query = query.neq("status", "closed")
 
-        # Get paginated data
-        response = query.order("created_at", desc=True).execute()
+        # Apply pagination and ordering (new)
+        response = (
+            query.order("created_at", desc=True)
+                 .range(start, end)
+                 .execute()
+        )
+        conversations = response.data or []
+        # --------------------- END REFACTORED SECTION --------------------
 
         # Calculate total pages
         total_pages = math.ceil(total_count / page_size) if total_count > 0 else 1
-
-        conversations = response.data  # Last message fields already included by the view
-
-        # Post-process conversations to exclude page visits from last_message
-        for conversation in conversations:
-            if conversation.get('last_message'):
-                # Check if the last message is a page visit by looking for page visit indicators
-                last_msg = conversation['last_message']
-                if (last_msg and 
-                    (last_msg.startswith('📄 **Visited Page**:') or 
-                     last_msg.startswith('🔄 **Navigated to**:') or 
-                     last_msg.startswith('⬅️ **Browser Navigation**:') or 
-                     last_msg.startswith('👁️ **Returned to**:') or 
-                     last_msg.startswith('👋 **Left Page**:') or 
-                     last_msg.startswith('🚪 **Exiting**:') or 
-                     last_msg.startswith('🌐 **Page Activity**:'))):
-                    
-                    # Get the actual last non-page-visit message
-                    try:
-                        last_msg_response = (
-                            supabase.table("messages")
-                            .select("content, created_at")
-                            .eq("conversation_id", conversation['id'])
-                            .neq("role", "page_visit")
-                            .order("created_at", desc=True)
-                            .limit(1)
-                            .execute()
-                        )
-                        
-                        if last_msg_response.data and len(last_msg_response.data) > 0:
-                            conversation['last_message'] = last_msg_response.data[0]['content']
-                            conversation['last_message_time'] = last_msg_response.data[0]['created_at']
-                        else:
-                            # No non-page-visit messages found
-                            conversation['last_message'] = "No messages yet"
-                            
-                    except Exception as e:
-                        print(f"Error fetching last non-page-visit message for conversation {conversation['id']}: {e}")
-                        # Keep the original message if there's an error
 
         return PaginatedListBotConversationsResponse(
             conversations=conversations,

@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from app.core.supabase_client import supabase
 from app.utils.logging import get_logger
 from app.services.subscription_service import SubscriptionService
+from app.config.subscription_limits import get_plan_limits, SUBSCRIPTION_LIMITS
 from datetime import datetime, timezone
 
 logger = get_logger(__name__)
@@ -177,8 +178,9 @@ async def check_subscription_limits(bot_id: str, conversation_id: str) -> Tuple[
         conversation_count = await get_conversation_count(user_id, start_of_month.isoformat())
         # The PlanLimits model uses camel-case keys (maxMessages, …)
         # Convert to lower snake for backwards-compat readability.
-        max_messages = limits.get("maxMessages", 100)
-        max_conversations = limits.get("maxConversations", 20)
+        trial_limits = get_plan_limits("TRIAL")
+        max_messages = limits.get("maxMessages", trial_limits["maxMessages"])
+        max_conversations = limits.get("maxConversations", trial_limits["maxConversations"])
 
         # Check message limit
         if message_count >= int(max_messages):

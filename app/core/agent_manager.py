@@ -11,6 +11,7 @@ from langchain.callbacks.base import BaseCallbackHandler
 import logging
 from langchain.agents.output_parsers import ReActSingleInputOutputParser
 from langchain.schema import AgentFinish
+from langchain_openai import ChatOpenAI  # NEW: For fallback LLMs
 
 from app.core.config import llm
 from app.core.tools import (
@@ -173,14 +174,53 @@ class TimeoutCallbackHandler(BaseCallbackHandler):
 
 # Create a wrapper class for the AgentExecutor to handle timeouts
 class EnhancedAgentExecutor:
-    """Wrapper around AgentExecutor to handle timeouts and parsing errors."""
+    """Wrapper around AgentExecutor to handle timeouts and parsing errors and add fallback LLM retry."""
 
-    def __init__(self, agent_executor, timeout_handler):
+    def __init__(self, agent_executor, timeout_handler, create_params: Optional[Dict[str, Any]] = None):
         self.agent_executor = agent_executor
         self.timeout_handler = timeout_handler
+        # Keep track of the parameters required to recreate the executor on-the-fly
+        self._create_params = create_params or {}
+        # Prevent infinite recursion – only retry once per invoke call
+        self._has_retried = False
+
+    def _retry_with_fallback_llm(self, inputs):
+        """Attempt to recreate the executor with a cheaper / less busy model and re-invoke."""
+        from app.core import config as global_config  # Local import to avoid circular deps
+
+        # Only retry once to avoid potential infinite loops
+        if self._has_retried:
+            return None
+        self._has_retried = True
+
+        fallback_models = [
+            "gpt-4o-mini",  # OpenAI new mini model
+            "gpt-3.5-turbo",  # Very reliable, cheaper and usually available
+        ]
+
+        for model_name in fallback_models:
+            try:
+                if not global_config.OPENAI_API_KEY:
+                    continue  # Cannot instantiate ChatOpenAI without a key
+
+                # Initialise the fallback LLM instance
+                new_llm = ChatOpenAI(model=model_name, api_key=global_config.OPENAI_API_KEY)
+                # Replace the global llm reference so that create_agent_executor uses it
+                global_config.llm = new_llm
+
+                from app.core.agent_manager import create_agent_executor  # late import to avoid circular refs
+
+                # Recreate a fresh executor with the new LLM
+                new_executor = create_agent_executor(**self._create_params)
+                # Directly invoke with the same inputs
+                return new_executor.invoke(inputs)
+            except Exception as retry_error:
+                logger.error(f"Fallback model {model_name} failed: {retry_error}")
+                continue  # Try the next fallback model
+        return None  # All fallbacks exhausted
 
     def invoke(self, inputs):
-        """Wrapper around invoke that handles timeouts and formatting errors."""
+        """Wrapper around invoke that handles timeouts, formatting errors and LLM overloads."""
         try:
             result = self.agent_executor.invoke(inputs)
 
@@ -194,6 +234,14 @@ class EnhancedAgentExecutor:
 
             return result
         except Exception as e:
+            err_msg = str(e)
+            # Detect model overload / capacity errors coming from OpenAI
+            if "model is overloaded" in err_msg.lower() or "503" in err_msg:
+                logger.warning(f"Model overloaded, attempting fallback model. Original error: {err_msg}")
+                retry_result = self._retry_with_fallback_llm(inputs)
+                if retry_result is not None:
+                    return retry_result
+
             # Handle unexpected errors
             logger.error(f"Agent execution error: {e}")
             return {
@@ -403,7 +451,13 @@ Thought:{{agent_scratchpad}}"""
     )
 
     # Instead of modifying the AgentExecutor directly, wrap it in our enhanced executor
-    enhanced_executor = EnhancedAgentExecutor(agent_executor, timeout_handler)
+    create_params = {
+        "kb_id": kb_id,
+        "memory": memory,
+        "bot_id": bot_id,
+        "customer_context": customer_context,
+    }
+    enhanced_executor = EnhancedAgentExecutor(agent_executor, timeout_handler, create_params)
 
     print(f"Created EnhancedAgentExecutor for kb_id: {kb_id} using dynamic config")
     return enhanced_executor

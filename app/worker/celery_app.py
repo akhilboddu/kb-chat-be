@@ -195,10 +195,14 @@ from celery.schedules import crontab
 celery_app.conf.beat_schedule = {
     'send-scheduled-emails': {
         'task': 'app.tasks.email_scheduler.send_scheduled_followup_emails',
-        'schedule': 30.0,  # Every 30 seconds for testing
+        'schedule': 600.0,  # Every 10 minutes for testing (change as needed)
     },
     'cleanup-failed-emails': {
         'task': 'app.tasks.email_scheduler.cleanup_failed_emails',
         'schedule': crontab(hour=2, minute=0),  # Daily at 2 AM
+    },
+    'renew-gmail-watches': {
+        'task': 'app.tasks.email_scheduler.renew_expired_gmail_watches',
+        'schedule': crontab(minute=0, hour='*/6'),  # Every minute for testing (change back to  for production)
     },
 } 

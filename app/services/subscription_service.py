@@ -3,6 +3,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 from app.core.supabase_client import supabase
 from app.models.subscription import SubscriptionOut, Plan, PlanLimits, DashboardStatsResponse
+from app.config.subscription_limits import get_plan_limits, SUBSCRIPTION_LIMITS
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +59,8 @@ class SubscriptionService:
 
     def _get_knowledge_source_limit(self, plan_key: str) -> int:
         """Helper to get knowledge source limits by plan key"""
-        limits_map = {
-            'TRIAL': 2,
-            'STARTER': 10,
-            'PRO': 50,
-            'ENTERPRISE': -1  # Unlimited
-        }
-        return limits_map.get(plan_key.upper(), 10)
+        plan_limits = get_plan_limits(plan_key)
+        return plan_limits.get("maxKnowledgeSources", 2)
 
     def get_plan_limits(self, user_id: str) -> Optional[PlanLimits]:
         """Get plan limits for a user"""
@@ -73,13 +69,14 @@ class SubscriptionService:
             return subscription.plan.limits
         
         # Fallback to TRIAL limits if no subscription
+        trial_limits = get_plan_limits("TRIAL")
         return PlanLimits(
-            maxMessages=100,
-            maxConversations=100,
-            maxBots=1,
-            maxLiveBots=1,
-            maxKnowledgeSources=2,
-            maxTeamMembers=1
+            maxMessages=trial_limits["maxMessages"],
+            maxConversations=trial_limits["maxConversations"],
+            maxBots=trial_limits["maxBots"],
+            maxLiveBots=trial_limits["maxLiveBots"],
+            maxKnowledgeSources=trial_limits["maxKnowledgeSources"],
+            maxTeamMembers=trial_limits["maxTeamMembers"]
         )
 
     # ------------------------------------------------------------------

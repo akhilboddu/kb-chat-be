@@ -10,6 +10,7 @@ from app.models.subscription import SubscriptionResponse, BotResponse, Dashboard
 from app.services.auth_service import get_user_from_token
 from app.services.subscription_service import SubscriptionService
 from app.utils.subscription_limits import get_message_count, get_conversation_count  # noqa: E501
+from app.config.subscription_limits import get_plan_limits, SUBSCRIPTION_LIMITS
 
 logger = logging.getLogger(__name__)
 subscriptions_router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
@@ -218,21 +219,40 @@ async def get_dashboard_stats(request: Request):
                 valid_token_plan = token_plan_id
         
         logger.info(f"📊 Dashboard stats for user: {user_id} (UUID: {user_uuid})")
-        
+
+        # ------------------------------------------------------------------
+        # Fetch pre-aggregated numbers from the materialised view
+        # dashboard_usage_monthly so we avoid expensive per-request scans.
+        # ------------------------------------------------------------------
+        usage_resp = (
+            supabase.table("dashboard_usage_monthly")
+            .select("total_messages,total_conversations,active_conversations,live_bots")
+            .eq("user_id", user_uuid)
+            .single()
+            .execute()
+        )
+
+        usage_data = usage_resp.data if usage_resp and usage_resp.data else {}
+        view_total_messages = usage_data.get("total_messages", 0)
+        view_total_conversations = usage_data.get("total_conversations", 0)
+        view_active_conversations = usage_data.get("active_conversations", 0)
+        view_live_bots = usage_data.get("live_bots")
+
         # Two separate queries since join isn't working
         # 1. Get subscription
         subscription_result = supabase.table("subscriptions").select("*").eq("user_id", user_uuid).eq("status", "active").execute()
         
         if not subscription_result.data:
             logger.warning(f"No active subscription found for user {user_uuid}. Returning default trial subscription")
-            # Default trial limits
+            # Default trial limits from centralized config
+            trial_limits = get_plan_limits("TRIAL")
             default_limits = {
-                "maxMessages": 50,
-                "maxConversations": 10,
-                "maxBots": 1,
-                "maxLiveBots": 1,
-                "maxKnowledgeSources": 2,
-                "maxTeamMembers": 1,
+                "maxMessages": trial_limits["maxMessages"],
+                "maxConversations": trial_limits["maxConversations"],
+                "maxBots": trial_limits["maxBots"],
+                "maxLiveBots": trial_limits["maxLiveBots"],
+                "maxKnowledgeSources": trial_limits["maxKnowledgeSources"],
+                "maxTeamMembers": trial_limits["maxTeamMembers"],
             }
             # Get bots for trial user too
             bots_resp = supabase.table("bots").select("*").eq("user_id", user_uuid).execute()
@@ -246,7 +266,11 @@ async def get_dashboard_stats(request: Request):
                 bot["active_conversations"] = active_conversations_per_bot.get(bot["id"], 0)
             
             # Calculate total active conversations
-            total_active_conversations = sum(active_conversations_per_bot.values())
+            total_active_conversations = view_active_conversations or sum(active_conversations_per_bot.values())
+
+            # Use numbers from the pre-aggregated view instead of ad-hoc counts
+            total_messages = view_total_messages
+            total_conversations = view_total_conversations
             
             # Determine window start date – use earliest bot creation or fallback to now - 30d
             if bots_list:
@@ -259,13 +283,9 @@ async def get_dashboard_stats(request: Request):
                 window_start_dt = None
 
             if window_start_dt:
-                total_messages = await get_message_count(user_uuid, window_start_dt.isoformat())
-                total_conversations = await get_conversation_count(user_uuid, window_start_dt.isoformat())
                 logger.info(f"🔍 TRIAL PATH - user: {user_uuid}, window_start: {window_start_dt.isoformat()}")
                 logger.info(f"🔍 TRIAL PATH - calculated: messages={total_messages}, conversations={total_conversations}")
             else:
-                total_messages = 0
-                total_conversations = 0
                 logger.info(f"🔍 TRIAL PATH - no window_start_dt, using zeros")
 
             # Build trial response with real bot data
@@ -313,23 +333,9 @@ async def get_dashboard_stats(request: Request):
         logger.info(f"✅ Found plan: {plan_data['key']} with limits: {plan_data['limits']}")
         
         # --- Usage calculations ---
-        # Use subscription creation date as window start; fallback to current month if not available
-        sub_created_str = sub_data.get("created_at")
-        try:
-            subscription_start_dt = parse_iso_datetime(sub_created_str)
-        except Exception:
-            subscription_start_dt = None
-
-        if subscription_start_dt:
-            total_messages = await get_message_count(user_uuid, subscription_start_dt.isoformat())
-            total_conversations = await get_conversation_count(user_uuid, subscription_start_dt.isoformat())
-            logger.info(f"🔍 SUBSCRIPTION PATH - user: {user_uuid}, window_start: {subscription_start_dt.isoformat()}")
-            logger.info(f"🔍 SUBSCRIPTION PATH - calculated: messages={total_messages}, conversations={total_conversations}")
-        else:
-            # Should not happen – created_at is expected – but ensure defined values
-            logger.warning("Subscription created_at missing for user %s; returning zero usage", user_uuid)
-            total_messages = 0
-            total_conversations = 0
+        # Use numbers from the aggregated monthly usage view
+        total_messages = view_total_messages
+        total_conversations = view_total_conversations
 
         # Fetch bots for the user (needed for live bot counts & dashboard listing)
         bots_resp = supabase.table("bots").select("*").eq("user_id", user_uuid).execute()
@@ -345,7 +351,7 @@ async def get_dashboard_stats(request: Request):
             bot["active_conversations"] = active_conversations_per_bot.get(bot["id"], 0)
         
         # Calculate total active conversations
-        total_active_conversations = sum(active_conversations_per_bot.values())
+        total_active_conversations = view_active_conversations or sum(active_conversations_per_bot.values())
 
         # Build response with real usage data
         stats = DashboardStatsResponse(

@@ -76,7 +76,12 @@ def notify_client_message(
                 }
             ),
         )
+        print("conversation_link------>", conversation_link)
+        print("company_name------>", company_name)
+        print("company_email------>", company_email)
+        print("message------>", message)
         print("User notified with link:", response)
+        print("to address------>", user_email)
     except Exception as e:
         print("Error sending linked email to admin:", e)
 
