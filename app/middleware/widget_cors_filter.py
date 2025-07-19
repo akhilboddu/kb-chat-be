@@ -4,6 +4,9 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import compile_path
 import re
+import logging
+
+logger = logging.getLogger(__name__)
 
 class WidgetCORSFilter(BaseHTTPMiddleware):
     """Middleware that allows widget endpoints to be accessed from any origin.
@@ -27,25 +30,29 @@ class WidgetCORSFilter(BaseHTTPMiddleware):
             self._compiled_patterns.append(regex)
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        response: Response = await call_next(request)
-        origin = request.headers.get("origin")
+        # Debug logging
+        logger.info(f"WidgetCORSFilter: {request.method} {request.url.path}")
         
-        # If this is a widget endpoint, always allow CORS from any origin
-        if self._path_allowed(request.url.path) and origin:
-            # Override CORS headers for widget endpoints to allow any origin
-            response.headers["access-control-allow-origin"] = origin
-            response.headers["access-control-allow-credentials"] = "true"
-            response.headers["access-control-allow-methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-            response.headers["access-control-allow-headers"] = "Accept, Content-Type, Authorization, X-Requested-With, Origin, User-Agent"
-            response.headers["vary"] = "Origin"
-            return response
+        origin = request.headers.get("origin")
+        is_widget_endpoint = self._path_allowed(request.url.path)
+        
+        # For non-widget endpoints, check if origin is allowed
+        if not is_widget_endpoint and origin and origin not in self._allowed_origins:
+            logger.info(f"WidgetCORSFilter: Blocking non-widget endpoint {request.url.path} from origin {origin}")
+            # Return 403 for non-allowed origins on non-widget endpoints
+            return Response(
+                status_code=403,
+                content="CORS policy: Origin not allowed",
+                headers={"content-type": "text/plain"}
+            )
             
-        # For non-widget endpoints, keep the original behavior
-        if origin:
-            # Keep header if origin is explicitly allowed
-            if origin in self._allowed_origins:
-                return response
-            # Otherwise use the default CORS policy set by CORSMiddleware
+        # Widget endpoints or allowed origins - let the request through
+        response: Response = await call_next(request)
+        
+        # For widget endpoints, ensure CORS headers allow the origin
+        if is_widget_endpoint:
+            logger.info(f"WidgetCORSFilter: Widget endpoint {request.url.path} accessed from {origin}")
+        
         return response
 
     def _path_allowed(self, path: str) -> bool:

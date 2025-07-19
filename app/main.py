@@ -73,24 +73,8 @@ def create_app() -> FastAPI:
     # Add quota guard middleware (disabled by default, enable with ENABLE_QUOTA_GUARD=true)
     app.add_middleware(QuotaGuardMiddleware)
 
-    # CORS Middleware for all routes (widget endpoints will be accessible from any origin)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=cors_origins,
-        allow_credentials=allow_credentials,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=[
-            "Accept",
-            "Content-Type", 
-            "Authorization",
-            "X-Requested-With",
-            "Origin",
-            "User-Agent",
-        ],
-        expose_headers=["content-type", "content-length", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset"],
-    )
-
-    # After CORSMiddleware addition, add WidgetCORSFilter with allowed paths
+    # Widget CORS Filter MUST be added AFTER CORSMiddleware so it runs BEFORE
+    # This allows it to handle widget endpoint requests from any origin
     widget_allowed_paths = [
         "/api/bots/{bot_id}/config",
         "/api/bots/{bot_id}/conversations",
@@ -104,6 +88,23 @@ def create_app() -> FastAPI:
         "/api/send-msg-demobot",
     ]
     app.add_middleware(WidgetCORSFilter, allowed_paths=widget_allowed_paths, allowed_origins=cors_origins)
+
+    # CORS Middleware for all routes (widget endpoints will be accessible from any origin)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=".*",  # Allow all origins - WidgetCORSFilter will restrict non-widget endpoints
+        allow_credentials=allow_credentials,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=[
+            "Accept",
+            "Content-Type", 
+            "Authorization",
+            "X-Requested-With",
+            "Origin",
+            "User-Agent",
+        ],
+        expose_headers=["content-type", "content-length", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset"],
+    )
 
     # Mount all routes from the router with /api prefix
     app.include_router(router, prefix="/api")
