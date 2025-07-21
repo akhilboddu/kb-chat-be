@@ -8,6 +8,7 @@ import math
 from typing import Dict, Set, Optional, Any, Literal
 from pydantic import BaseModel
 
+
 from datetime import datetime
 from app.config.redisconnection import redisConnection
 from app.config.settings import EXPIRY_STATUS_TIME, ONLINE
@@ -28,6 +29,7 @@ from app.models.chat import (
     PaginatedListMessagesResponse,
     DemoChatRequest,
 )
+
 from app.models.bot import (
     CreateBotConversationResponse,
     PaginatedListBotConversationsResponse,
@@ -37,6 +39,7 @@ from app.models.base import StatusResponse
 from app.core import supabase_metadata_manager as db_manager, kb_manager, agent_manager
 from app.services.push_notifications import send_push_notification
 from app.services.send_email import notify_admin_on_user_message, notify_client_message
+from app.services.auth_service import get_user_from_token
 from app.utils.text_processing import clean_agent_output, auto_add_handoff_if_needed
 from app.utils.verification import get_current_user
 from app.utils.crm_utils import ensure_crm_entry
@@ -1763,8 +1766,21 @@ async def handle_user_chat(conversation_id: str, message: str, user_id: str = No
 
 @router.websocket("/ws/{conversation_id}")
 async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str):
+
+      # ► grab cookie BEFORE accept – keep a local copy
+    auth_token = websocket.cookies.get("auth_token")
+    company_email_cookie = None
+    if auth_token:
+        try:
+            company_email_cookie = get_user_from_token(auth_token).get("email")
+        except Exception as e:
+            print("cookie decode error:", e)
+
+    await websocket.accept()    
+
+    print("company_email_cookie------>", company_email_cookie)
     print(f"WebSocket connection attempt for conversation {conversation_id}")
-    await websocket.accept()
+    # await websocket.accept()
     print(f"WebSocket connection accepted for conversation {conversation_id}")
     
     if conversation_id not in active_connections:
@@ -1896,6 +1912,7 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
 
                     # --- NEW: Check if widget user is online, send email if not ---
                     # Fetch conversation details
+                    print("conversation_id------>", conversation_id)
                     conversation_details = (
                         supabase.table("conversations")
                         .select("customer_email, bot_id")
@@ -1903,23 +1920,33 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
                         .single()
                         .execute()
                     )
+                    print("conversation_details------>", conversation_details)
                     if conversation_details.data:
+                        print("conversation_details.data------>", conversation_details.data)
                         customer_email = conversation_details.data.get("customer_email")
                         bot_id = conversation_details.data.get("bot_id")
+                        print("customer_email------>", customer_email)
+                        print("bot_id------>", bot_id)
                         # Check user online status in Redis
                         client = redisConnection.client
                         user_online = None
                         if client and customer_email and bot_id:
+                            print("client------>", client)
                             user_online = client.get(f"user:{customer_email}:{bot_id}")
                         if not user_online:
+                            print("user_online------>", user_online)
                             # Fetch bot/company info
                             bot_data = supabase.table("bots").select("company,user_id").eq("id", bot_id).single().execute()
                             company_name = bot_data.data.get("company") if bot_data.data else ""
                             user_id = bot_data.data.get("user_id") if bot_data.data else None
                             company_email = None
                             if user_id:
-                                user_data = supabase.auth.admin.get_user_by_id(user_id)
-                                company_email = getattr(user_data.user, "email", None)
+                                print("user_id------>", user_id)
+                                # user_data = supabase.auth.admin.get_user_by_id(user_id)
+                                # print("user_data------>", user_data)
+                                # company_email = getattr(user_data.user, "email", None)
+                                company_email = company_email_cookie
+                                print("company_email------>", company_email)
                             if company_name and company_email and customer_email:
                                 from app.services.send_email import notify_client_message
                                 notify_client_message(
@@ -1960,8 +1987,9 @@ async def websocket_unified_endpoint(websocket: WebSocket, conversation_id: str)
                             user_id = bot_data.data.get("user_id") if bot_data.data else None
                             company_email = None
                             if user_id:
-                                user_data = supabase.auth.admin.get_user_by_id(user_id)
-                                company_email = getattr(user_data.user, "email", None)
+                                # user_data = supabase.auth.admin.get_user_by_id(user_id)
+                                company_email = company_email_cookie
+                                # company_email = getattr(user_data.user, "email", None)
                             if conversation_response.data:
                                 notify_admin_on_user_message(
                                     conversation_response.data[0]["customer_name"],

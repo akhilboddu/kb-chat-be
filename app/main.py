@@ -86,6 +86,7 @@ def create_app() -> FastAPI:
         "/api/status/{bot_id}",
         "/api/ws/{conversation_id}",
         "/api/send-msg-demobot",
+        "/api/whatsapp/webhook",
     ]
     app.add_middleware(WidgetCORSFilter, allowed_paths=widget_allowed_paths, allowed_origins=cors_origins)
 
